@@ -1,0 +1,124 @@
+.pf-grid {
+  display: grid;
+  grid-template-columns: 440px 1fr;
+  gap: 16px;
+}
+.pf-grid > * {
+  min-width: 0;
+}
+.pf-hero {
+  padding: 24px;
+  border-bottom: 1px solid var(--border);
+}
+.pf-ring {
+  background: var(--surface);
+  box-shadow: var(--verified-ring);
+  animation: ring-pop 0.6s cubic-bezier(0.3, 1.4, 0.4, 1) both;
+}
+@keyframes ring-pop {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+}
+.pf-hash {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  transition: border-color 0.15s ease;
+}
+.pf-hash:hover {
+  border-color: var(--border-strong);
+}
+.pf-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--mint);
+  flex: none;
+  animation: ring-pop 0.4s ease both;
+}
+.pf-steps {
+  list-style: none;
+  align-items: flex-start;
+}
+.pf-steps > li {
+  flex: 1;
+}
+.pf-steps > li:nth-child(2) .pf-dot {
+  animation-delay: 140ms;
+}
+.pf-steps > li:nth-child(3) .pf-dot {
+  animation-delay: 280ms;
+}
+.pf-steps > li:nth-child(4) .pf-dot {
+  animation-delay: 420ms;
+}
+.pf-steps > li:nth-child(1) .pf-line {
+  animation-delay: 70ms;
+}
+.pf-steps > li:nth-child(2) .pf-line {
+  animation-delay: 210ms;
+}
+.pf-steps > li:nth-child(3) .pf-line {
+  animation-delay: 350ms;
+}
+.pf-line {
+  flex: 1;
+  height: 2px;
+  background: var(--settle-line);
+  transform-origin: left;
+  animation: grow-x 0.4s ease both;
+}
+.pf-file {
+  padding: 10px 20px;
+  background: var(--soft);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.pf-receipt {
+  overflow: hidden;
+  min-height: 0;
+}
+.pf-facts {
+  padding-top: 12px;
+}
+.pf-facts .kv:last-child {
+  /* The design keeps the rule under the last fact, above the identity block. */
+  border-bottom: 1px solid var(--border);
+}
+.pf-facts dd {
+  margin: 0;
+}
+.pf-section {
+  margin-top: 18px;
+}
+.pf-artifact {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Long lines scroll sideways. One column, as wide as the longest line or the card, keeps every stripe full width. */
+.pf-code {
+  padding: 8px 0;
+  overflow-x: auto;
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+}
+.pf-checks {
+  list-style: none;
+  margin-top: auto;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+  flex: none;
+}
+
+@media (max-width: 1200px) {
+  .pf-grid {
+    grid-template-columns: 1fr;
+  }
+}

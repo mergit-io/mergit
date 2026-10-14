@@ -1,0 +1,168 @@
+/*
+ * Design tokens for Porcelain (light) and Porcelain Night (dark).
+ * Values come from the approved Figma files. Every colour a component uses
+ * is a token here, so a theme switch is one attribute flip on <html>.
+ */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f4f5f7;
+  --surface: #ffffff;
+  --soft: #f7f8fa;
+  --sunken: #eef0f3;
+  --border: #e6e8ec;
+  --border-strong: #d6d9df;
+  --ink: #0e1018;
+  --ink2: #565c6b;
+  --ink3: #8c92a0;
+  --on-ink: #ffffff;
+  --azure: #1f6bff;
+  --azure-wash: #e8f0ff;
+  --mint: #0e9f74;
+  --mint-wash: #e3f6ef;
+  --amber: #b26b00;
+  --amber-wash: #fdf2df;
+  --on-amber: #ffffff;
+  --red: #d13b3b;
+  --red-wash: #fcebeb;
+  --gray-wash: #eef0f3;
+
+  --planner: #2457d6;
+  --planner-w: #e5eeff;
+  --research: #0e8a63;
+  --research-w: #ddf5ec;
+  --coder: #5b45d6;
+  --coder-w: #ece8ff;
+  --tester: #946500;
+  --tester-w: #fff1cf;
+  --reviewer: #c23a5e;
+  --reviewer-w: #ffe6ec;
+  --proof: #5e5a50;
+  --proof-w: #efede8;
+
+  --mesh:
+    radial-gradient(120% 140% at 0% 0%, #dce8ff 0%, rgba(220, 232, 255, 0) 55%),
+    radial-gradient(90% 120% at 100% 0%, #ebe3ff 0%, rgba(235, 227, 255, 0) 60%),
+    radial-gradient(100% 120% at 60% 100%, #ddf6ec 0%, rgba(221, 246, 236, 0) 60%), #ffffff;
+  --wallet-card:
+    radial-gradient(120% 120% at 0% 0%, #c9daff 0%, rgba(201, 218, 255, 0) 55%),
+    radial-gradient(100% 120% at 100% 0%, #dccfff 0%, rgba(220, 207, 255, 0) 60%),
+    radial-gradient(110% 120% at 70% 100%, #c7f0df 0%, rgba(199, 240, 223, 0) 60%), #f3f4ff;
+  --wallet-card-border: #e1e3f0;
+  --glass-badge: rgba(255, 255, 255, 0.7);
+
+  --fail-bar: #f0a3a3;
+  --settle-line: #bfe8d8;
+  --dag-edge: #c9cdd5;
+  --dots: #d9dce3;
+  --code-add: #e6f6ee;
+  --code-rem: #fdecec;
+  --toggle-knob: #ffffff;
+  --toggle-on: var(--ink);
+  --toggle-knob-on: #ffffff;
+
+  --medal-1: #c9961a;
+  --medal-1-w: #fff4d6;
+  --medal-2: #8c92a0;
+  --medal-2-w: #eef0f3;
+  --medal-3: #b87346;
+  --medal-3-w: #f8e9df;
+
+  --seg-on-shadow: 0 1px 2px rgba(14, 16, 24, 0.08);
+  --card-shadow: none;
+  --node-shadow: 0 1px 2px rgba(14, 16, 24, 0.04);
+  --node-ring: 0 0 0 4px rgba(14, 16, 24, 0.06);
+  --verified-ring: 0 0 0 6px rgba(14, 159, 116, 0.12);
+  --composer-shadow: 0 1px 2px rgba(14, 16, 24, 0.04), 0 12px 32px -12px rgba(14, 16, 24, 0.1);
+  --float-shadow: 0 12px 32px -12px rgba(14, 16, 24, 0.18);
+  --hover: rgba(14, 16, 24, 0.035);
+  --focus: rgba(31, 107, 255, 0.35);
+
+  /* Chart palette, from the proof ledger in the landing design video. */
+  --chart-purple: #7c6beb;
+  --chart-green: #24875f;
+  --chart-yellow: #e0b23f;
+  --chart-rose: #df4b6c;
+  --chart-gray: #a19e98;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0b0c0f;
+  --surface: #121317;
+  --soft: #16181d;
+  --sunken: #1c1e24;
+  --border: #23262d;
+  --border-strong: #30343c;
+  --ink: #eceef2;
+  --ink2: #a1a6b2;
+  --ink3: #6b717e;
+  --on-ink: #0b0c0f;
+  --azure: #6e9bff;
+  --azure-wash: #16213a;
+  --mint: #3ccb98;
+  --mint-wash: #10271f;
+  --amber: #e5a54b;
+  --amber-wash: #2a2113;
+  --on-amber: #1a1206;
+  --red: #f0716c;
+  --red-wash: #2e1718;
+  --gray-wash: #1c1e24;
+
+  --planner: #86a8ff;
+  --planner-w: #172139;
+  --research: #4cc79a;
+  --research-w: #11261f;
+  --coder: #a898ff;
+  --coder-w: #1e1b36;
+  --tester: #e2b24f;
+  --tester-w: #2a2210;
+  --reviewer: #f08aa6;
+  --reviewer-w: #2d1822;
+  --proof: #c2bcae;
+  --proof-w: #22211e;
+
+  --mesh:
+    radial-gradient(120% 140% at 0% 0%, rgba(110, 155, 255, 0.16) 0%, rgba(110, 155, 255, 0) 55%),
+    radial-gradient(90% 120% at 100% 0%, rgba(168, 152, 255, 0.13) 0%, rgba(168, 152, 255, 0) 60%),
+    radial-gradient(100% 120% at 60% 100%, rgba(60, 203, 152, 0.1) 0%, rgba(60, 203, 152, 0) 60%), #121317;
+  --wallet-card:
+    radial-gradient(120% 120% at 0% 0%, rgba(110, 155, 255, 0.28) 0%, rgba(110, 155, 255, 0) 55%),
+    radial-gradient(100% 120% at 100% 0%, rgba(168, 152, 255, 0.24) 0%, rgba(168, 152, 255, 0) 60%),
+    radial-gradient(110% 120% at 70% 100%, rgba(60, 203, 152, 0.18) 0%, rgba(60, 203, 152, 0) 60%), #15171d;
+  --wallet-card-border: #2a2e37;
+  --glass-badge: rgba(11, 12, 15, 0.55);
+
+  --fail-bar: #a8504c;
+  --settle-line: #1f5a45;
+  --dag-edge: #363a44;
+  --dots: #22252c;
+  --code-add: rgba(60, 203, 152, 0.07);
+  --code-rem: rgba(240, 113, 108, 0.08);
+  --toggle-knob: #c9cdd5;
+  --toggle-on: var(--mint);
+  --toggle-knob-on: #0b0c0f;
+
+  --medal-1: #e2b24f;
+  --medal-1-w: #2a2210;
+  --medal-2: #a1a6b2;
+  --medal-2-w: #1c1e24;
+  --medal-3: #d69466;
+  --medal-3-w: #2a1c14;
+
+  --seg-on-shadow: 0 0 0 1px var(--border-strong);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --node-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --node-ring: 0 0 0 4px rgba(236, 238, 242, 0.08);
+  --verified-ring: 0 0 0 6px rgba(60, 203, 152, 0.14);
+  --composer-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -16px rgba(0, 0, 0, 0.6);
+  --float-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --hover: rgba(236, 238, 242, 0.04);
+  --focus: rgba(110, 155, 255, 0.45);
+
+  --chart-purple: #a898ff;
+  --chart-green: #3ccb98;
+  --chart-yellow: #e5b54f;
+  --chart-rose: #f07892;
+  --chart-gray: #8a8f9a;
+}

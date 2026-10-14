@@ -1,0 +1,66 @@
+/*
+ * Landing page palette, sampled from the landing design video. Scoped to
+ * .landing so the dashboard keeps its own tokens. Dark values follow the
+ * dashboard's Porcelain Night palette.
+ */
+.landing {
+  --l-bg: #ffffff;
+  --l-alt: #f3f4f6;
+  --l-ink: #0e0f12;
+  --l-muted: #707077;
+  --l-faint: #a3a4ab;
+  --l-line: #e7e8ec;
+  --l-card: #ffffff;
+  --l-card-alt: #f3f4f6;
+  --l-purple: #7c6beb;
+  --l-purple-wash: #ece8fd;
+  --l-green: #24875f;
+  --l-green-ink: #2f7d60;
+  --l-mint-wash: #dbf2e7;
+  --l-highlight: #c8ecd8;
+  --l-amber-wash: #fdf0c8;
+  --l-rose-wash: #fde4ea;
+  --l-gray-wash: #ececec;
+  --l-hero: linear-gradient(180deg, #f4f2fb 0%, #fbfbfe 55%, #ffffff 100%);
+  --l-cta: linear-gradient(180deg, #edeff7 0%, #e3f1ee 55%, #dcf2e9 100%);
+  --l-passport: linear-gradient(160deg, #ece9fb 0%, #e6ecf6 45%, #def2ea 100%);
+  --l-band: #0d0f17;
+  --l-band-card: #141924;
+  --l-band-line: #262c3a;
+  --l-band-ink: #f2f3f7;
+  --l-band-muted: #9aa0ad;
+  --l-dot: 60, 52, 120;
+  --l-shadow: 0 1px 2px rgba(14, 16, 24, 0.04), 0 24px 48px -24px rgba(60, 50, 140, 0.18);
+  --l-btn: #0e0f12;
+  --l-btn-ink: #ffffff;
+}
+
+:root[data-theme="dark"] .landing {
+  --l-bg: #0b0c0f;
+  --l-alt: #111216;
+  --l-ink: #eceef2;
+  --l-muted: #a1a6b2;
+  --l-faint: #6b717e;
+  --l-line: #23262d;
+  --l-card: #141519;
+  --l-card-alt: #181a1f;
+  --l-purple: #a898ff;
+  --l-purple-wash: #1e1b36;
+  --l-green: #3ccb98;
+  --l-green-ink: #3ccb98;
+  --l-mint-wash: #10271f;
+  --l-highlight: rgba(60, 203, 152, 0.22);
+  --l-amber-wash: #2a2210;
+  --l-rose-wash: #2d1822;
+  --l-gray-wash: #1c1e24;
+  --l-hero: linear-gradient(180deg, #13121c 0%, #0d0d12 55%, #0b0c0f 100%);
+  --l-cta: linear-gradient(180deg, #121320 0%, #0f1a19 55%, #0d1f19 100%);
+  --l-passport: linear-gradient(160deg, #1d1a33 0%, #161a26 45%, #0f221b 100%);
+  --l-band: #07080b;
+  --l-band-card: #111319;
+  --l-band-line: #23262d;
+  --l-dot: 190, 182, 255;
+  --l-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 24px 48px -24px rgba(0, 0, 0, 0.7);
+  --l-btn: #eceef2;
+  --l-btn-ink: #0b0c0f;
+}

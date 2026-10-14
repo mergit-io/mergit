@@ -1,0 +1,275 @@
+/* The design is drawn at 1440 x 900. On a desktop viewport the shell is exactly
+   the window height and the screens fill it, like the frames; on smaller
+   viewports it falls back to normal page scroll. */
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas);
+}
+@media (min-width: 1200px) and (min-height: 820px) {
+  .shell {
+    height: 100vh;
+  }
+  .main {
+    min-height: 0;
+  }
+  .fill {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+.nav {
+  height: 76px;
+  padding: 0 40px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--canvas);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.repo-chip {
+  margin-left: 4px;
+}
+
+.tabs {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  isolation: isolate;
+}
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  color: var(--ink2);
+  font-weight: 500;
+  transition: color 0.25s ease;
+}
+.tab svg {
+  stroke: var(--ink3);
+  transition: stroke 0.25s ease;
+}
+.tab:hover {
+  color: var(--ink);
+}
+.tab.on {
+  color: var(--on-ink);
+}
+.tab.on svg {
+  stroke: var(--on-ink);
+}
+.tab-thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  z-index: -1;
+  transition:
+    transform 0.34s cubic-bezier(0.3, 0.7, 0.2, 1),
+    width 0.34s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+.navr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease;
+}
+.pill:hover {
+  border-color: var(--border-strong);
+}
+.wallet-pill.on {
+  background: var(--ink);
+  color: var(--on-ink);
+  border-color: var(--ink);
+}
+.iconbtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  position: relative;
+  color: var(--ink2);
+  flex: none;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+.iconbtn:hover {
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+.dotn {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--amber);
+  color: var(--on-amber);
+  font:
+    500 10px/16px "DM Mono",
+    monospace;
+  text-align: center;
+  padding: 0 4px;
+}
+.orb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #9ec1ff, #c9b8ff 55%, #8fe3c4);
+  flex: none;
+}
+.avatarme {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--tester-w);
+  color: var(--tester);
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+  font-size: 12px;
+  flex: none;
+}
+
+/* Theme toggle: sun and moon trade places with a quarter turn. */
+.theme-toggle svg {
+  grid-area: 1 / 1;
+  transition:
+    transform 0.45s cubic-bezier(0.3, 0.7, 0.2, 1),
+    opacity 0.3s ease;
+}
+.theme-toggle[data-theme-state="light"] .tt-moon,
+.theme-toggle[data-theme-state="dark"] .tt-sun {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.5);
+}
+.theme-toggle[data-theme-state="light"] .tt-sun,
+.theme-toggle[data-theme-state="dark"] .tt-moon {
+  opacity: 1;
+  transform: none;
+}
+
+.main {
+  flex: 1;
+  padding: 12px 56px 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 1680px;
+  margin: 0 auto;
+}
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.crumb {
+  align-self: flex-start;
+  transition: color 0.15s ease;
+}
+.crumb:hover {
+  color: var(--ink2);
+}
+
+/* Narrower screens: tabs lose labels, then the nav wraps. */
+@media (max-width: 1280px) {
+  .nav {
+    padding: 0 24px;
+  }
+  .main {
+    padding: 12px 24px 32px;
+  }
+}
+@media (max-width: 1100px) {
+  .tab-label {
+    display: none;
+  }
+  .tab {
+    padding: 8px 11px;
+  }
+}
+@media (max-width: 760px) {
+  .nav {
+    grid-template-columns: 1fr auto;
+    height: auto;
+    padding: 12px 16px;
+    row-gap: 12px;
+  }
+  .tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .repo-chip,
+  .nav-search,
+  .wallet-pill .mono {
+    display: none;
+  }
+  .wallet-pill {
+    padding: 5px;
+  }
+  .main {
+    padding: 8px 16px 28px;
+  }
+  .page-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .display {
+    font-size: 28px;
+    line-height: 34px;
+  }
+}
+
+.not-found {
+  align-items: center;
+  text-align: center;
+  padding-top: 80px;
+}

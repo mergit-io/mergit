@@ -1,0 +1,97 @@
+.wl-top {
+  display: grid;
+  grid-template-columns: 480px 1fr;
+  gap: 16px;
+}
+.wl-card {
+  border-radius: 24px;
+  padding: 26px;
+  height: 262px;
+  background: var(--wallet-card);
+  border: 1px solid var(--wallet-card-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.wl-balance {
+  font-size: 44px;
+  line-height: 48px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+}
+.wl-unit {
+  font-size: 20px;
+  color: var(--ink2);
+}
+.wl-copy:hover {
+  color: var(--ink);
+}
+.wl-address {
+  font-size: 14px;
+}
+.wl-team {
+  font-size: 20px;
+}
+.wl-stats dd {
+  margin: 0;
+}
+.wl-stat {
+  font-size: 24px;
+  line-height: 30px;
+}
+.wl-outbox {
+  padding: 0 20px 14px;
+}
+.wl-outbox-cell {
+  flex: 1;
+  padding: 12px;
+}
+.wl-outbox-value {
+  font-size: 20px;
+}
+.wl-lag-wrap {
+  padding: 16px 20px;
+}
+.wl-row {
+  min-height: 48px;
+}
+.wl-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.wl-bottom {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 16px;
+}
+.wl-top > *,
+.wl-bottom > * {
+  min-width: 0;
+}
+.wl-lag {
+  display: flex;
+}
+.wl-lag svg {
+  max-width: 100%;
+}
+
+@media (max-width: 1200px) {
+  .wl-top,
+  .wl-bottom {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .wl-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+  .wl-card {
+    height: auto;
+    gap: 24px;
+  }
+  .wl-balance {
+    font-size: 36px;
+    line-height: 40px;
+  }
+}

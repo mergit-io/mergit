@@ -1,0 +1,81 @@
+.nr-wrap {
+  display: flex;
+  justify-content: center;
+}
+.nr-col {
+  width: 900px;
+  max-width: 100%;
+  padding-top: 18px;
+}
+.nr-head {
+  align-items: center;
+  text-align: center;
+}
+.nr-composer {
+  padding: 18px;
+  border-radius: 24px;
+  box-shadow: var(--composer-shadow);
+  transition: border-color 0.2s ease;
+}
+.nr-composer:focus-within {
+  border-color: var(--border-strong);
+}
+.nr-input {
+  display: block;
+  width: 100%;
+  resize: none;
+  font-size: 16px;
+  line-height: 26px;
+  padding: 6px 6px 0;
+  min-height: 96px;
+  caret-color: var(--azure);
+  field-sizing: content;
+}
+.nr-bar {
+  margin-top: 14px;
+}
+.nr-grid {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 16px;
+}
+.nr-grid > * {
+  min-width: 0;
+}
+.nr-plan-head {
+  padding-bottom: 8px;
+}
+.nr-steps {
+  list-style: none;
+}
+.nr-step {
+  padding: 9px 20px;
+  border-top: 1px solid var(--border);
+}
+.nr-template {
+  width: 100%;
+  text-align: left;
+  border-radius: 8px;
+  transition: transform 0.15s ease;
+}
+.nr-template:hover {
+  transform: translateX(2px);
+}
+.nr-template:hover .c2 {
+  color: var(--ink);
+}
+
+@media (max-width: 760px) {
+  .nr-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 400px) {
+  .nr-bar {
+    flex-wrap: wrap;
+  }
+  /* The count and send button wrap together and stay on the right. */
+  .nr-bar > .mono-s {
+    margin-left: auto;
+  }
+}

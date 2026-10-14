@@ -1,0 +1,49 @@
+.lb-podium {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.lb-podium > * {
+  min-width: 0;
+}
+.medal {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+}
+.medal-1 {
+  background: var(--medal-1-w);
+  color: var(--medal-1);
+}
+.medal-2 {
+  background: var(--medal-2-w);
+  color: var(--medal-2);
+}
+.medal-3 {
+  background: var(--medal-3-w);
+  color: var(--medal-3);
+}
+.lb-head {
+  padding-bottom: 10px;
+}
+.lb-bar {
+  width: 150px;
+}
+.bar-fill {
+  transform-origin: left;
+  animation: grow-x 0.8s cubic-bezier(0.3, 0.7, 0.2, 1) both;
+}
+
+@media (max-width: 1200px) {
+  .lb-podium {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .lb-podium {
+    grid-template-columns: 1fr;
+  }
+}
