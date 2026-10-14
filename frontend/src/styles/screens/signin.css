@@ -1,0 +1,105 @@
+.si {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 100vh;
+}
+.si > * {
+  min-width: 0;
+}
+.si-hero {
+  border-right: 1px solid var(--border);
+  padding: 48px 64px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 32px;
+}
+.si-title {
+  font-size: 46px;
+  line-height: 52px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+.si-lede {
+  font-size: 16px;
+  line-height: 26px;
+  max-width: 480px;
+}
+.si-float {
+  width: 420px;
+  max-width: 100%;
+  padding: 16px;
+  border-radius: 18px;
+  box-shadow: var(--float-shadow);
+  animation: float 6s ease-in-out infinite;
+}
+@keyframes float {
+  50% {
+    transform: translateY(-6px);
+  }
+}
+.si-form-wrap {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  background: var(--surface);
+  padding: 32px 16px;
+}
+.si-toggle {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+}
+.si-form {
+  width: 380px;
+  max-width: 100%;
+}
+.si-provider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 46px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-weight: 500;
+  transition: background-color 0.15s ease;
+}
+.si-provider:hover {
+  background: var(--soft);
+}
+.si-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.si-brand {
+  font-size: 18px;
+}
+.si-stats {
+  list-style: none;
+}
+/* Google's brand blue, the same in both themes. */
+.si-google {
+  font-weight: 700;
+  color: #4285f4;
+}
+.si-signup {
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .si {
+    grid-template-columns: 1fr;
+  }
+  .si-hero {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 32px 20px;
+  }
+  .si-title {
+    font-size: 34px;
+    line-height: 40px;
+  }
+}

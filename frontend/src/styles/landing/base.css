@@ -1,0 +1,246 @@
+/*
+ * Landing page base. Measurements come from the 1920px-wide design video:
+ * a length written as calc(N * var(--u)) is N px at 1920 and scales down
+ * with the viewport below that. Phones override sizes at the bottom.
+ */
+.landing {
+  --u: min(1px, calc(100vw / 1920));
+  --l-sans: Manrope, system-ui, sans-serif;
+  --l-mono: "JetBrains Mono", ui-monospace, monospace;
+  --l-ease: cubic-bezier(0.3, 0.7, 0.2, 1);
+  font-family: var(--l-sans);
+  color: var(--l-ink);
+  background: var(--l-bg);
+  font-size: max(15px, calc(19 * var(--u)));
+  line-height: 1.5;
+  overflow-x: clip;
+}
+.l-container {
+  width: min(calc(1626 * var(--u)), calc(100% - 32px));
+  margin-inline: auto;
+}
+
+/* Type */
+.l-eyebrow {
+  display: block;
+  font-family: var(--l-mono);
+  font-size: max(10px, calc(14 * var(--u)));
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--l-muted);
+}
+.l-eyebrow.small {
+  font-size: max(10px, calc(14 * var(--u)));
+}
+.l-h2 {
+  margin-top: max(14px, calc(30 * var(--u)));
+  font-size: max(34px, calc(74 * var(--u)));
+  line-height: 1.06;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  max-width: calc(1010 * var(--u));
+}
+.l-lede {
+  margin-top: max(14px, calc(30 * var(--u)));
+  max-width: calc(1010 * var(--u));
+  font-size: max(16px, calc(24 * var(--u)));
+  line-height: 1.5;
+  color: var(--l-muted);
+}
+.l-mono {
+  font-family: var(--l-mono);
+  font-size: max(11px, calc(16 * var(--u)));
+}
+.landing .muted {
+  color: var(--l-muted);
+}
+.landing .green {
+  color: var(--l-green-ink);
+}
+.l-gradient-text {
+  background: linear-gradient(90deg, var(--l-purple), var(--l-green));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Brand */
+.l-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(14 * var(--u));
+  font-size: max(20px, calc(30 * var(--u)));
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.l-brand .brand-mark {
+  width: max(34px, calc(48 * var(--u))) !important;
+  height: max(34px, calc(48 * var(--u))) !important;
+}
+
+/* Buttons */
+.l-btn,
+.l-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(10 * var(--u));
+  height: max(40px, calc(57 * var(--u)));
+  padding: 0 max(18px, calc(30 * var(--u)));
+  border-radius: 999px;
+  font-size: max(14px, calc(19 * var(--u)));
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    transform 0.2s var(--l-ease),
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
+}
+.l-btn {
+  background: var(--l-btn);
+  color: var(--l-btn-ink);
+  border: 0;
+}
+.l-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px -12px rgba(14, 16, 24, 0.45);
+}
+.l-btn:active,
+.l-btn-ghost:active {
+  transform: scale(0.97);
+}
+.l-btn-ghost {
+  background: var(--l-card);
+  color: var(--l-ink);
+  border: 1px solid var(--l-line);
+}
+.l-btn-ghost:hover {
+  border-color: var(--l-faint);
+}
+.l-btn-lg {
+  height: max(48px, calc(72 * var(--u)));
+  padding: 0 max(22px, calc(37 * var(--u)));
+  font-size: max(15px, calc(22 * var(--u)));
+}
+
+/* Pills */
+.l-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: max(3px, calc(5 * var(--u))) max(9px, calc(14 * var(--u)));
+  border-radius: 999px;
+  font-size: max(11px, calc(15 * var(--u)));
+  font-weight: 600;
+  white-space: nowrap;
+}
+.l-pill.green {
+  background: var(--l-mint-wash);
+  color: var(--l-green-ink);
+}
+.l-pill.purple {
+  background: var(--l-purple-wash);
+  color: var(--l-purple);
+}
+.l-pill.gray {
+  background: var(--l-gray-wash);
+  color: var(--l-muted);
+  font-weight: 500;
+}
+.l-pill.white {
+  background: var(--l-card);
+  color: var(--l-muted);
+  font-weight: 500;
+}
+.l-pill.rose {
+  background: var(--l-rose-wash);
+  color: #c23a5e;
+}
+.l-pill.mono {
+  font-family: var(--l-mono);
+  font-weight: 500;
+}
+
+.l-card {
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: calc(28 * var(--u));
+}
+
+.live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--l-green);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--l-green) 50%, transparent);
+  animation: live 1.8s ease-out infinite;
+}
+@keyframes live {
+  70% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: currentColor;
+  animation: caret 0.9s steps(1) infinite;
+}
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Scroll reveal: elements blur and rise in once their section is in view. */
+.l-reveal {
+  opacity: 0;
+  filter: blur(8px);
+  transform: translateY(14px);
+  transition:
+    opacity 0.7s var(--l-ease),
+    filter 0.7s var(--l-ease),
+    transform 0.7s var(--l-ease);
+}
+.in .l-reveal {
+  opacity: 1;
+  filter: none;
+  transform: none;
+}
+
+/* Sections */
+.l-section {
+  padding: max(64px, calc(150 * var(--u))) 0;
+}
+.l-white {
+  background: var(--l-bg);
+}
+.l-gray {
+  background: var(--l-alt);
+}
+.l-head.split {
+  display: grid;
+  grid-template-columns: 1fr calc(668 * var(--u));
+  gap: 0;
+  align-items: end;
+}
+.l-head.split .l-lede {
+  margin-top: 0;
+}
+
+.landing :focus-visible {
+  outline: 2px solid var(--l-purple);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .l-reveal {
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}

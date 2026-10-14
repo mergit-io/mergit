@@ -1,0 +1,171 @@
+.rw-grid {
+  display: grid;
+  grid-template-columns: 1fr 368px;
+  gap: 16px;
+}
+.rw-grid > * {
+  min-width: 0;
+}
+.rw-canvas {
+  position: relative;
+  height: 436px;
+  overflow: hidden;
+  flex: none;
+}
+.rw-canvas-top {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.rw-stage {
+  position: absolute;
+  inset: 56px 0 0 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.rw-zoom {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 420px;
+  transform-origin: 50% 0;
+  transition: transform 0.3s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.rw-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.rw-edges path {
+  fill: none;
+  stroke: var(--dag-edge);
+  stroke-width: 1.5;
+  stroke-dasharray: 1;
+  /* Rest drawn; the animation starts from undrawn, so reduced motion still shows the edges. */
+  animation: draw 0.7s cubic-bezier(0.3, 0.7, 0.2, 1) both;
+}
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+.dnode {
+  position: absolute;
+  width: 232px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  box-shadow: var(--node-shadow);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    translate 0.2s ease;
+}
+.dnode:hover {
+  translate: 0 -1px;
+  border-color: var(--border-strong);
+}
+.dnode.sel {
+  border-color: var(--ink);
+  box-shadow: var(--node-ring);
+}
+.rw-zoom-ctl {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  display: flex;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+  z-index: 2;
+}
+.rw-zoom-ctl button {
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.rw-zoom-ctl button:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+.rw-alt {
+  position: absolute;
+  inset: 60px 0 0 0;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+.rw-alt .bar i {
+  background: var(--azure);
+}
+.rw-log {
+  flex: 1;
+  min-height: 180px;
+}
+.rw-log-head {
+  padding-bottom: 8px;
+}
+.rw-log-list {
+  list-style: none;
+}
+.rw-log-list li {
+  padding: 6px 20px;
+}
+.rw-row {
+  min-height: 52px;
+}
+.rw-track {
+  max-width: 420px;
+}
+.dnode-meta {
+  align-items: flex-end;
+  gap: 2px;
+}
+.rw-zoom-ctl button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.rw-empty {
+  align-items: flex-start;
+  padding: 32px;
+  max-width: 640px;
+}
+.rw-panel {
+  min-height: 0;
+  overflow: auto;
+}
+.rw-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.rw-pre {
+  padding: 14px;
+  white-space: pre-wrap;
+  color: var(--ink2);
+}
+
+@media (max-width: 1200px) {
+  .rw-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .rw-log .row {
+    flex-wrap: wrap;
+  }
+  /* Room under the last row, so the zoom control clears the centred proof node. */
+  .rw-canvas {
+    height: 480px;
+  }
+}

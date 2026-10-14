@@ -1,0 +1,53 @@
+/* Theme switch, View Transitions path: the new snapshot is revealed by a clip-path
+   animation started in theme.ts, so turn off the default cross-fade. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Theme switch, fallback path: briefly animate colours on everything. */
+.theme-fade,
+.theme-fade *,
+.theme-fade *::before,
+.theme-fade *::after {
+  transition-property:
+    background-color, background, border-color, color, fill, stroke, box-shadow, outline-color !important;
+  transition-duration: 0.32s !important;
+  transition-timing-function: ease !important;
+}
+
+/* Route change: content settles in from slightly below. */
+.page-enter {
+  animation: page-in 0.36s cubic-bezier(0.3, 0.7, 0.2, 1) both;
+}
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* Bars and connectors fill from the left. */
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* List items appear in sequence on first render. */
+.rise {
+  animation: page-in 0.4s cubic-bezier(0.3, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 35ms);
+}
+
+/* Reduced motion: no animation at all, so content never waits on a frame tick
+   to become visible (entrance animations start from opacity 0). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
