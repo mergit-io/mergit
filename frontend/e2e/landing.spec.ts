@@ -169,6 +169,8 @@ test.describe("scroll story", () => {
   };
 
   test("the lean story: hero, the problem, one settlement flow that plays itself, and the closer", async ({ page }) => {
+    // The splash, then real playback of a flow (about 14 s from its first step to its last) at its own pace.
+    test.slow();
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto("/");
@@ -204,6 +206,8 @@ test.describe("scroll story", () => {
   });
 
   test("the flows story is still there: both flows play themselves", async ({ page }) => {
+    // The splash, then real playback of a flow (about 14 s from its first step to its last) at its own pace.
+    test.slow();
     await page.goto("/?story=flows");
     await expect(page.locator(".story")).toHaveAttribute("data-variant", "flows");
     await expect(page.locator(".splash")).toBeHidden({ timeout: 9000 });
@@ -239,6 +243,8 @@ test.describe("scroll story", () => {
 
   test("nav links land on their story sections", async ({ page }) => {
     await page.goto("/");
+    // The nav fades in only once the logo splash clears (heroIntro.ts).
+    await expect(page.locator(".splash")).toBeHidden({ timeout: 9000 });
     const nav = page.getByRole("navigation", { name: "Sections" });
     await expect(nav.getByRole("link")).toHaveText(["The problem", "How it works", "FAQ"]);
     await nav.getByRole("link", { name: "How it works" }).click();
