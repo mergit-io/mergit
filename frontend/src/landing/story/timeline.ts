@@ -14,7 +14,7 @@ import { playHeroIntro } from "./heroIntro";
 import { helpers } from "./motion";
 import { buildScenes } from "./scenes";
 import { FLOW_RATE, flowsFor, snapPlan, STORY_START, STORY_T, variantTrack, type Variant } from "./storyConfig";
-import { snapTarget } from "./track";
+import { EDGE_PX, snapTarget } from "./track";
 
 gsap.registerPlugin(ScrollTrigger, MotionPathPlugin);
 
@@ -69,7 +69,7 @@ export function mountStory(root: HTMLElement, artSvg: SVGSVGElement, variant: Va
     const pos = () => driver.p * track.total;
     const sync = () => {
       // A flow starts again whenever the page is above it. Scrolling back up into it from below leaves it at its end.
-      for (const f of flows) if (pos() < track.flowSpan(f.id).from) clocks.set(f.id, f.start);
+      for (const f of flows) if (pos() < track.flowSpan(f.id).from - EDGE_PX) clocks.set(f.id, f.start);
       tl.time(track.timeAt(pos(), clockOf));
     };
 

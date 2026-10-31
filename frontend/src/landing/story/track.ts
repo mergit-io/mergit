@@ -15,6 +15,12 @@ export type Piece =
 
 type Placed = Piece & { p0: number; p1: number };
 
+/**
+ * Piece edges carry float noise (56.2 - 54.8 is 1.4000000000000057), while the page rests on whole or device pixels.
+ * A position this close below an edge counts as past it, so a page snapped to a flow's start is inside the flow.
+ */
+export const EDGE_PX = 1;
+
 export type Track = {
   /** Pixels of scrolling from the first moment of the story to the last. */
   total: number;
@@ -47,10 +53,10 @@ export function buildTrack(start: number, pieces: Piece[]): Track {
 
   const locate = (px: number) => {
     const x = Math.min(total, Math.max(0, px));
-    let index = placed.findIndex((c) => x < c.p1);
+    let index = placed.findIndex((c) => x < c.p1 - EDGE_PX);
     if (index < 0) index = placed.length - 1;
     const piece = placed[index] as Placed;
-    return { index, piece, e: (x - piece.p0) / piece.px };
+    return { index, piece, e: Math.min(1, Math.max(0, (x - piece.p0) / piece.px)) };
   };
 
   const timeAt = (px: number, clockOf: (flow: string) => number) => {

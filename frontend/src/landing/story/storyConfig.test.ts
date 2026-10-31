@@ -81,6 +81,17 @@ describe("how long each story is to scroll", () => {
     expect(total("lean")).toBeLessThan(5_500);
   });
 
+  it("a page snapped to a flow's start on a whole pixel is inside the flow, so the flow plays", () => {
+    for (const v of ["lean", "flows"] as const) {
+      const track = variantTrack(v);
+      for (const f of flowsFor(v)) {
+        const { from } = track.flowSpan(f.id);
+        expect(track.locate(Math.round(from)).piece.kind).toBe("play");
+        expect(track.locate(Math.floor(from)).piece.kind).toBe("play");
+      }
+    }
+  });
+
   it("each flow that plays is one screen of scrolling or a little more, not five", () => {
     for (const v of ["lean", "flows"] as const) {
       const track = variantTrack(v);

@@ -61,6 +61,19 @@ describe("buildTrack", () => {
     expect(track.locate(9999)).toMatchObject({ index: 3, e: 1 });
   });
 
+  it("a page resting on a whole pixel at a flow's start is inside the flow, despite float noise in the edge", () => {
+    // 56.2 - 54.8 is 1.4000000000000057, so this flow starts a hair after pixel 364.
+    const noisy = buildTrack(54.8, [
+      { kind: "scrub", from: 54.8, to: 56.2, px: (56.2 - 54.8) * 260 },
+      { kind: "play", flow: "a", px: 1000 },
+    ]);
+    const { from } = noisy.flowSpan("a");
+    expect(from).toBeGreaterThan(364);
+    expect(noisy.locate(Math.round(from)).piece.kind).toBe("play");
+    expect(noisy.locate(Math.floor(from)).piece.kind).toBe("play");
+    expect(noisy.locate(Math.round(from)).e).toBe(0);
+  });
+
   it("knows where a flow starts and ends on the page", () => {
     expect(track.flowSpan("a")).toEqual({ from: 1000, to: 1500 });
     expect(() => track.flowSpan("nope")).toThrow();
