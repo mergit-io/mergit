@@ -1,4 +1,4 @@
-"""Every browser-facing API route must be forwarded by Caddy on app.mergit.site.
+"""Every browser-facing API route must be forwarded by Caddy on mergit.site.
 
 The web app and the API share that one origin (deploy/Caddyfile): a path Caddy does not list is answered by
 the static site, so a new route works in tests and fails for people. A route added without a line in the
@@ -19,8 +19,8 @@ INTERNAL = ("/v0/internal", "/v0/chain-events")
 
 def _proxied_patterns() -> list[str]:
     text = CADDYFILE.read_text()
-    block = re.search(r"app\.mergit\.site \{.*?@api path ([^\n]+)", text, re.S)
-    assert block, "the app.mergit.site block has no `@api path` matcher"
+    block = re.search(r"(?m)^mergit\.site \{.*?@api path ([^\n]+)", text, re.S)
+    assert block, "the mergit.site block has no `@api path` matcher"
     return block.group(1).split()
 
 
@@ -44,7 +44,7 @@ def _browser_paths() -> list[str]:
 def test_every_browser_route_is_proxied_to_the_api() -> None:
     patterns = _proxied_patterns()
     missing = [p for p in _browser_paths() if not any(fnmatch(p, pat) for pat in patterns)]
-    assert missing == [], f"app.mergit.site would serve the web app, not the API, for: {missing}"
+    assert missing == [], f"mergit.site would serve the web app, not the API, for: {missing}"
 
 
 def test_the_internal_routes_stay_off_the_public_origin() -> None:

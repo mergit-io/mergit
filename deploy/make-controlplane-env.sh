@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Writes deploy/secrets/api.env and deploy/secrets/worker.env (mode 600, git-ignored) for compose.controlplane.yaml.
-#   deploy/make-controlplane-env.sh [app-domain]        default app.mergit.site. On a laptop pass the page's host WITH its port,
+#   deploy/make-controlplane-env.sh [app-domain]        default mergit.site. On a laptop pass the page's host WITH its port,
 #                                                       e.g. localhost:5173: sign-in checks it against window.location.host.
 # The service tokens are copied from deploy/secrets/testnet.env (run make-testnet-env.sh first) so the gateway and the
 # control plane agree. MERGIT_AGENT_KEY_1 comes from ../../mergit-contracts/.env.services. The model keys are read from
@@ -9,7 +9,7 @@
 # (default openai/gpt-oss-120b) and LLM_PROVIDER=anthropic|groq to force one. Prints names only, never values.
 set -euo pipefail
 cd "$(dirname "$0")"
-domain=${1:-app.mergit.site}
+domain=${1:-mergit.site}
 svc=../../mergit-contracts/.env.services
 [ -e secrets/testnet.env ] || { echo "secrets/testnet.env missing: run make-testnet-env.sh first" >&2; exit 1; }
 [ -e "$svc" ] || { echo "$svc missing" >&2; exit 1; }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Builds mergit.site and app.mergit.site on the server into $SITES_DIR (default /srv/mergit/sites), which Caddy serves.
-#   deploy/server/build-sites.sh [web|app|all]      (default: all)
-# The app calls the API on its own origin (app.<domain>, proxied by Caddy); set API_URL to point it elsewhere.
+# Builds the site on the server into $SITES_DIR (default /srv/mergit/sites), which Caddy serves as mergit.site.
+#   deploy/server/build-sites.sh [app|web|all]      (default: app; `all` is the same, kept for the update script)
+# `web` is the old mock-data demo build and is no longer served. The app calls the API on its own origin (<domain>,
+# proxied by Caddy); set API_URL to point it elsewhere.
 # The app build reads the contract addresses from ../mergit-contracts/deployments/base-sepolia.json. Each site is built
 # into a new directory and swapped in only when the build succeeded, so a failed build never takes a live site down.
 set -euo pipefail
@@ -9,7 +10,7 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 dep=${DEPLOYMENT_FILE:-$repo/../mergit-contracts/deployments/base-sepolia.json}
 out=${SITES_DIR:-/srv/mergit/sites}
 domain=${DOMAIN:-mergit.site}
-what=${1:-all}
+what=${1:-app}
 
 [ -f "$dep" ] || { echo "missing $dep: clone mergit-contracts next to this repository" >&2; exit 1; }
 [ -d "$out" ] && [ -w "$out" ] || { echo "$out must exist and be writable: sudo install -d -o $USER -g $USER $out" >&2; exit 1; }
@@ -31,7 +32,7 @@ build_web() {
 build_app() {
   rm -rf "$out/app.new"
   docker build -f "$repo/deploy/docker/sites.Dockerfile" --target app-dist --output "$out/app.new" \
-    --build-arg "VITE_API_URL=${API_URL:-https://app.$domain}" \
+    --build-arg "VITE_API_URL=${API_URL:-https://$domain}" \
     --build-arg "VITE_GATEWAY_URL=https://gateway.$domain" \
     --build-arg "VITE_STORE_URL=https://store.$domain" \
     --build-arg "VITE_ESCROW=$(field escrow)" \
@@ -47,7 +48,7 @@ build_app() {
 case "$what" in
   web) build_web ;;
   app) build_app ;;
-  all) build_web; build_app ;;
+  all) build_app ;;
   *) echo "usage: $0 [web|app|all]" >&2; exit 2 ;;
 esac
 echo "built: $(ls "$out" | tr '\n' ' ')"
