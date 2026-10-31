@@ -24,6 +24,12 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 _CHOICES = ("auto", "anthropic", "groq")
 
 
+def _has_anthropic_credential(env: Mapping[str, str]) -> bool:
+    """A real key, or the token a gateway such as Claude Lend hands out (used with ANTHROPIC_BASE_URL; the SDK
+    reads both from the environment)."""
+    return bool(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"))
+
+
 def llm_provider(environ: Mapping[str, str] | None = None) -> str:
     """`anthropic` or `groq`. With no key at all it answers `anthropic`: nothing changes for a deploy that has
     a key or
@@ -34,7 +40,7 @@ def llm_provider(environ: Mapping[str, str] | None = None) -> str:
         raise ConfigError(f"LLM_PROVIDER must be one of {', '.join(_CHOICES)}, not {choice!r}")
     if choice != "auto":
         return choice
-    if env.get("ANTHROPIC_API_KEY"):
+    if _has_anthropic_credential(env):
         return "anthropic"
     return "groq" if env.get("GROQ_API_KEY") else "anthropic"
 
@@ -43,11 +49,17 @@ def require_provider(environ: Mapping[str, str] | None = None) -> str:
     """The provider, or a clear error when the key it needs is missing."""
     env = os.environ if environ is None else environ
     provider = llm_provider(env)
-    key = "GROQ_API_KEY" if provider == "groq" else "ANTHROPIC_API_KEY"
-    if env.get(key):
+    if provider == "groq":
+        key, present = "GROQ_API_KEY", bool(env.get("GROQ_API_KEY"))
+    else:
+        key, present = "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN", _has_anthropic_credential(env)
+    if present:
         return provider
     if env.get("LLM_PROVIDER", "auto").strip().lower() in ("", "auto"):
-        raise ConfigError("set ANTHROPIC_API_KEY or GROQ_API_KEY: the planner and the agents need a model")
+        raise ConfigError(
+            "set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY: "
+            "the planner and the agents need a model"
+        )
     raise ConfigError(f"LLM_PROVIDER={provider} needs {key}")
 
 
