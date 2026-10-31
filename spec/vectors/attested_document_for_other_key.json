@@ -1,0 +1,101 @@
+{
+  "bundle": {
+    "blobs": {
+      "0x19ab7056e14d69c7880503d79f57b14337620d10826278da709731195ace0ddc": "eyJhbGxvd2VkX3BhdGhzIjpbInBheW1lbnRzLyoqIl0sImFydGlmYWN0X2hhc2hlcyI6bnVsbCwiY29tbWFuZCI6WyJweXRlc3QiLCJ0ZXN0cy90ZXN0X3JlZnVuZC5weSIsIi1xIl0sImV4cGVjdGVkX2V4aXQiOjAsImtpbmQiOiJleGVjLzAiLCJ0aW1lb3V0X3MiOjYwMCwid29ya2RpciI6Ii4ifQ==",
+      "0xd37053c8ba9b069245560ef869d557696983223f44ea0930f68f3ff73c7f3510": "eyJjaGFuZ2VkX3BhdGhzIjpbInBheW1lbnRzL3JlZnVuZC5weSJdLCJleGl0X2NvZGUiOjAsImhvbGRzIjp0cnVlLCJvYnNlcnZlZF9hcnRpZmFjdF9oYXNoZXMiOnt9LCJzdGRvdXRfZGlnZXN0IjoiMHg5YTE5ZThlZDIyYjNkZDlkMGUzMTk0ZGI4OTdhZDQ4ODVlYmI4OWY5NDk2MGFkMzhmYTU0MTAxN2VjOGI5NzY1In0="
+    },
+    "receipt": {
+      "attestation_document": "0x7b2272756e74696d655f6b6579223a22307832623539303745353931443130366531393534423035644339434135326334333232383336653434222c226d6561737572656d656e74223a2261616262636364646565666630303131323233333434353536363737383839396161626263636464656566663030313132323333343435353636373738383939222c226e6f745f6166746572223a323030303030303030302c227369676e6174757265223a2230786361326361353637343431613665656563626261386434363539336336376436626666353732646137653864333564626235313234316139333532356130303265303638646332306131313636366530656336376166316134646338396238376162623364396431313863666533646138336464383864666138633731343039227d",
+      "body_hash": "0x95c04734bf3b0ce0be1dc2b660bea5461cb708653577466a70fee3fc6219354c",
+      "ended_at": "2026-10-27T10:00:02.000Z",
+      "evidence": [
+        1
+      ],
+      "header": {
+        "agent_id": "1",
+        "attestation": {
+          "kind": "test-ed25519",
+          "measurement": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+          "runtime_key": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        },
+        "budget_usdc_units": "2000000",
+        "category": "test-repair",
+        "phi": {
+          "allowed_paths": [
+            "payments/**"
+          ],
+          "artifact_hashes": null,
+          "command": [
+            "pytest",
+            "tests/test_refund.py",
+            "-q"
+          ],
+          "expected_exit": 0,
+          "kind": "exec/0",
+          "timeout_s": 600,
+          "workdir": "."
+        },
+        "phi_hash": "0x19ab7056e14d69c7880503d79f57b14337620d10826278da709731195ace0ddc",
+        "plan_id": "0x05e2a97b051873a5cbc49722629a1791c8ff44a9a3abe2660a3f64847a581643",
+        "requester": "0x6e2d4a9c51b07f3e9d28c4a16b0e7f2c3d119a0b",
+        "runtime_image": "mergit-runtime:dev",
+        "started_at": "2026-10-27T10:00:00.000Z",
+        "task_id": "0x27cccb31d127fb312759aa19b3301504bb4adeb169f66cae4014b116a67158a1",
+        "version": "mergit-receipt/1"
+      },
+      "meter": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_calls": 0,
+        "usd_micros": 0,
+        "wall_ms": 100
+      },
+      "root": "0xfdca70f45e97146008897cdc9090528fc4e9e91b11e74b2a4164b2201697bb38",
+      "signature": "0x4579af84897a086cfd8bc79600a850807d5c56f675d3fb66ef7f3a1878bd7f202d927fc56b1781277db3c751bee5b11f6a60a4da986d3c1e7b2dca32774ce5171b",
+      "steps": [
+        {
+          "at": "2026-10-27T10:00:02.000Z",
+          "cost": {
+            "input_tokens": 0,
+            "model": null,
+            "output_tokens": 0,
+            "tool_calls": 0,
+            "usd_micros": 0,
+            "wall_ms": 100
+          },
+          "exit_status": 0,
+          "input_digest": "0x19ab7056e14d69c7880503d79f57b14337620d10826278da709731195ace0ddc",
+          "output_digest": "0xd37053c8ba9b069245560ef869d557696983223f44ea0930f68f3ff73c7f3510",
+          "seq": 1,
+          "type": "phi_eval"
+        }
+      ],
+      "terminal_hash": "0xc13817f2c6e1286db8b55a3a9fe04d819e41b27268b1c0eff159190a244727af"
+    }
+  },
+  "commitment": null,
+  "domain": {
+    "chain_id": 84532,
+    "registry": "0x0000000000000000000000000000000000000001"
+  },
+  "expect": {
+    "reasons": [
+      "ATTESTATION_KEY_MISMATCH"
+    ],
+    "status": "invalid"
+  },
+  "name": "attested_document_for_other_key",
+  "now": 1800000000,
+  "policy": {
+    "test-ed25519": {
+      "measurements": [
+        "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+      ],
+      "roots": [
+        "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw="
+      ]
+    }
+  },
+  "requires": "test-attestation",
+  "signer": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+}

@@ -30,6 +30,7 @@ pub fn body_hash(r: &SealedReceipt) -> B256 {
     let o = v.as_object_mut().expect("a receipt is an object");
     o.remove("body_hash");
     o.remove("signature");
+    o.remove("attestation_document");
     jcs_hash(&v)
 }
 

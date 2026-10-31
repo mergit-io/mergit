@@ -21,6 +21,11 @@ export type Backend = {
   commitments?: Array<{ taskId: Hex; agentId: bigint; root: Hex; bodyHash: Hex; costMicros: bigint; block: number }>;
   /** Bundles the store serves, keyed by body hash (the only way the app may fetch them). */
   bundles?: Record<string, string>;
+  /**
+   * The wallet being linked already has its own account: linking is answered with 409 and an offer to merge (`"plain"`:
+   * a 409 with no offer). `POST /v0/auth/merge` then makes the session act as the wallet.
+   */
+  walletTaken?: { token: string; other: Record<string, unknown> } | "plain";
   /** False: no account uses the wallet, so signing in (not creating an account) with it is refused. */
   walletRegistered?: boolean;
   /** What GET /v0/auth/providers says is set up. Default: none, so only the wallet is offered. */
@@ -281,6 +286,15 @@ export async function mockBackend(page: Page, b: Backend = {}) {
       const started_at = "2026-10-30T10:00:00+00:00";
       b.me = { ...b.me, trial: { started_at } };
       return json(route, { started_at });
+    }
+    if (path === "/v0/auth/wallet/link" && b.walletTaken !== undefined) {
+      const taken = b.walletTaken;
+      if (taken === "plain") return json(route, { detail: "that wallet belongs to another account" }, 409);
+      return json(route, { detail: { code: "wallet_taken", merge_token: taken.token, other: taken.other } }, 409);
+    }
+    if (path === "/v0/auth/merge") {
+      b.me = { ...b.me, address: ME.toLowerCase(), wallets: [ME.toLowerCase()] };
+      return json(route, { address: ME.toLowerCase() });
     }
     if (path === "/v0/auth/wallet/link") {
       b.me = { ...b.me, address: ME.toLowerCase(), wallets: [ME.toLowerCase()] };

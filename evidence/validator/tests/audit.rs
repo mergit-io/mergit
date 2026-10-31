@@ -149,10 +149,7 @@ fn sealed_with(w: &World, t: B256, plan: B256, holds: bool, phi: Predicate) -> B
         phi,
         budget_usdc_units: "1000000".into(),
         runtime_image: "test".into(),
-        attestation: Attestation {
-            kind: UNATTESTED.into(),
-            dev_key: w.agent.runtime.address(),
-        },
+        attestation: Attestation::unattested(w.agent.runtime.address()),
         started_at: fmt_time(Utc::now()),
     };
     let result = PhiResult {

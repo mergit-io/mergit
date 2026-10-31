@@ -24,6 +24,9 @@ Treatment 1 is dark-only; treatment 3 is light-first.
 
 - `github-avatar.svg`, `-1024.png`, `-460.png`: night with the dashboard mesh; the symbol's
   farthest point is 76% of the circle's radius, so a circle crop keeps it whole.
+- `github-avatar-1024x576.svg`, `.png`: the same picture in 16:9. The symbol takes the same
+  share of the short side as in the square (390 of 576 px), centred; the glows keep their x
+  positions and radii, with y scaled to the new height.
 - `../marketing/`: og 1200x630 (dark + light), square 1080, landscape 1920x1080 (dark + light),
   story 1080x1920, GitHub repo preview 1280x640. Text is Onest outlines (600 headline,
   500 sub line), shaped with HarfBuzz kerning.

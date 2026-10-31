@@ -1,0 +1,83 @@
+name: rust
+
+on:
+  pull_request:
+    paths:
+      - "spec/**"
+      - "runtime/**"
+      - "verifier/**"
+      - "evidence/**"
+      - "chain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+  push:
+    branches: [main]
+    paths:
+      - "spec/**"
+      - "runtime/**"
+      - "verifier/**"
+      - "evidence/**"
+      - "chain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: test-attestation must not reach any release package
+        run: |
+          # The test attestation kind accepts documents anyone can mint. It may exist only in tests of
+          # mergit-verifier; no release-target package may enable the feature or even resolve ed25519-dalek.
+          # Positive control: the grep below must still match when the feature IS on, or the guard is blind.
+          control="$(cargo tree -e features --target all -p mergit-verifier --features test-attestation)"
+          # (The forward tree of the package that defines the feature does not print the feature itself, so
+          # ed25519-dalek is the signal that must match; a dependent enabling the feature also prints it.)
+          # Here-string, not a pipe: grep -q exits early and pipefail would turn the SIGPIPE into a failure.
+          if ! grep -q 'ed25519-dalek' <<<"$control"; then
+            echo "::error::guard grep no longer matches the feature (ed25519-dalek); update it"
+            exit 1
+          fi
+          status=0
+          for pkg in mergit-gateway mergit-store mergit-validator mergit-verifier mergit-verifier-wasm mergit-receipt-py; do
+            tree="$(cargo tree -e features --target all -p "$pkg")"
+            if grep -E 'test-attestation|ed25519-dalek' <<<"$tree"; then
+              echo "::error::$pkg resolves test-attestation or ed25519-dalek"
+              status=1
+            fi
+          done
+          exit $status
+      - run: cargo test -p mergit-verifier --features test-attestation
+      - run: cargo test -p mergit-receipt --features test-attestation,forgery-fixture

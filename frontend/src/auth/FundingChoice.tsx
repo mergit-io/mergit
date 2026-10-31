@@ -6,6 +6,7 @@ import { fundingChoiceNeeded } from "./account";
 import { useAuth } from "./context";
 import { useConnectWallet } from "./useConnectWallet";
 import { clearReopenRequest, reopenRequested } from "./walletGuide";
+import { MergePrompt } from "./MergePrompt";
 import { WalletPicker } from "./WalletPicker";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -130,7 +131,17 @@ export function FundingChoice() {
               <Icon name="wallet" size={16} />
               Connect a wallet
             </button>
-            {walletOpen && <WalletPicker busy={wallet.busy} onMetaMask={wallet.connect} />}
+            {walletOpen &&
+              (wallet.offer ? (
+                <MergePrompt
+                  offer={wallet.offer}
+                  busy={wallet.busy}
+                  onMerge={wallet.merge}
+                  onCancel={wallet.cancelMerge}
+                />
+              ) : (
+                <WalletPicker busy={wallet.busy} onMetaMask={wallet.connect} />
+              ))}
           </section>
         </div>
         <button

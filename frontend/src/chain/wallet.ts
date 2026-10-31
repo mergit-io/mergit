@@ -3,6 +3,7 @@ import { LIVE } from "../config/live";
 import { short, type Session } from "../auth/session";
 import { injected, switchChain, walletChainId } from "./client";
 import { NoAccountError, type Intent } from "../auth/intent";
+import { parseWalletTaken, WalletTakenError } from "../auth/merge";
 import { buildSignIn } from "./siwe";
 
 /** The API's address without a trailing slash. An empty one would send sign-in to the page's own origin. */
@@ -43,7 +44,7 @@ async function signWithWallet(onMessage?: (message: string) => void) {
   return { api, address, message, signature };
 }
 
-const walletSession = (address: Address): Session => ({
+export const walletSession = (address: Address): Session => ({
   address,
   addressShort: short(address),
   method: "browser",
@@ -76,7 +77,12 @@ export async function connectAndLinkWallet(onMessage?: (message: string) => void
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ message, signature }),
   });
-  if (link.status === 409) throw new Error("That wallet already belongs to another Mergit account.");
+  if (link.status === 409) {
+    // The wallet has its own account. When it is the same person's, they can merge it into this one.
+    const offer = parseWalletTaken(await link.json().catch(() => null));
+    if (offer) throw new WalletTakenError(offer);
+    throw new Error("That wallet already belongs to another Mergit account.");
+  }
   if (!link.ok) throw new Error("Mergit did not accept the signature. Try connecting the wallet again.");
   return walletSession(address);
 }

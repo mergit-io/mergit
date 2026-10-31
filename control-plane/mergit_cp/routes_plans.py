@@ -5,6 +5,7 @@ Approval fixes the agent picks and each task's ``phi_hash``, and writes ``plan.a
 in the same transaction. Inputs that would waste a planner call are rejected before the model is called.
 """
 
+import logging
 import re
 import uuid
 from typing import Annotated, Any, Literal
@@ -21,6 +22,8 @@ from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .events import enqueue
 from .llm import LLM, LLMUnavailable
 from .planner import CostSink, PlanningFailed, TaskDraft, check_tasks, plan_goal
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v0/plans", tags=["plans"])
 
@@ -151,6 +154,9 @@ async def create_plan(
     except PlanningFailed as failed:
         raise _problems(422, failed.problems) from failed
     except LLMUnavailable as down:
+        # The client sees only "unavailable"; the provider's reason (a rejected request, a missing key) is
+        # what an operator needs, so it goes to the log. It is the provider's reply, never our key.
+        log.warning("planner model unavailable: %s", down)
         raise HTTPException(status_code=502, detail="the planner model is unavailable") from down
 
     async with pool.connection() as conn, conn.transaction():
@@ -217,7 +223,7 @@ async def approve_plan(
             problems.extend(f"task {index}: unknown agent {a!r}" for a in picked if a not in known)
         if (
             principal.user_id is not None
-            and plan.requester == accounts.trial_address(principal.user_id)
+            and plan.requester in await accounts.trial_addresses(conn, principal.user_id)
             and body.funding != "credits"
         ):
             problems.append("a plan drafted on the free trial can only be funded from credits")

@@ -15,17 +15,21 @@ serde_json.workspace = true
 chrono.workspace = true
 base64.workspace = true
 thiserror.workspace = true
+# Optional: only the test-attestation feature (tests, gen_vectors) pulls it in. No release package enables it.
+mergit-verifier = { workspace = true, optional = true }
 
 [features]
 # Builds forged receipts for guard tests and test vectors. No service, binding or image enables it.
 forgery-fixture = []
+# Issues test-kind attestation documents. Test-only: no service, binding or image enables it.
+test-attestation = ["dep:mergit-verifier", "mergit-verifier/test-attestation"]
 
 [dev-dependencies]
 serde_json.workspace = true
 
 [[example]]
 name = "gen_vectors"
-required-features = ["forgery-fixture"]
+required-features = ["forgery-fixture", "test-attestation"]
 
 [[example]]
 name = "false_receipt"

@@ -169,6 +169,49 @@ test("connecting a wallet makes the session act as that wallet", async ({ page }
   expect(stored.address).toBe(ME);
 });
 
+test("a wallet that already has an account is offered a merge, and nothing moves until it is confirmed", async ({
+  page,
+}) => {
+  const token = "m".repeat(43);
+  const calls = await open(page, {
+    me: github,
+    providers: everything,
+    walletTaken: { token, other: { identities: [], wallets: 1, plans: 2, trial_started: false } },
+  });
+  await page.goto("/app");
+  const choice = page.getByRole("dialog", { name: "Choose your plan" });
+  await choice.getByRole("button", { name: /Connect a wallet/ }).click();
+  await choice.getByRole("button", { name: /MetaMask/ }).click();
+
+  const prompt = choice.getByRole("group", { name: "Merge accounts" });
+  await expect(prompt).toContainText("This wallet already has a Mergit account");
+  await expect(prompt).toContainText("It holds 1 wallet and 2 runs.");
+  expect(calls.some((c) => c.path === "/v0/auth/merge")).toBe(false);
+
+  // Cancel changes nothing and goes back to the wallet list.
+  await prompt.getByRole("button", { name: "Cancel" }).click();
+  await expect(choice.getByRole("group", { name: "Choose a wallet" })).toBeVisible();
+  expect(calls.some((c) => c.path === "/v0/auth/merge")).toBe(false);
+
+  await choice.getByRole("button", { name: /MetaMask/ }).click();
+  await choice.getByRole("button", { name: "Merge into this account" }).click();
+  await expect(choice).toBeHidden();
+  expect(calls.find((c) => c.path === "/v0/auth/merge")?.body).toEqual({ merge_token: token });
+  await expect(page.getByRole("link", { name: "Wallet and identity" })).toContainText(
+    `${ME.slice(0, 6)}…${ME.slice(-4)}`,
+  );
+});
+
+test("a conflict that is not a merge offer is shown as an error, not as a merge", async ({ page }) => {
+  await open(page, { me: github, providers: everything, walletTaken: "plain" });
+  await page.goto("/app");
+  const choice = page.getByRole("dialog", { name: "Choose your plan" });
+  await choice.getByRole("button", { name: /Connect a wallet/ }).click();
+  await choice.getByRole("button", { name: /MetaMask/ }).click();
+  await expect(choice.getByRole("alert")).toContainText("already belongs to another Mergit account");
+  await expect(choice.getByRole("group", { name: "Merge accounts" })).toHaveCount(0);
+});
+
 test("the choice can wait: look around first", async ({ page }) => {
   await open(page, { me: github, providers: everything });
   await page.goto("/app");

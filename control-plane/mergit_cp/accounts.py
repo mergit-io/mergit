@@ -39,7 +39,19 @@ class IdentityTaken(Exception):
 
 
 class WalletTaken(Exception):
-    """The wallet already belongs to a different user."""
+    """The wallet already belongs to a different user, ``owner``."""
+
+    def __init__(self, owner: UUID) -> None:
+        super().__init__("wallet belongs to another user")
+        self.owner = owner
+
+
+class OfferInvalid(Exception):
+    """A merge offer that is unknown, used, expired, or no longer true."""
+
+
+class OfferNotYours(Exception):
+    """A merge offer made for a different account."""
 
 
 def trial_address(user_id: UUID) -> str:
@@ -184,7 +196,9 @@ async def link_wallet(conn: Conn, user_id: UUID, address: str) -> None:
     cur = await conn.execute("SELECT user_id FROM wallets WHERE address = %s", (address,))
     row = await cur.fetchone()
     if row is None or row[0] != user_id:
-        raise WalletTaken
+        if row is None:  # wallets only go with their user, so this cannot happen; do not guess an owner
+            raise RuntimeError("wallet disappeared while it was being linked")
+        raise WalletTaken(row[0])
 
 
 async def owned_addresses(conn: Conn, user_id: UUID | None, session_address: str) -> list[str]:
@@ -192,7 +206,13 @@ async def owned_addresses(conn: Conn, user_id: UUID | None, session_address: str
     if user_id is None:
         return [session_address]
     cur = await conn.execute("SELECT address FROM wallets WHERE user_id = %s ORDER BY created_at", (user_id,))
-    return [*(r[0] for r in await cur.fetchall()), trial_address(user_id)]
+    return [*(r[0] for r in await cur.fetchall()), *await trial_addresses(conn, user_id)]
+
+
+async def trial_addresses(conn: Conn, user_id: UUID) -> list[str]:
+    """The user's own trial address, then those of every account that was merged into it."""
+    cur = await conn.execute("SELECT old_user_id FROM merged_users WHERE into_user_id = %s", (user_id,))
+    return [trial_address(user_id), *(trial_address(r[0]) for r in await cur.fetchall())]
 
 
 async def default_address(conn: Conn, user_id: UUID) -> str:
@@ -239,3 +259,83 @@ async def start_trial(conn: Conn, user_id: UUID) -> datetime:
     row = await cur.fetchone()
     assert row is not None
     return row[0]
+
+
+# --- merging two accounts of one person ------------------------------------------------------------------
+
+OFFER_TTL_S = 300
+
+
+async def offer_merge(conn: Conn, settings: Settings, keep: UUID, absorb: UUID, address: str) -> str:
+    """A one-time token: ``keep`` (signed in, and just proved it holds ``address``) may absorb ``absorb``."""
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(UTC) + timedelta(seconds=OFFER_TTL_S)
+    await conn.execute(
+        "INSERT INTO pending_merges (token_hash, keep_user, absorb_user, address, expires_at)"
+        " VALUES (%s, %s, %s, %s, %s)",
+        (token_hash(settings, f"merge:{token}"), keep, absorb, address, expires),
+    )
+    return token
+
+
+async def take_offer(conn: Conn, settings: Settings, token: str, caller: UUID) -> tuple[UUID, str]:
+    """Spends an offer and returns (the user to absorb, the wallet). Run inside the transaction that merges: a
+    refusal raised from here rolls the spend back, so a wrong caller does not burn the rightful one's offer.
+    """
+    cur = await conn.execute(
+        "UPDATE pending_merges SET used_at = now()"
+        " WHERE token_hash = %s AND used_at IS NULL AND expires_at > now()"
+        " RETURNING keep_user, absorb_user, address",
+        (token_hash(settings, f"merge:{token}"),),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        raise OfferInvalid
+    keep, absorb, address = row
+    if keep != caller:
+        raise OfferNotYours
+    cur = await conn.execute("SELECT user_id FROM wallets WHERE address = %s", (address,))
+    owner = await cur.fetchone()
+    if owner is None or owner[0] != absorb:
+        raise OfferInvalid  # the wallet changed hands since the offer was made
+    return absorb, address
+
+
+async def merge_summary(conn: Conn, user_id: UUID) -> dict[str, object]:
+    """What the other account holds, shown before anyone confirms."""
+    profile = await load_profile(conn, user_id)
+    cur = await conn.execute(
+        "SELECT count(*) FROM plans WHERE requester = ANY(%s)", (await owned_addresses(conn, user_id, ""),)
+    )
+    plans = await cur.fetchone()
+    return {
+        "identities": [{"provider": p, "label": label} for p, label in profile.identities],
+        "wallets": len(profile.wallets),
+        "plans": int(str(plans[0])) if plans else 0,
+        "trial_started": profile.trial_started_at is not None,
+    }
+
+
+async def merge_users(conn: Conn, keep: UUID, absorb: UUID) -> None:
+    """Moves everything ``absorb`` has to ``keep`` and deletes ``absorb``."""
+    if keep == absorb:
+        return
+    await conn.execute("UPDATE identities SET user_id = %s WHERE user_id = %s", (keep, absorb))
+    await conn.execute("UPDATE wallets SET user_id = %s WHERE user_id = %s", (keep, absorb))
+    await conn.execute(
+        "INSERT INTO wallet_interest (wallet, user_id, created_at)"
+        " SELECT wallet, %s, created_at FROM wallet_interest WHERE user_id = %s ON CONFLICT DO NOTHING",
+        (keep, absorb),
+    )
+    await conn.execute("UPDATE sessions SET user_id = %s WHERE user_id = %s", (keep, absorb))
+    await conn.execute(
+        "UPDATE users k SET display_name = COALESCE(k.display_name, a.display_name),"
+        " email = COALESCE(k.email, a.email), avatar_url = COALESCE(k.avatar_url, a.avatar_url),"
+        " trial_started_at = LEAST(k.trial_started_at, a.trial_started_at)"
+        " FROM users a WHERE k.user_id = %s AND a.user_id = %s",
+        (keep, absorb),
+    )
+    # Accounts already merged into the absorbed one now belong to the kept one, with the absorbed one itself.
+    await conn.execute("UPDATE merged_users SET into_user_id = %s WHERE into_user_id = %s", (keep, absorb))
+    await conn.execute("INSERT INTO merged_users (old_user_id, into_user_id) VALUES (%s, %s)", (absorb, keep))
+    await conn.execute("DELETE FROM users WHERE user_id = %s", (absorb,))

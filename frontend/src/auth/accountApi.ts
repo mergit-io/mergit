@@ -54,3 +54,29 @@ export async function startTrial(): Promise<void> {
   });
   if (!response.ok) throw new Error("Mergit could not start the trial. Try again in a moment.");
 }
+
+/** Confirms a merge the server offered. Returns the wallet the session acts as from now on. */
+export async function confirmMerge(
+  token: string,
+  base: string = apiBase(),
+  send: (url: string, init: RequestInit) => Promise<Response> = (url, init) => fetch(url, init),
+): Promise<string> {
+  let response: Response;
+  try {
+    response = await send(`${base}/v0/auth/merge`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ merge_token: token }),
+    });
+  } catch {
+    throw new Error("Mergit's API is unreachable. Check your connection and try again.");
+  }
+  if (response.status === 404) throw new Error("That offer has expired. Connect the wallet again to get a new one.");
+  if (response.status === 403) throw new Error("That offer belongs to a different account.");
+  if (response.status === 401) throw new Error("Your session has ended. Sign in again to continue.");
+  if (!response.ok) throw new Error("Mergit could not merge the accounts. Try again in a moment.");
+  const body = (await response.json().catch(() => null)) as { address?: unknown } | null;
+  if (typeof body?.address !== "string") throw new Error("Mergit's API did not answer like the merge service.");
+  return body.address;
+}

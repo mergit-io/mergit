@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from siwe import SiweMessage, VerificationError, generate_nonce  # pyright: ignore[reportMissingTypeStubs]
 
 from . import accounts
@@ -190,17 +190,66 @@ async def link_wallet(
     pool: PoolDep,
     mergit_session: Annotated[str | None, Cookie()] = None,
 ) -> dict[str, str]:
-    """The signed-in user proves they hold a wallet; from then on the session acts as that wallet."""
+    """The signed-in user proves they hold a wallet; from then on the session acts as that wallet.
+
+    A wallet that already has its own account is answered with 409 and a one-time offer to merge that account
+    into this one (``POST /v0/auth/merge``). The same person has proven both sides, but nothing moves until
+    they confirm.
+    """
     user_id = _member(principal)
     message = _checked_message(body, settings)
     address = message.address.lower()
     assert mergit_session
+    offer: dict[str, object] | None = None
     async with pool.connection() as conn, conn.transaction():
         await _consume_nonce(conn, message.nonce)
         try:
             await accounts.link_wallet(conn, user_id, address)
         except accounts.WalletTaken as taken:
-            raise HTTPException(status_code=409, detail="that wallet belongs to another account") from taken
+            offer = {
+                "code": "wallet_taken",
+                "merge_token": await accounts.offer_merge(conn, settings, user_id, taken.owner, address),
+                "other": await accounts.merge_summary(conn, taken.owner),
+            }
+        else:
+            await conn.execute(
+                "UPDATE sessions SET address = %s WHERE token_hash = %s",
+                (address, _token_hash(settings, mergit_session)),
+            )
+    if offer is not None:
+        # Raised after the transaction commits, so the offer survives the refusal.
+        raise HTTPException(status_code=409, detail=offer)
+    return {"address": address}
+
+
+class MergeBody(BaseModel):
+    merge_token: Annotated[str, Field(min_length=20, max_length=200)]
+
+
+@router.post("/merge")
+async def merge_accounts(
+    body: MergeBody,
+    principal: PrincipalDep,
+    settings: SettingsDep,
+    pool: PoolDep,
+    mergit_session: Annotated[str | None, Cookie()] = None,
+) -> dict[str, str]:
+    """Confirms a merge offered by ``/wallet/link``: the other account's wallets, sign-in methods and runs
+    join this one, and the session acts as the wallet from now on."""
+    keep = _member(principal)
+    assert mergit_session
+    async with pool.connection() as conn, conn.transaction():
+        try:
+            absorb, address = await accounts.take_offer(conn, settings, body.merge_token, keep)
+        except accounts.OfferInvalid as invalid:
+            raise HTTPException(
+                status_code=404, detail="that merge offer is unknown, used or expired"
+            ) from invalid
+        except accounts.OfferNotYours as not_yours:
+            raise HTTPException(
+                status_code=403, detail="that merge offer belongs to another account"
+            ) from not_yours
+        await accounts.merge_users(conn, keep, absorb)
         await conn.execute(
             "UPDATE sessions SET address = %s WHERE token_hash = %s",
             (address, _token_hash(settings, mergit_session)),

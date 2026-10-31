@@ -30,7 +30,39 @@ pub struct PhiResult {
 #[serde(deny_unknown_fields)]
 pub struct Attestation {
     pub kind: String,
-    pub dev_key: Address,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_key: Option<Address>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_key: Option<Address>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<String>,
+}
+
+impl Attestation {
+    /// The v0 attestation: no hardware claim, signed by a developer key.
+    pub fn unattested(dev_key: Address) -> Self {
+        Self {
+            kind: crate::UNATTESTED.into(),
+            dev_key: Some(dev_key),
+            runtime_key: None,
+            measurement: None,
+        }
+    }
+
+    /// An attestation of `kind` claiming a runtime key and a measurement.
+    pub fn attested(kind: &str, runtime_key: Address, measurement: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            dev_key: None,
+            runtime_key: Some(runtime_key),
+            measurement: Some(measurement.into()),
+        }
+    }
+
+    /// The key the receipt signature must recover to.
+    pub fn signing_key(&self) -> Option<Address> {
+        self.dev_key.or(self.runtime_key)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -119,6 +151,8 @@ pub struct SealedReceipt {
     pub terminal_hash: B256,
     pub body_hash: B256,
     pub signature: Bytes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_document: Option<Bytes>,
 }
 
 /// What the receipt store accepts and serves: the receipt and the raw bytes behind its digests (base64).

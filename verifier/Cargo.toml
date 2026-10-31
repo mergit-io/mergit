@@ -12,6 +12,12 @@ alloy-sol-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
+# Test-only attestation kind. Optional, and enabled by no other crate: the CI guard fails the build if it
+# (or the feature) reaches a release package.
+ed25519-dalek = { version = "2", optional = true }
+
+[features]
+test-attestation = ["dep:ed25519-dalek"]
 
 [[bin]]
 name = "mergit-verify"
@@ -19,3 +25,6 @@ path = "src/main.rs"
 
 [dev-dependencies]
 serde_json.workspace = true
+# Reseals v1 test bundles in tests/common. The verifier must not depend on the runtime, so not mergit-receipt.
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true

@@ -90,6 +90,15 @@ address. Free-credit work is audited on every task and earns no transferable rep
 person making many GitHub or Google accounts to collect more credits; the per-plan cap and the daily limit bound
 the cost, and a real fix needs a decision on identity proofing that has not been made. There is no paid tier yet.
 
+**Merging two accounts of one person.** A wallet belongs to one account, or "sign in with this wallet" would be
+ambiguous. Linking a wallet that already has its own account is answered with `409`, `code: "wallet_taken"` and a
+one-time `merge_token` (five minutes, bound to both accounts and that wallet, stored only as a hash). The person has
+then proved both sides: they are signed in to this account and they just signed with that wallet. If they confirm
+(`POST /v0/auth/merge`), the other account's wallets, sign-in methods, "Notify me" votes and earliest trial start move
+to this one, its runs stay visible (including free-trial runs, whose requester is a hash of the old user id), and the
+other account is deleted. It cannot be undone. Nothing moves without the confirmation. Not covered: a GitHub, Google or
+email identity that already belongs to another account is still refused (`identity_taken`), not offered for merge.
+
 ## Outcomes, retries and escalation (plan task O6)
 
 The worker never calls back into this service with a job's result; it writes it straight to the job's own

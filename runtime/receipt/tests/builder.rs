@@ -40,10 +40,7 @@ fn header() -> Header {
         phi,
         budget_usdc_units: "2000000".into(),
         runtime_image: "mergit-runtime:dev".into(),
-        attestation: Attestation {
-            kind: "unattested".into(),
-            dev_key: signer().address(),
-        },
+        attestation: Attestation::unattested(signer().address()),
         started_at: fmt_time(Utc.with_ymd_and_hms(2026, 10, 27, 10, 0, 0).unwrap()),
     }
 }
@@ -274,4 +271,148 @@ fn bundle_round_trips_through_json() {
     let b = sealed();
     let back: Bundle = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
     assert_eq!(back, b);
+}
+
+const MEASUREMENT: &str = "sha256:aabbcc";
+
+fn v1_header(kind: &str) -> Header {
+    let mut h = header();
+    h.version = VERSION_V1.into();
+    h.attestation = Attestation::attested(kind, signer().address(), MEASUREMENT);
+    h
+}
+
+fn seal(b: ReceiptBuilder, who: &PrivateKeySigner) -> Result<Bundle, BuildError> {
+    let end = Utc.with_ymd_and_hms(2026, 10, 27, 10, 0, 9).unwrap();
+    b.seal_with_phi(passing(), cost(1), end, who, &domain())
+}
+
+#[test]
+fn v1_header_with_attested_kind_builds_and_carries_document() {
+    let doc = b"opaque document bytes".to_vec();
+    let plain = seal(ReceiptBuilder::new(v1_header("tee")).unwrap(), &signer()).unwrap();
+    assert_eq!(plain.receipt.attestation_document, None);
+    let b = ReceiptBuilder::new(v1_header("tee"))
+        .unwrap()
+        .with_attestation_document(doc.clone());
+    let bundle = seal(b, &signer()).unwrap();
+    assert_eq!(bundle.receipt.attestation_document, Some(doc.into()));
+    assert_eq!(bundle.receipt.body_hash, plain.receipt.body_hash);
+}
+
+#[test]
+fn v0_with_attested_kind_rejected() {
+    let mut h = v1_header("tee");
+    h.version = VERSION.into();
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+}
+
+#[test]
+fn v1_with_unattested_kind_rejected() {
+    let mut h = header();
+    h.version = VERSION_V1.into();
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+}
+
+#[test]
+fn v1_missing_measurement_rejected() {
+    let mut h = v1_header("tee");
+    h.attestation.measurement = None;
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+}
+
+#[test]
+fn v1_missing_runtime_key_or_with_dev_key_rejected() {
+    let mut h = v1_header("tee");
+    h.attestation.runtime_key = None;
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+    let mut h = v1_header("tee");
+    h.attestation.dev_key = Some(signer().address());
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+}
+
+#[test]
+fn seal_rejects_signer_other_than_runtime_key() {
+    let b = ReceiptBuilder::new(v1_header("tee")).unwrap();
+    assert_eq!(
+        seal(b, &PrivateKeySigner::random()).unwrap_err(),
+        BuildError::SignerMismatch
+    );
+}
+
+#[cfg(feature = "test-attestation")]
+#[test]
+fn builder_carries_an_issued_test_document() {
+    let doc = mergit_verifier::test_kind::issue_test_document(
+        signer().address(),
+        MEASUREMENT,
+        4_000_000_000,
+    );
+    let b = ReceiptBuilder::new(v1_header(mergit_verifier::test_kind::TEST_KIND))
+        .unwrap()
+        .with_attestation_document(doc.clone());
+    let bundle = seal(b, &signer()).unwrap();
+    assert_eq!(bundle.receipt.attestation_document, Some(doc.into()));
+}
+
+#[test]
+fn v0_header_with_runtime_key_rejected() {
+    let mut h = header();
+    h.attestation.runtime_key = Some(signer().address());
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+}
+
+#[test]
+fn v0_header_with_measurement_rejected() {
+    let mut h = header();
+    h.attestation.measurement = Some(MEASUREMENT.into());
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+}
+
+#[test]
+fn v0_header_without_dev_key_rejected() {
+    let mut h = header();
+    h.attestation.dev_key = None;
+    assert!(matches!(
+        ReceiptBuilder::new(h),
+        Err(BuildError::AttestationNotUnattested)
+    ));
+}
+
+#[test]
+fn unattested_with_document_cannot_seal() {
+    let b = ReceiptBuilder::new(header())
+        .unwrap()
+        .with_attestation_document(b"doc".to_vec());
+    assert_eq!(
+        seal(b, &signer()).unwrap_err(),
+        BuildError::AttestationNotUnattested
+    );
+}
+
+#[test]
+fn v1_attested_without_document_still_seals() {
+    let bundle = seal(ReceiptBuilder::new(v1_header("tee")).unwrap(), &signer()).unwrap();
+    assert_eq!(bundle.receipt.attestation_document, None);
 }

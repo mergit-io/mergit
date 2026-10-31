@@ -6,6 +6,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { isTrialSession } from "../../auth/account";
 import { useAuth } from "../../auth/context";
 import { useConnectWallet } from "../../auth/useConnectWallet";
+import { MergePrompt } from "../../auth/MergePrompt";
 import { WalletPicker } from "../../auth/WalletPicker";
 import { injected, switchChain, walletChainId } from "../../chain/client";
 import { formatUsdc } from "../../chain/funding";
@@ -88,7 +89,16 @@ export function LiveWallet() {
                 {connectWallet.error}
               </p>
             )}
-            <WalletPicker busy={connectWallet.busy} onMetaMask={connectWallet.connect} />
+            {connectWallet.offer ? (
+              <MergePrompt
+                offer={connectWallet.offer}
+                busy={connectWallet.busy}
+                onMerge={connectWallet.merge}
+                onCancel={connectWallet.cancelMerge}
+              />
+            ) : (
+              <WalletPicker busy={connectWallet.busy} onMetaMask={connectWallet.connect} />
+            )}
           </div>
         ) : (
           <div className="wl-card">
