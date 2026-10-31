@@ -13,7 +13,7 @@ from typing import Any
 import mergit_receipt
 
 from .models import CommandResult, cap_output
-from .sandbox import SandboxPort
+from .sandbox import SandboxError, SandboxPort
 from .workspace import WorkspaceError
 
 
@@ -32,7 +32,10 @@ def run_phi(sandbox: SandboxPort, phi: dict[str, Any], max_output_bytes: int, ma
     sandbox.reset_processes()
     try:
         command = sandbox.run(list(phi["command"]), phi["workdir"], int(phi["timeout_s"]))
-    except WorkspaceError as exc:  # a workdir that escapes the checkout
+    except (
+        WorkspaceError,
+        SandboxError,
+    ) as exc:  # a workdir that escapes the checkout, or a sandbox that failed
         command = CommandResult(-1, b"", str(exc).encode(), 0, could_not_start=True)
     inconclusive = command.timed_out or command.could_not_start
 
