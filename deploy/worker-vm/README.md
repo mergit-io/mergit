@@ -52,6 +52,8 @@ Two workers on one queue are safe (`FOR UPDATE SKIP LOCKED`); they must have dif
 | Symptom | Cause |
 | --- | --- |
 | `another worker process is already running as 'x'` | Two processes share a `WORKER_ID`. Each id is one process. A killed worker never blocks its own restart. |
+| `cannot reach the database at start-up` | Postgres is down or unreachable from the VM. The worker exits 1 and Docker's restart policy tries again. |
+| `another process took the worker id ... while the database was unreachable` | After a database restart a second process claimed this id. This worker stops after its current job (exit 2). Give each process its own `WORKER_ID`. |
 | `REQUIRE_ALL_AGENT_KEYS is set and these are missing` | `agents-base-sepolia.json` lists an agent with no `MERGIT_AGENT_KEY_<id>`. Add it, or the requester loses an attempt on that agent. |
 | `WORKER_ID is not set` | The hostname is the container id and changes on every recreate, so the previous run's jobs and sandboxes are not found. Set it. |
 | Live steps missing in the app, jobs still finish | The API rejected `/v0/internal/progress`: `WORKER_VM_IP` is wrong or unset. Progress is best-effort. |

@@ -19,7 +19,7 @@ from mergit_cp.db import migrate
 from mergit_cp.pr_store import _CHANGES, PgPrStore
 from mergit_worker import jobs as worker_jobs
 from mergit_worker.jobs import PgJobStore
-from mergit_worker.startup import WorkerIdLock
+from mergit_worker.startup import WorkerIdLock, watch_lock
 
 pytestmark = pytest.mark.postgres
 
@@ -211,3 +211,93 @@ def test_the_role_can_take_the_lock_too(role_url: str) -> None:
     lock = WorkerIdLock.acquire(role_url, "role-lock-id")
     assert lock is not None
     lock.close()
+
+
+# -- the lock survives a database restart, and a dead database is a clean exit ---------------------------
+
+
+def _kill_lock_sessions(database_url: str) -> None:
+    with psycopg.connect(database_url, autocommit=True) as admin:
+        admin.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+            " WHERE pid <> pg_backend_pid() AND query LIKE '%pg_try_advisory_lock%'"
+        )
+
+
+def test_the_lock_is_taken_again_after_the_database_drops_the_session(database_url: str) -> None:
+    """What a cp_postgres restart does to a live worker: the session and its lock vanish. Without this the
+    process runs on unguarded and a second one with the same id would fail its jobs."""
+    lock = WorkerIdLock.acquire(database_url, "restart-held-id")
+    assert lock is not None
+    try:
+        assert lock.still_held() is True
+        _kill_lock_sessions(database_url)
+        assert lock.still_held() is True  # reconnected and locked again
+        assert WorkerIdLock.acquire(database_url, "restart-held-id") is None  # and it really is held
+    finally:
+        lock.close()
+
+
+def test_a_lock_another_process_took_while_the_database_was_down_is_reported_lost(database_url: str) -> None:
+    lock = WorkerIdLock.acquire(database_url, "stolen-id")
+    assert lock is not None
+    thief = None
+    try:
+        _kill_lock_sessions(database_url)
+        for _ in range(50):  # the drop is noticed almost at once; the thief takes the id
+            thief = WorkerIdLock.acquire(database_url, "stolen-id")
+            if thief is not None:
+                break
+            asyncio.run(asyncio.sleep(0.1))
+        assert thief is not None
+        assert lock.still_held() is False
+    finally:
+        lock.close()
+        if thief is not None:
+            thief.close()
+
+
+def test_an_unreachable_database_is_unknown_not_lost(database_url: str) -> None:
+    lock = WorkerIdLock.acquire(database_url, "down-id")
+    assert lock is not None
+    try:
+        lock._url = make_conninfo(database_url, port=1, connect_timeout=1)  # pyright: ignore[reportPrivateUsage]
+        _kill_lock_sessions(database_url)
+        assert lock.still_held() is None  # nothing can have taken the id from a database that is down
+    finally:
+        lock.close()
+
+
+def test_the_watchdog_calls_on_lost_once_and_stops(database_url: str) -> None:
+    import threading
+
+    class Lost:
+        def still_held(self) -> bool:
+            return False
+
+    calls: list[int] = []
+    watch_lock(Lost(), threading.Event(), 0.01, lambda: calls.append(1))  # type: ignore[arg-type]
+    assert calls == [1]
+
+
+def test_a_database_that_is_down_at_start_exits_cleanly_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from types import SimpleNamespace
+
+    from pydantic import SecretStr
+
+    import mergit_worker.__main__ as entry
+
+    cfg = SimpleNamespace(
+        worker_id="boot-id",
+        agents_file=Path("unused"),
+        require_all_agent_keys=False,
+        database_url=SecretStr("postgresql://nobody@127.0.0.1:1/none?connect_timeout=1"),
+    )
+    monkeypatch.setattr(entry, "load_config", lambda: cfg)
+    monkeypatch.setattr(entry, "agents_without_key", lambda _path: [])
+    with caplog.at_level("ERROR"):
+        assert entry.main() == 1
+    assert "cannot reach the database at start-up" in caplog.text
+    assert not any(r.exc_info for r in caplog.records)

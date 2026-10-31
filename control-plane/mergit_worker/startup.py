@@ -8,13 +8,15 @@ is tested without a Docker daemon.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
 import shutil
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import psycopg
@@ -89,21 +91,73 @@ class WorkerIdLock:
     id and removes every sandbox container labelled with it, so a second process sharing the id would
     destroy the first one's live work. Postgres releases the lock when the connection ends, whether the
     process exits cleanly or is killed, so a crashed worker never blocks its own restart.
+
+    The same rule means a database restart drops the lock while this process lives on. ``still_held``
+    notices that, reconnects and takes the lock again, and reports False only when another process has
+    taken the id in the meantime: that process has already failed this one's jobs, so this one must stop.
     """
 
-    def __init__(self, conn: psycopg.Connection[tuple[object, ...]]) -> None:
-        self._conn = conn
+    def __init__(self, conn: psycopg.Connection[tuple[object, ...]], database_url: str, key: str) -> None:
+        self._conn: psycopg.Connection[tuple[object, ...]] | None = conn
+        self._url = database_url
+        self._key = key
 
     @classmethod
     def acquire(cls, database_url: str, worker_id: str) -> WorkerIdLock | None:
-        conn = psycopg.connect(database_url, autocommit=True)  # pyright: ignore[reportArgumentType]
-        row = conn.execute(
-            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (f"mergit_worker:{worker_id}",)
-        ).fetchone()
-        if row is not None and row[0] is True:
-            return cls(conn)
-        conn.close()
-        return None
+        key = f"mergit_worker:{worker_id}"
+        conn = _take(database_url, key)
+        return None if conn is None else cls(conn, database_url, key)
+
+    def still_held(self) -> bool | None:
+        """True while the lock is held, False once another process owns the id, None while the database
+        cannot be reached (try again later: nothing can have taken the id from a database that is down)."""
+        try:
+            if self._conn is not None and not self._conn.closed:
+                self._conn.execute("SELECT 1")
+                return True
+        except psycopg.Error:
+            self._drop()
+        try:
+            self._conn = _take(self._url, self._key)
+        except psycopg.Error:
+            return None
+        if self._conn is None:
+            return False
+        log.warning("the worker-id lock was lost with the database connection and has been taken again")
+        return True
+
+    def _drop(self) -> None:
+        if self._conn is not None:
+            with contextlib.suppress(psycopg.Error):
+                self._conn.close()
+        self._conn = None
 
     def close(self) -> None:
-        self._conn.close()
+        self._drop()
+
+
+def _take(database_url: str, key: str) -> psycopg.Connection[tuple[object, ...]] | None:
+    conn = psycopg.connect(database_url, autocommit=True)  # pyright: ignore[reportArgumentType]
+    try:
+        row = conn.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (key,)).fetchone()
+    except BaseException:
+        conn.close()
+        raise
+    if row is not None and row[0] is True:
+        return conn
+    conn.close()
+    return None
+
+
+LOCK_CHECK_INTERVAL_S = 10.0
+
+
+def watch_lock(
+    lock: WorkerIdLock, stop: threading.Event, interval_s: float, on_lost: Callable[[], None]
+) -> None:
+    """Check the lock every ``interval_s`` until ``stop`` is set, calling ``on_lost`` once if another
+    process takes the worker id."""
+    while not stop.wait(interval_s):
+        if lock.still_held() is False:
+            on_lost()
+            return
