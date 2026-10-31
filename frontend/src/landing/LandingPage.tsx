@@ -31,7 +31,7 @@ import { LandingNav } from "./sections/LandingNav";
 import { ProofOfWork } from "./sections/ProofOfWork";
 import { Team } from "./sections/Team";
 import { CompactLanding } from "./CompactLanding";
-import { navFor, storyVariant } from "./story/storyConfig";
+import { footerFor, navFor, storyVariant } from "./story/storyConfig";
 import { StoryStage } from "./story/StoryStage";
 
 const INTRO_KEY = "mergit-intro-seen";
@@ -85,7 +85,7 @@ function StoryLanding() {
           <StoryStage variant={variant} />
           <Faq />
         </main>
-        <Footer />
+        <Footer columns={footerFor(variant)} />
       </div>
     </div>
   );

@@ -42,7 +42,8 @@ export function Cta() {
   );
 }
 
-export function Footer() {
+/** The footer. `columns` replaces the default links, for a layout that does not have every section. */
+export function Footer({ columns = footer.columns }: { columns?: typeof footer.columns }) {
   const { openConnect } = useAuth();
   return (
     <footer className="l-footer">
@@ -55,7 +56,7 @@ export function Footer() {
             <p className="muted">{footer.tagline}</p>
           </div>
           <nav className="footer-cols" aria-label="Footer">
-            {footer.columns.map((col) => (
+            {columns.map((col) => (
               <div key={col.title}>
                 <span className="l-eyebrow small">{col.title}</span>
                 <ul>
