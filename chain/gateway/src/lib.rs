@@ -107,6 +107,10 @@ pub fn app(state: AppState) -> Router {
     // Only the credits and commitments reads are called from browsers; events come server to server, with the shared token.
     let browser_reads = Router::new()
         .route("/v0/credits/{address}", axum::routing::get(credits::read))
+        .route(
+            "/v0/credits/account/{account}",
+            axum::routing::get(credits::read_account),
+        )
         .route("/v0/commitments", axum::routing::get(commitments::list))
         .layer(
             tower_http::cors::CorsLayer::new()

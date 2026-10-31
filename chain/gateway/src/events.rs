@@ -26,6 +26,52 @@ fn decimal<'de, D: Deserializer<'de>>(d: D) -> Result<U256, D::Error> {
     U256::from_str_radix(&s, 10).map_err(serde::de::Error::custom)
 }
 
+/// An account id or a grant reference: 1 to `max` characters of letters, digits and `_ . : -`. It becomes a database
+/// key and part of a URL, so nothing else gets through.
+fn token(s: String, what: &str, max: usize) -> Result<String, String> {
+    let ok = !s.is_empty()
+        && s.len() <= max
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'));
+    if ok {
+        Ok(s)
+    } else {
+        Err(format!(
+            "{what} must be 1 to {max} characters of letters, digits and _ . : -"
+        ))
+    }
+}
+
+pub fn valid_account(s: &str) -> bool {
+    token(s.to_string(), "account", 64).is_ok()
+}
+
+fn account<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    token(String::deserialize(d)?, "account", 64).map_err(serde::de::Error::custom)
+}
+
+fn optional_account<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(d)?
+        .map(|s| token(s, "credit_account", 64))
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
+fn reference<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    token(String::deserialize(d)?, "ref", 100).map_err(serde::de::Error::custom)
+}
+
+/// A positive amount no larger than one million USDC (10^12 base units), so it always fits the ledger's bigint.
+fn grant_amount<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let v = decimal(d)?;
+    match u64::try_from(v) {
+        Ok(n) if n > 0 && n <= 1_000_000_000_000 => Ok(n),
+        _ => Err(serde::de::Error::custom(
+            "amount must be between 1 and 10^12 base units",
+        )),
+    }
+}
+
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Funding {
@@ -42,6 +88,21 @@ pub struct PlanApproved {
     #[serde(deserialize_with = "decimal")]
     pub total_budget_usdc_units: U256,
     pub funding: Funding,
+    /// The control plane's user id. When present the free credits are that account's, whatever address requests.
+    #[serde(default, deserialize_with = "optional_account")]
+    pub credit_account: Option<String>,
+}
+
+/// Adds credit to an account (a redeemed code). Idempotent on `ref`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreditsGrant {
+    #[serde(deserialize_with = "account")]
+    pub account: String,
+    #[serde(rename = "amount_usdc_units", deserialize_with = "grant_amount")]
+    pub amount: u64,
+    #[serde(rename = "ref", deserialize_with = "reference")]
+    pub reference: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,6 +147,7 @@ pub enum Incoming {
     DispatchRequested(DispatchRequested),
     ReceiptSealed(ReceiptSealed),
     PlanClosed(PlanClosed),
+    CreditsGrant(CreditsGrant),
 }
 
 impl Incoming {
@@ -108,6 +170,7 @@ impl Incoming {
             }
             "receipt.sealed" => Self::ReceiptSealed(serde_json::from_value(payload).map_err(e)?),
             "plan.closed" => Self::PlanClosed(serde_json::from_value(payload).map_err(e)?),
+            "credits.grant" => Self::CreditsGrant(serde_json::from_value(payload).map_err(e)?),
             other => return Err(format!("unknown event type {other:?}")),
         })
     }

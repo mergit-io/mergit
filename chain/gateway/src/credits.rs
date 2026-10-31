@@ -3,7 +3,7 @@
 //! through the same Escrow, as Tier.Onboarding, so they are audited at p = 1 and earn no transferable
 //! reputation.
 
-use crate::events::PlanApproved;
+use crate::events::{CreditsGrant, PlanApproved, valid_account};
 use crate::ingress::Handled;
 use crate::outbox::enqueue_orchestrator;
 use crate::tx::TxError;
@@ -27,7 +27,12 @@ pub async fn fund(s: &AppState, p: &PlanApproved) -> Result<(), Handled> {
             "free credits are disabled on this gateway",
         ));
     };
-    let address = p.requester.to_string().to_lowercase();
+    // The ledger key: the account the control plane named, else the requesting address. The grant, the daily
+    // count and the refund all follow this key, so a user who requests from several addresses has one grant.
+    let address = p
+        .credit_account
+        .clone()
+        .unwrap_or_else(|| p.requester.to_string().to_lowercase());
     let plan = p.plan_id.to_string();
     let amount: u64 = p.total_budget_usdc_units.try_into().unwrap_or(u64::MAX);
 
@@ -154,20 +159,13 @@ pub async fn restore(db: &mut sqlx::PgConnection, plan_id: &str, refund: u64) ->
     .map(|_| ())
 }
 
-/// `GET /v0/credits/{address}`. An address that has never used credits sees the grant it would receive.
-pub async fn read(State(s): State<AppState>, Path(address): Path<String>) -> Response {
-    let Ok(addr) = address.parse::<Address>() else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "BAD_ADDRESS"})),
-        )
-            .into_response();
-    };
+/// A ledger's numbers by key. A key that has never used credits sees the grant it would receive.
+async fn view(s: &AppState, key: &str) -> Response {
     let row = sqlx::query(
         "select granted, spent, case when plans_day < current_date then 0 else plans_today end as plans_today
          from credits where address = $1",
     )
-    .bind(addr.to_string().to_lowercase())
+    .bind(key)
     .fetch_optional(&s.db)
     .await;
     let (granted, spent, plans_today) = match row {
@@ -192,4 +190,68 @@ pub async fn read(State(s): State<AppState>, Path(address): Path<String>) -> Res
         "plans_today": plans_today,
     }))
     .into_response()
+}
+
+/// `GET /v0/credits/{address}`.
+pub async fn read(State(s): State<AppState>, Path(address): Path<String>) -> Response {
+    let Ok(addr) = address.parse::<Address>() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "BAD_ADDRESS"})),
+        )
+            .into_response();
+    };
+    view(&s, &addr.to_string().to_lowercase()).await
+}
+
+/// `GET /v0/credits/account/{account}`: the same numbers for a control-plane account.
+pub async fn read_account(State(s): State<AppState>, Path(account): Path<String>) -> Response {
+    if !valid_account(&account) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "BAD_ACCOUNT"})),
+        )
+            .into_response();
+    }
+    view(&s, &account).await
+}
+
+/// Adds a redeemed code's amount to an account, once per `ref`. The account's default grant is created first
+/// if it does not exist yet, so a code stacks on the free credits instead of replacing them.
+pub async fn grant(s: &AppState, g: &CreditsGrant) -> Result<(), Handled> {
+    if s.treasury.is_none() {
+        return Err(Handled::NotImplemented(
+            "free credits are disabled on this gateway",
+        ));
+    }
+    let mut db = s.db.begin().await.map_err(db_err)?;
+    let fresh = sqlx::query(
+        "insert into credit_grants (ref, account, amount) values ($1, $2, $3) on conflict (ref) do nothing",
+    )
+    .bind(&g.reference)
+    .bind(&g.account)
+    .bind(g.amount as i64)
+    .execute(&mut *db)
+    .await
+    .map_err(db_err)?
+    .rows_affected();
+    if fresh == 0 {
+        return Ok(()); // this code was already credited
+    }
+    sqlx::query(
+        "insert into credits (address, granted) values ($1, $2) on conflict (address) do nothing",
+    )
+    .bind(&g.account)
+    .bind(s.cfg.free_credits_units as i64)
+    .execute(&mut *db)
+    .await
+    .map_err(db_err)?;
+    sqlx::query("update credits set granted = granted + $2 where address = $1")
+        .bind(&g.account)
+        .bind(g.amount as i64)
+        .execute(&mut *db)
+        .await
+        .map_err(db_err)?;
+    db.commit().await.map_err(db_err)?;
+    Ok(())
 }

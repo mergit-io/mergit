@@ -233,3 +233,197 @@ async fn credits_are_readable_from_the_web_app_origin(pool: PgPool) {
         "*"
     );
 }
+
+// -- per-account ledger and redeem-code grants -------------------------------------------------------------------
+
+fn approved_for(n: u8, amount: u64, requester: Address, account: Option<&str>) -> Value {
+    let (id, uuid) = plan(n);
+    let mut payload = json!({
+        "plan_id": id, "plan_uuid": uuid, "requester": requester,
+        "total_budget_usdc_units": amount.to_string(), "funding": "credits"
+    });
+    if let Some(a) = account {
+        payload["credit_account"] = json!(a);
+    }
+    envelope(
+        &format!("7f1c2b8e-9d4a-4e6f-8a1b-2c3d4e5f6a{n:02x}"),
+        "plan.approved",
+        payload,
+    )
+}
+
+fn grant(n: u8, account: &str, amount: u64, reference: &str) -> Value {
+    envelope(
+        &format!("9f1c2b8e-9d4a-4e6f-8a1b-2c3d4e5f6a{n:02x}"),
+        "credits.grant",
+        json!({"account": account, "amount_usdc_units": amount.to_string(), "ref": reference}),
+    )
+}
+
+async fn credits_of_account(w: &World, account: &str) -> Value {
+    let res = app(w.state.clone())
+        .oneshot(
+            Request::get(format!("/v0/credits/account/{account}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn one_account_shares_one_grant_across_requester_addresses(pool: PgPool) {
+    let w = world(pool).await;
+    let (a, b) = (Address::with_last_byte(0xa1), Address::with_last_byte(0xb2));
+    post(&w, &approved_for(20, 2_000_000, a, Some("user-1"))).await;
+    post(&w, &approved_for(21, 2_000_000, b, Some("user-1"))).await;
+    assert_eq!(
+        credits_of_account(&w, "user-1").await["remaining_usdc_units"],
+        "1000000",
+        "a second address does not get a second grant"
+    );
+    post(&w, &approved_for(22, 2_000_000, b, Some("user-1"))).await;
+    assert_eq!(denied_reasons(&w).await, vec!["no_credits"]);
+    assert_eq!(
+        credits_of_account(&w, "user-2").await["remaining_usdc_units"],
+        "5000000",
+        "another account has its own grant"
+    );
+    assert_eq!(
+        credits(&w, a).await["remaining_usdc_units"],
+        "5000000",
+        "the address-keyed ledger is untouched"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_grant_adds_to_the_account_once_per_ref(pool: PgPool) {
+    let w = world(pool).await;
+    assert_eq!(
+        post(&w, &grant(30, "user-1", 20_000_000, "code-1")).await,
+        StatusCode::OK
+    );
+    let c = credits_of_account(&w, "user-1").await;
+    assert_eq!(
+        c["granted_usdc_units"], "25000000",
+        "the free 5 plus the code"
+    );
+    assert_eq!(c["remaining_usdc_units"], "25000000");
+    // The same ref under a new event id (a redelivery, a replay) adds nothing.
+    post(&w, &grant(31, "user-1", 20_000_000, "code-1")).await;
+    assert_eq!(
+        credits_of_account(&w, "user-1").await["granted_usdc_units"],
+        "25000000"
+    );
+    post(&w, &grant(32, "user-1", 1_000_000, "code-2")).await;
+    assert_eq!(
+        credits_of_account(&w, "user-1").await["granted_usdc_units"],
+        "26000000"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn granted_credits_fund_plans_beyond_the_free_five(pool: PgPool) {
+    let w = world(pool).await;
+    let a = Address::with_last_byte(0xa1);
+    post(&w, &grant(33, "user-1", 20_000_000, "code-1")).await;
+    for n in 23..26 {
+        post(&w, &approved_for(n, 2_000_000, a, Some("user-1"))).await; // 6 USDC, more than the free 5
+    }
+    assert!(denied_reasons(&w).await.is_empty());
+    assert_eq!(
+        credits_of_account(&w, "user-1").await["remaining_usdc_units"],
+        "19000000"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_refund_on_close_goes_back_to_the_account(pool: PgPool) {
+    let w = world(pool).await;
+    let a = Address::with_last_byte(0xa1);
+    post(&w, &approved_for(26, 2_000_000, a, Some("user-9"))).await;
+    assert_eq!(
+        credits_of_account(&w, "user-9").await["remaining_usdc_units"],
+        "3000000"
+    );
+    let close = envelope(
+        "8f1c2b8e-9d4a-4e6f-8a1b-2c3d4e5f6a26",
+        "plan.closed",
+        json!({"plan_id": plan(26).0}),
+    );
+    post(&w, &close).await;
+    watcher::tick(&w.state).await.unwrap();
+    assert_eq!(
+        credits_of_account(&w, "user-9").await["remaining_usdc_units"],
+        "5000000"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_malformed_grant_or_account_is_refused(pool: PgPool) {
+    let w = world(pool).await;
+    let bad = |n: u8, payload: Value| {
+        envelope(
+            &format!("9f1c2b8e-9d4a-4e6f-8a1b-2c3d4e5f6b{n:02x}"),
+            "credits.grant",
+            payload,
+        )
+    };
+    let cases = [
+        bad(
+            1,
+            json!({"account": "u", "amount_usdc_units": 20000000, "ref": "r"}),
+        ), // a number
+        bad(
+            2,
+            json!({"account": "u", "amount_usdc_units": "0", "ref": "r"}),
+        ),
+        bad(
+            3,
+            json!({"account": "", "amount_usdc_units": "1", "ref": "r"}),
+        ),
+        bad(
+            4,
+            json!({"account": "a b", "amount_usdc_units": "1", "ref": "r"}),
+        ),
+        bad(
+            5,
+            json!({"account": "u/../x", "amount_usdc_units": "1", "ref": "r"}),
+        ),
+        bad(
+            6,
+            json!({"account": "u", "amount_usdc_units": "1", "ref": ""}),
+        ),
+        bad(
+            7,
+            json!({"account": "u", "amount_usdc_units": "1", "ref": "r", "extra": 1}),
+        ),
+        bad(
+            8,
+            json!({"account": "u", "amount_usdc_units": "99999999999999999999", "ref": "r"}),
+        ),
+        bad(
+            9,
+            json!({"account": "x".repeat(65), "amount_usdc_units": "1", "ref": "r"}),
+        ),
+    ];
+    for c in &cases {
+        assert_eq!(post(&w, c).await, StatusCode::BAD_REQUEST, "{c}");
+    }
+    let bad_account = approved_for(
+        27,
+        1_000_000,
+        Address::with_last_byte(1),
+        Some("not valid!"),
+    );
+    assert_eq!(post(&w, &bad_account).await, StatusCode::BAD_REQUEST);
+    // Positive controls: the strictness above is the validator's, not an unknown event type.
+    assert_eq!(
+        post(&w, &grant(40, "user-1", 20_000_000, "code-ok")).await,
+        StatusCode::OK
+    );
+    let ok = approved_for(28, 1_000_000, Address::with_last_byte(1), Some("user-1"));
+    assert_eq!(post(&w, &ok).await, StatusCode::OK);
+}
