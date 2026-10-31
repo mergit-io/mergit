@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     planner_max_tasks: int = Field(default=8, ge=1, le=32)
     plans_per_hour: int = Field(default=10, ge=1)
     """Planner calls per requester per hour. Each one spends on the model before anything is funded."""
+    redeem_attempts_per_hour: int = Field(default=10, ge=1)
+    """Redeem-code attempts per account per hour, right or wrong, so a code cannot be guessed."""
     goal_max_chars: int = Field(default=8000, ge=1)
     repo_hosts: Annotated[list[str], NoDecode] = ["github.com"]
     """Hosts a plan's repository may live on. The worker clones it, so anything else is refused here."""

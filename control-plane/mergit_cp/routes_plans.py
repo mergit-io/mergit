@@ -239,16 +239,22 @@ async def approve_plan(
             funding=body.funding,
             total_budget_usdc_units=total,
         )
+        payload = {
+            "plan_id": plan.plan_id,
+            "plan_uuid": plan.plan_uuid,
+            "requester": plan.requester,
+            "total_budget_usdc_units": str(total),
+            "funding": body.funding,
+        }
+        if body.funding == "credits" and principal.user_id is not None:
+            # The free credits belong to the account, not to whichever address requests: one grant per person,
+            # however many wallets they link. (A session from before accounts has none, and the gateway then
+            # falls back to the requester address.)
+            payload["credit_account"] = str(principal.user_id)
         await enqueue(
             conn,
             "plan.approved",
-            {
-                "plan_id": plan.plan_id,
-                "plan_uuid": plan.plan_uuid,
-                "requester": plan.requester,
-                "total_budget_usdc_units": str(total),
-                "funding": body.funding,
-            },
+            payload,
             plan_id=plan.plan_id,
             retry_window_s=settings.event_retry_window_s,
         )
