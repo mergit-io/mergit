@@ -444,11 +444,16 @@ def _find_name(fd: int, name: str, limit: int | None = None) -> str | None:
     `_MAX_SCAN_ENTRIES`) or cannot be scanned in full: "not found" is only true if all of it was looked at."""
     cap = _MAX_SCAN_ENTRIES if limit is None else limit
     seen = 0
-    stack = [(fd, PurePosixPath())]
-    opened: list[int] = []
+    # One frame per open directory: its fd, its path and the subdirectories still to visit. Only the
+    # directories on the current path are open, so descriptors grow with the depth of the tree, not its
+    # size; holding one per directory ran a normal checkout out of them under a 1024 soft limit.
+    frames: list[tuple[int, PurePosixPath, list[str]]] = []
+    cur: tuple[int, PurePosixPath] | None = (fd, PurePosixPath())
     try:
-        while stack:
-            cur_fd, cur_prefix = stack.pop()
+        while cur is not None:
+            cur_fd, cur_prefix = cur
+            subdirs: list[str] = []
+            frames.append((cur_fd, cur_prefix, subdirs))
             with os.scandir(cur_fd) as it:
                 for entry in it:
                     seen += 1
@@ -462,15 +467,24 @@ def _find_name(fd: int, name: str, limit: int | None = None) -> str | None:
                     if entry.is_symlink():
                         continue
                     if entry.is_dir(follow_symlinks=False):
-                        child = _openat(entry.name, os.O_RDONLY | os.O_DIRECTORY, cur_fd)
-                        opened.append(child)
-                        stack.append((child, cur_prefix / entry.name))
+                        subdirs.append(entry.name)
+            cur = None
+            while frames:
+                top_fd, top_prefix, pending = frames[-1]
+                if pending:
+                    child = pending.pop()
+                    cur = (_openat(child, os.O_RDONLY | os.O_DIRECTORY, top_fd), top_prefix / child)
+                    break
+                frames.pop()
+                if top_fd != fd:  # the caller owns and closes the fd it passed in
+                    os.close(top_fd)
         return None
-    except OSError as exc:  # for example out of file descriptors on a very wide tree
+    except OSError as exc:  # for example out of file descriptors on a pathologically deep tree
         raise WorkspaceError(f"cannot scan the checkout for a nested {name}: {exc}") from exc
     finally:
-        for f in opened:
-            os.close(f)
+        for f, _, _ in frames:
+            if f != fd:
+                os.close(f)
 
 
 def _openat(name: str, flags: int, dir_fd: int, mode: int = 0o644) -> int:

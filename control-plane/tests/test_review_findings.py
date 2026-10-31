@@ -177,6 +177,33 @@ def test_a_deep_chain_is_bounded_by_the_same_cap(tmp_path: Path) -> None:
         _scan(tmp_path, limit=20)
 
 
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="counts open descriptors through /proc")
+def test_the_scan_holds_descriptors_for_the_depth_of_the_tree_not_its_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Holding one descriptor per directory ran a checkout of about a thousand directories out of them
+    under the usual 1024 soft limit, so every git step on it failed."""
+    import os
+
+    import mergit_worker.workspace as ws
+
+    for i in range(300):
+        (tmp_path / f"d{i:03d}" / "inner").mkdir(parents=True)
+    real_openat = ws._openat
+    baseline = len(os.listdir("/proc/self/fd"))
+    peak = baseline
+
+    def counting(*a: Any, **k: Any) -> int:
+        nonlocal peak
+        opened = real_openat(*a, **k)
+        peak = max(peak, len(os.listdir("/proc/self/fd")))
+        return opened
+
+    monkeypatch.setattr(ws, "_openat", counting)
+    assert _scan(tmp_path) is None
+    assert peak - baseline < 10, f"{peak - baseline} descriptors open at once for a tree two levels deep"
+
+
 def test_the_default_cap_is_generous_enough_for_a_real_repository(sandbox: ProcessSandbox) -> None:
     assert sandbox.workspace.changed_paths() == []  # a normal checkout is nowhere near the default cap
 
