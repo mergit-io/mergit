@@ -80,7 +80,11 @@ class AnthropicLLM:
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> LLMResult:
-        if isinstance(self._client, AsyncAnthropic) and not self._client.api_key and not self._client.auth_token:
+        client = self._client
+        # Production always passes a real AsyncAnthropic; tests pass a bare stub without these
+        # attributes, which this isinstance check (unnecessary by the type hint alone) guards against.
+        is_real = isinstance(client, AsyncAnthropic)  # pyright: ignore[reportUnnecessaryIsInstance]
+        if is_real and not client.api_key and not client.auth_token:
             raise LLMUnavailable("ANTHROPIC_API_KEY is not set")
         try:
             response = await self._create(messages, tools, model, system, output_schema)
