@@ -63,6 +63,9 @@ class WorkerConfig(BaseSettings):
     # Under the 1800 s dispatch deadline, leaving time to run Φ, seal and publish.
     job_deadline_s: float = Field(default=1500.0, gt=0)
     worker_id: str | None = None  # defaults to the hostname; one process per id
+    # Refuse to start unless every agent in the agents file has a MERGIT_AGENT_KEY_<id>. Off by default: a
+    # worker may deliberately serve only some of the agents (startup.agents_without_key logs the rest).
+    require_all_agent_keys: bool = False
     # Opus 5.5's thinking tokens count against this; 8192 made a truncated turn too likely.
     model_max_tokens: int = Field(default=16_000, ge=256)
     poll_interval_s: float = Field(default=2.0, gt=0)

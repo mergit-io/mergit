@@ -28,5 +28,18 @@ case "$what" in
 esac
 case "$what" in all) deploy/server/build-sites.sh all ;; web|app) deploy/server/build-sites.sh "$what" ;; esac
 
+# `up -d` returns when the containers have started, not when the API has run its start-up migrations, so give it a
+# moment instead of failing a good deploy on the first request.
+wait_healthy() {  # name url [tries]
+  local tries=${3:-30}
+  for _ in $(seq "$tries"); do
+    if curl -fsS -m 5 "$2/healthz" >/dev/null 2>&1; then echo "$1: ok"; return 0; fi
+    sleep 2
+  done
+  echo "$1 did not become healthy at $2/healthz" >&2
+  return 1
+}
+
 compose ps
 for h in gateway store; do printf '%s: ' "$h"; curl -fsS "https://$h.mergit.site/healthz"; echo; done
+wait_healthy api https://api.mergit.site
