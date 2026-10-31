@@ -80,6 +80,8 @@ class AnthropicLLM:
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> LLMResult:
+        if isinstance(self._client, AsyncAnthropic) and not self._client.api_key:
+            raise LLMUnavailable("ANTHROPIC_API_KEY is not set")
         try:
             response = await self._create(messages, tools, model, system, output_schema)
         except APIError as exc:
