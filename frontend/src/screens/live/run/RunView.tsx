@@ -7,6 +7,7 @@ import { ClosePlan } from "./ClosePlan";
 import { PullRequestStep } from "./PullRequestStep";
 import { attemptsOf, stuckTasks, taskProgress } from "./progress";
 import { StepLog } from "./StepLog";
+import { TaskFlow } from "./TaskFlow";
 import { TaskDetail } from "./TaskDetail";
 
 /** A funded plan as it runs: every task's state, the selected task's attempts, and the live step log. */
@@ -31,6 +32,15 @@ export function RunView({
       {detail.state === "done" && <PullRequestStep planUuid={detail.plan_uuid} />}
       <section className="rw-grid">
         <div className="col g16 min0">
+          <section className="card pad24 col g12" aria-labelledby="flow-title">
+            <div className="row between">
+              <h2 id="flow-title" className="title">
+                Flow
+              </h2>
+              <span className="small c3">A task starts once every task above it has passed</span>
+            </div>
+            <TaskFlow detail={detail} agents={agents} selected={selected} onSelect={setSelected} />
+          </section>
           <section className="card" aria-labelledby="tasks-title">
             <div className="hd">
               <h2 id="tasks-title" className="title">
