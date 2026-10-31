@@ -1,0 +1,26 @@
+[package]
+name = "keyrelay"
+version = "0.1.0"
+edition = "2024"
+description = "One OpenAI-compatible proxy in front of many API keys: LIFO, rotates a key out when it is rate limited"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "fs"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "fs", "sync"] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

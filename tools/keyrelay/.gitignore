@@ -1,0 +1,7 @@
+target/
+*.keys
+keys.txt
+*-keys.txt
+proxy-token.txt
+keyrelay-state.json
+keyrelay.toml

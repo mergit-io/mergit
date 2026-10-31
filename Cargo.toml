@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# keyrelay is generated from the api-keys-ka-jugad skill and has its own lockfile; it is built and tested on its own.
+exclude = ["tools/keyrelay"]
 members = [
   "spec",
   "runtime/receipt",
