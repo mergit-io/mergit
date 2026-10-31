@@ -80,7 +80,7 @@ class AnthropicLLM:
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> LLMResult:
-        if isinstance(self._client, AsyncAnthropic) and not self._client.api_key:
+        if isinstance(self._client, AsyncAnthropic) and not self._client.api_key and not self._client.auth_token:
             raise LLMUnavailable("ANTHROPIC_API_KEY is not set")
         try:
             response = await self._create(messages, tools, model, system, output_schema)
@@ -234,8 +234,9 @@ def build_llm(environ: Mapping[str, str] | None = None) -> LLM:
     provider = llm_provider(env)
     if provider == "groq" and env.get("GROQ_API_KEY"):
         return GroqLLM(env["GROQ_API_KEY"])
-    if not env.get("ANTHROPIC_API_KEY"):
+    if not env.get("ANTHROPIC_API_KEY") and not env.get("ANTHROPIC_AUTH_TOKEN"):
         log.warning(
-            "no model key set (ANTHROPIC_API_KEY or GROQ_API_KEY): planning requests will fail until one is"
+            "no model key set (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY): "
+            "planning requests will fail until one is"
         )
     return AnthropicLLM()
