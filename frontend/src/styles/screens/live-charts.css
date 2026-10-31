@@ -157,21 +157,6 @@
   }
 }
 
-/* Overview layout for the chart rows. */
-.lc-flow-card {
-  min-height: 300px;
-}
-.lc-lists {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px;
-}
-@media (max-width: 1200px) {
-  .lc-lists {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 /* Task flow graph (live runs). Nodes reuse the design's .dnode from run.css. */
 .lc-flow {
   position: relative;
@@ -212,16 +197,6 @@
     stroke-dashoffset: -0.12;
   }
 }
-.lc-ghost {
-  pointer-events: none;
-  opacity: 0.85;
-}
-.lc-ghost-dot {
-  width: 32px;
-  height: 32px;
-  flex: none;
-  border-radius: 10px;
-}
 .lc-ghost-line {
   display: block;
   height: 9px;
@@ -231,17 +206,47 @@
 .lc-ghost-line.short {
   width: 50%;
 }
-.lc-ghost-dot,
 .lc-ghost-line {
   background: linear-gradient(90deg, var(--sunken) 0%, var(--surface) 50%, var(--sunken) 100%);
   background-size: 200% 100%;
   animation: lc-shimmer 1.8s ease-in-out infinite;
 }
-.lc-flow-empty .lc-empty {
-  inset: auto 0 10px 0;
-  display: block;
+
+/* Recent runs with nothing to list: the message, then faint rows that keep the table's shape. */
+.lc-table-empty > p {
+  padding: 16px 20px 4px;
 }
-.lc-flow-card > .row {
-  flex-wrap: wrap;
-  gap: 8px 12px;
+.lc-ghost-row {
+  pointer-events: none;
+}
+.lc-ghost-row:nth-child(3) {
+  opacity: 0.7;
+}
+.lc-ghost-row:nth-child(4) {
+  opacity: 0.45;
+}
+.lc-ghost-row:nth-child(5) {
+  opacity: 0.25;
+}
+.lc-ghost-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.lc-ghost-row .lc-ghost-when {
+  flex: none;
+  width: 56px;
+  margin-right: 28px;
+}
+.lc-ghost-pill {
+  display: block;
+  width: 84px;
+  height: 22px;
+  border-radius: 999px;
+  margin-right: 46px;
+  background: linear-gradient(90deg, var(--sunken) 0%, var(--surface) 50%, var(--sunken) 100%);
+  background-size: 200% 100%;
+  animation: lc-shimmer 1.8s ease-in-out infinite;
 }

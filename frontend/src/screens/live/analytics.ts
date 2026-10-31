@@ -147,3 +147,19 @@ export function niceMax(value: number): number {
   const step = (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
   return step * 4;
 }
+
+/** How long ago `iso` was, as the design's tables say it: "just now", "12m ago", "3h ago", "2d ago". */
+export function timeAgo(iso: string, now = new Date()): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const minutes = Math.floor((now.getTime() - t) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${String(minutes)}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)}h ago`;
+  return `${String(Math.floor(hours / 24))}d ago`;
+}
+
+/** Done runs per day as a share of the runs that finished that day, 0 where none finished. */
+export const dailySuccess = (days: DayCount[]) =>
+  days.map((d) => (d.done + d.failed === 0 ? 0 : d.done / (d.done + d.failed)));

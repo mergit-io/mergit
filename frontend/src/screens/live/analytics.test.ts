@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PlanState } from "../../api/types";
 import {
   costTrend,
+  dailySuccess,
   hourlyActivity,
   niceMax,
   receiptsByAgent,
@@ -9,6 +10,7 @@ import {
   runsByState,
   runsPerDay,
   successRate,
+  timeAgo,
   totalCost,
 } from "./analytics";
 
@@ -130,5 +132,23 @@ describe("receipts", () => {
 describe("niceMax", () => {
   it("is a round number that splits into four ticks", () => {
     expect([0, 1, 4, 5, 9, 17, 41, 130].map(niceMax)).toEqual([4, 4, 4, 8, 20, 20, 80, 200]);
+  });
+});
+
+describe("timeAgo", () => {
+  it("says how long ago, in the largest whole unit", () => {
+    const t = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+    expect(timeAgo(t(20_000), NOW)).toBe("just now");
+    expect(timeAgo(t(12 * 60_000), NOW)).toBe("12m ago");
+    expect(timeAgo(t(3 * 3_600_000), NOW)).toBe("3h ago");
+    expect(timeAgo(t(2 * 86_400_000), NOW)).toBe("2d ago");
+    expect(timeAgo("not a date", NOW)).toBe("");
+  });
+});
+
+describe("dailySuccess", () => {
+  it("is done over finished per day, zero where nothing finished", () => {
+    const day = (done: number, failed: number) => ({ day: "", date: "", started: done + failed, done, failed });
+    expect(dailySuccess([day(0, 0), day(3, 1), day(0, 2)])).toEqual([0, 0.75, 0]);
   });
 });

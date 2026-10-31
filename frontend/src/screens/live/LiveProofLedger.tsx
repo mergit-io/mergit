@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { agentName, useAgents } from "../../api/useAgents";
+import { usePlans } from "../../api/usePlans";
+import { paths } from "../../app/paths";
 import { PageHeader } from "../../components/PageHeader";
 import { Spark } from "../../components/Spark";
 import { listCommitments, type Commitment } from "../../chain/proofs";
 import { LIVE } from "../../config/live";
 import { useCountUp } from "../../hooks/useCountUp";
-import { costTrend, receiptsByAgent, receiptsPerBlock, totalCost } from "./analytics";
-import { BlockBars, ShareLegend, ShareRing } from "./charts";
+import { costTrend, hourlyActivity, receiptsByAgent, receiptsPerBlock, runsPerDay, totalCost } from "./analytics";
+import { AreaTrend, BlockBars, HourHeatmap, ShareLegend, ShareRing } from "./charts";
 
 const usd = (micros: bigint) => `$${(Number(micros) / 1_000_000).toFixed(4)}`;
 
@@ -44,6 +46,9 @@ function StatCard({
   );
 }
 
+const TREND_DAYS = 14;
+const TRACE = 5;
+const short = (hash: string) => `${hash.slice(0, 8)}…${hash.slice(-4)}`;
 const count = (n: number) => Math.round(n).toLocaleString("en-US");
 const dollars = (n: number) => `$${n.toFixed(4)}`;
 
@@ -58,6 +63,9 @@ export function LiveProofLedger() {
   }, []);
 
   const { agents } = useAgents();
+  const { plans } = usePlans();
+  const trend = runsPerDay(plans ?? [], TREND_DAYS);
+  const heat = hourlyActivity(plans ?? []);
   const list = rows ?? [];
   const blocks = receiptsPerBlock(list, 24);
   const costs = costTrend(list);
@@ -116,12 +124,27 @@ export function LiveProofLedger() {
         <div className="card pl-card rise" style={{ animationDelay: "200ms" }}>
           <div className="row between">
             <div className="col">
-              <h2 className="title">Receipts per block</h2>
-              <span className="small c2">Latest blocks with a receipt, newest on the right</span>
+              <h2 className="title">Runs over time</h2>
+              <span className="small c2">Your runs per day, last {TREND_DAYS} days</span>
             </div>
-            {blocks.length > 0 && <span className="badge b-ok">live</span>}
+            <div className="row g16 small c2" aria-hidden="true">
+              <span className="row g6">
+                <i className="pl-key" style={{ background: "var(--chart-purple)" }} /> Started
+              </span>
+              <span className="row g6">
+                <i className="pl-key" style={{ background: "var(--chart-green)" }} /> Done
+              </span>
+            </div>
           </div>
-          <BlockBars blocks={blocks} slots={32} />
+          <AreaTrend
+            labels={trend.map((d) => d.date)}
+            label={`Runs started and done per day over the last ${String(TREND_DAYS)} days`}
+            series={[
+              { name: "Started", values: trend.map((d) => d.started), color: "var(--chart-purple)" },
+              { name: "Done", values: trend.map((d) => d.done), color: "var(--chart-green)" },
+            ]}
+            empty={`No runs in the last ${String(TREND_DAYS)} days yet.`}
+          />
         </div>
         <div className="card pl-card rise" style={{ animationDelay: "280ms" }}>
           <div className="col">
@@ -138,6 +161,63 @@ export function LiveProofLedger() {
           </div>
         </div>
       </section>
+
+      <section className="pl-row pl-row3">
+        <div className="card pl-card rise" style={{ animationDelay: "360ms" }}>
+          <div className="row between">
+            <div className="col">
+              <h2 className="title">Receipts per block</h2>
+              <span className="small c2">Settlement throughput</span>
+            </div>
+            {blocks.length > 0 && <span className="badge b-ok">live</span>}
+          </div>
+          <BlockBars blocks={blocks} />
+        </div>
+        <div className="card pl-card rise" style={{ animationDelay: "440ms" }}>
+          <div className="col">
+            <h2 className="title">Run activity</h2>
+            <span className="small c2">Runs started per hour · 7 days</span>
+          </div>
+          <HourHeatmap
+            levels={heat.levels}
+            days={heat.days}
+            label={`Runs started per hour over the last 7 days; the busiest hour had ${String(heat.max)}`}
+          />
+        </div>
+        <div className="card pl-card rise" style={{ animationDelay: "520ms" }}>
+          <div className="row between">
+            <div className="col">
+              <h2 className="title">Settlement trace</h2>
+              <span className="small c2">Latest receipts on chain</span>
+            </div>
+            <span className="mono-s c3">block</span>
+          </div>
+          {list.length > 0 ? (
+            <ol className="pl-trace lc-trace">
+              {list.slice(0, TRACE).map((c, i) => (
+                <li key={c.taskId} className="rise" style={{ animationDelay: `${String(600 + i * 120)}ms` }}>
+                  <Link to={paths.proof(c.taskId)} className="pl-trace-row" aria-label={`Open receipt ${c.taskId}`}>
+                    <span className="mono cz w-120">{short(c.tx)}</span>
+                    <span className="grow ellipsis">
+                      <span className="mono">commitReceipt()</span>{" "}
+                      <span className="small c3">· {agentName(agents, c.agentId.toString())}</span>
+                    </span>
+                    <span className="mono cm">✓ {c.blockNumber.toString()}</span>
+                  </Link>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="lc-trace-empty">
+              <span className="small c3">Nothing settled yet. Receipts land here as agents finish.</span>
+              {[0, 1, 2].map((i) => (
+                <i key={i} style={{ animationDelay: `${String(i * 200)}ms` }} aria-hidden="true" />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
       <section className="card pad24">
         {error && <p className="c2">{error}</p>}
         {!error && rows === null && <p className="c2">Reading the chain…</p>}
