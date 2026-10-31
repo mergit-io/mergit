@@ -5,7 +5,8 @@ import { useAuth } from "../../auth/context";
 import { MergitLogo } from "../../components/MergitLogo";
 import symbolColour from "./assets/symbol-colour.svg?raw";
 import { storyCopy as c } from "./copy";
-import { mountStory, SCROLL_PX, STORY_START, STORY_T, ANCHORS } from "./timeline";
+import { anchorPx, anchorsFor, variantTrack, type Variant } from "./storyConfig";
+import { mountStory } from "./timeline";
 
 const Mask = ({ children, className }: { children: React.ReactNode; className?: string }) => (
   <span className="mask">
@@ -68,20 +69,29 @@ function Stepper({
             </div>
           ))}
         </div>
+        <div className="flow-ctl">
+          <button type="button" data-flow-act="toggle" aria-label="Pause the animation">
+            Pause
+          </button>
+          <button type="button" data-flow-act="replay" aria-label="Replay from the start">
+            Replay
+          </button>
+        </div>
       </div>
     </>
   );
 }
 
-export function StoryStage() {
+export function StoryStage({ variant }: { variant: Variant }) {
   const root = useRef<HTMLDivElement>(null);
   const art = useRef<SVGSVGElement>(null);
   const { openConnect } = useAuth();
+  const track = variantTrack(variant);
 
   useLayoutEffect(() => {
     if (!root.current || !art.current) return;
-    return mountStory(root.current, art.current);
-  }, []);
+    return mountStory(root.current, art.current, variant);
+  }, [variant]);
 
   const demo = (
     <button
@@ -96,9 +106,9 @@ export function StoryStage() {
   );
 
   return (
-    <div className="story" ref={root} style={{ height: `calc(${(STORY_T - STORY_START) * SCROLL_PX}px + 100vh)` }}>
-      {ANCHORS.map(([id, t]) => (
-        <span key={id} id={id} className="story-anchor" style={{ top: (t - STORY_START) * SCROLL_PX }} />
+    <div className="story" ref={root} data-variant={variant} style={{ height: `calc(${track.total}px + 100vh)` }}>
+      {anchorsFor(variant).map((a) => (
+        <span key={a[0]} id={a[0]} className="story-anchor" style={{ top: anchorPx(track, variant, a) }} />
       ))}
       <div className="story-pin">
         <div className="story-bg" aria-hidden="true">

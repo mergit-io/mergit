@@ -6,7 +6,7 @@ import { ThemeToggle } from "../../components/ThemeToggle";
 import { nav } from "../content";
 import { LIcon } from "../LIcon";
 
-export function LandingNav() {
+export function LandingNav({ links = nav }: { links?: readonly { label: string; href: string }[] }) {
   const { session, openConnect } = useAuth();
   return (
     <header className="l-nav l-container">
@@ -22,7 +22,7 @@ export function LandingNav() {
         <MergitLogo title="" className="l-logo" />
       </Link>
       <nav className="l-nav-links" aria-label="Sections">
-        {nav.map((item) => (
+        {links.map((item) => (
           <a key={item.href} href={item.href}>
             {item.label}
           </a>

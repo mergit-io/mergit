@@ -30,6 +30,7 @@ import { HowItWorks } from "./sections/HowItWorks";
 import { LandingNav } from "./sections/LandingNav";
 import { ProofOfWork } from "./sections/ProofOfWork";
 import { Team } from "./sections/Team";
+import { navFor, storyVariant } from "./story/storyConfig";
 import { StoryStage } from "./story/StoryStage";
 
 const INTRO_KEY = "mergit-intro-seen";
@@ -68,12 +69,14 @@ export function LandingPage() {
 }
 
 function StoryLanding() {
+  // `/?story=flows` and `/?story=full` are the earlier, longer stories, kept to compare with the lean default.
+  const [variant] = useState(() => storyVariant(window.location.search));
   return (
     <div className="landing story-mode">
       <div className="landing-page">
-        <LandingNav />
+        <LandingNav links={navFor(variant)} />
         <main>
-          <StoryStage />
+          <StoryStage variant={variant} />
           <Faq />
         </main>
         <Footer />

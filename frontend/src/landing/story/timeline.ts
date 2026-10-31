@@ -13,49 +13,12 @@ import { heroArt } from "./heroArt";
 import { playHeroIntro } from "./heroIntro";
 import { helpers } from "./motion";
 import { buildScenes } from "./scenes";
+import { FLOW_RATE, flowsFor, snapPlan, STORY_START, STORY_T, variantTrack, type Variant } from "./storyConfig";
+import { snapTarget } from "./track";
 
 gsap.registerPlugin(ScrollTrigger, MotionPathPlugin);
 
-/** Timeline length in seconds, and how many pixels of scroll one second takes. */
-export const STORY_T = 102;
-export const SCROLL_PX = 520;
-/** The scroll story starts just before the hero leaves; the hero itself plays on load. */
-export const STORY_START = 5.6;
-
-/** Section starts (seconds) that the nav links jump to. */
-export const ANCHORS = [
-  ["how-it-works", 18.6],
-  ["agents", 31],
-  ["proofs", 59.2],
-  ["integrations", 84.9],
-] as const;
-
-/** Resting points: every scene and every stepper step. Scrolling settles on the next one. */
-const STOPS = [
-  5.6, // hero
-  11.9, // problem: the metered side is done
-  14.2, // problem: both sides done
-  18.6, // how it works: the stack has opened
-  23.9, // how it works: all four steps labelled
-  31, // team 1: the planner lifts
-  37.9, // team 2: work dispatched
-  42.8, // team 3: approval granted
-  48.2, // team 4: hashes merged into one proof
-  52.8, // team 5: identities issued
-  59.2, // settlement 1: funded and held
-  64.4, // settlement 2: receipt built
-  69.6, // settlement 3: receipt checked
-  74.9, // settlement 4: agent paid
-  81, // settlement 5: refunded
-  84.9, // integrations: wired
-  88.7, // integrations: the loop closed
-  92.6, // credentials: boundary in place
-  96, // credentials: key blocked
-  100.5, // closer
-  STORY_T,
-];
-
-export function mountStory(root: HTMLElement, artSvg: SVGSVGElement) {
+export function mountStory(root: HTMLElement, artSvg: SVGSVGElement, variant: Variant) {
   const pin = root.querySelector<HTMLElement>(".story-pin");
   if (!pin) return undefined;
 
@@ -72,6 +35,7 @@ export function mountStory(root: HTMLElement, artSvg: SVGSVGElement) {
   window.addEventListener("resize", fit);
 
   let stopIntro: (() => void) | undefined;
+  const cleanups: (() => void)[] = [];
   const ctx = gsap.context(() => {
     const S = buildScenes(root);
     const tl = gsap.timeline({ defaults: { ease: "power3.out", lazy: false }, paused: true });
@@ -87,24 +51,108 @@ export function mountStory(root: HTMLElement, artSvg: SVGSVGElement) {
       syncMid(t);
     });
 
-    const span = STORY_T - STORY_START;
     // Render everything up to the start so later scenes sit in their resting state.
     tl.time(STORY_START);
     h.syncScenes(STORY_START);
     syncMid(STORY_START);
-    const scrub = tl.tweenFromTo(STORY_START, STORY_T, { paused: true, ease: "none" });
+
+    // Scrolling drives a 0 to 1 progress through the track. Most of it scrubs the timeline; on the two flows (team and
+    // settlement) the page rests while the flow plays by itself on its own clock, 2x the timeline's speed.
+    const track = variantTrack(variant);
+    const plan = snapPlan(variant, track);
+    const flows = flowsFor(variant);
+    const clocks = new Map<string, number>(flows.map((f) => [f.id, f.start]));
+    const clockOf = (id: string) => clocks.get(id) ?? 0;
+    let playing = true;
+
+    const driver = { p: 0 };
+    const pos = () => driver.p * track.total;
+    const sync = () => {
+      // A flow starts again whenever the page is above it. Scrolling back up into it from below leaves it at its end.
+      for (const f of flows) if (pos() < track.flowSpan(f.id).from) clocks.set(f.id, f.start);
+      tl.time(track.timeAt(pos(), clockOf));
+    };
+
+    const toggles = flows.length > 0 ? Array.from(root.querySelectorAll<HTMLElement>('[data-flow-act="toggle"]')) : [];
+    const showControls = () => {
+      for (const b of toggles) {
+        b.textContent = playing ? "Pause" : "Play";
+        b.setAttribute("aria-label", playing ? "Pause the animation" : "Play the animation");
+      }
+    };
+    const restart = (id: string, at: number) => {
+      clocks.set(id, at);
+      playing = true;
+      showControls();
+      sync();
+    };
+
+    const off: (() => void)[] = [];
+    const listen = (el: HTMLElement, type: string, fn: (e: Event) => void) => {
+      el.addEventListener(type, fn);
+      off.push(() => {
+        el.removeEventListener(type, fn);
+      });
+    };
+    for (const f of flows) {
+      const scene = h.q(f.id);
+      scene.querySelectorAll<HTMLElement>("[data-flow-act]").forEach((b) => {
+        listen(b, "click", () => {
+          if (b.dataset.flowAct === "replay" || clockOf(f.id) >= f.end) {
+            restart(f.id, f.start); // "Play" after the end plays it again
+            return;
+          }
+          playing = !playing;
+          showControls();
+        });
+      });
+      // Each step on the left jumps the flow to that step and carries on from there.
+      h.qa(`${f.id} .ri`).forEach((li, i) => {
+        li.setAttribute("role", "button");
+        li.tabIndex = 0;
+        const go = () => {
+          restart(f.id, f.steps[i] ?? f.start);
+        };
+        listen(li, "click", go);
+        listen(li, "keydown", (e) => {
+          const k = (e as KeyboardEvent).key;
+          if (k === "Enter" || k === " ") {
+            e.preventDefault();
+            go();
+          }
+        });
+      });
+    }
+    showControls();
+
+    const tick = (_time: number, deltaMs: number) => {
+      if (!playing) return;
+      const piece = track.locate(pos()).piece;
+      if (piece.kind !== "play") return;
+      const f = flows.find((x) => x.id === piece.flow);
+      const c = f ? clockOf(f.id) : 0;
+      if (!f || c >= f.end) return;
+      clocks.set(f.id, Math.min(f.end, c + (Math.min(deltaMs, 100) / 1000) * FLOW_RATE));
+      sync();
+    };
+    if (flows.length > 0) gsap.ticker.add(tick);
+    off.push(() => {
+      gsap.ticker.remove(tick);
+    });
+    cleanups.push(...off);
+
+    const scrub = gsap.fromTo(driver, { p: 0 }, { p: 1, ease: "none", paused: true, onUpdate: sync });
     ScrollTrigger.create({
       trigger: root,
       start: "top top",
       end: "bottom bottom",
-      scrub: 2,
+      scrub: variant === "full" ? 2 : 1,
       animation: scrub,
       snap: {
-        snapTo: STOPS.map((s) => (s - STORY_START) / span),
-        directional: true,
+        snapTo: (value: number, self?: ScrollTrigger) => snapTarget(value, self?.direction ?? 1, plan.stops, plan.free),
         inertia: false,
-        delay: 0.15,
-        duration: { min: 1, max: 3.4 },
+        delay: variant === "full" ? 0.15 : 0.12,
+        duration: variant === "full" ? { min: 1, max: 3.4 } : { min: 0.6, max: 2 },
         ease: "power2.inOut",
       },
     });
@@ -113,6 +161,9 @@ export function mountStory(root: HTMLElement, artSvg: SVGSVGElement) {
 
   return () => {
     window.removeEventListener("resize", fit);
+    cleanups.forEach((fn) => {
+      fn();
+    });
     stopIntro?.();
     ctx.revert();
     artSvg.replaceChildren();
