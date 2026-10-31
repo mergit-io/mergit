@@ -98,7 +98,9 @@ class AnthropicLLM:
             output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_input_tokens or 0,
             cache_write_tokens=usage.cache_creation_input_tokens or 0,
-            model=response.model,
+            # Anthropic resolves the alias to a dated snapshot id in the response; prices.toml and
+            # agents.toml are keyed by the alias, so the alias is what must be priced and recorded.
+            model=model,
         )
         if response.stop_reason in _UNUSABLE:
             raise LLMError(str(response.stop_reason), result)
@@ -217,7 +219,9 @@ class GroqLLM:
             output_tokens=reply.completion_tokens,
             cache_read_tokens=reply.cached_tokens,
             cache_write_tokens=0,
-            model=reply.model or model,
+            # prices.toml and agents.toml are keyed by the requested model id, not whatever the
+            # provider echoes back (see the matching fix in AnthropicLLM.complete).
+            model=model,
         )
         if reply.stop_reason in _UNUSABLE:
             raise LLMError(str(reply.stop_reason), result)
