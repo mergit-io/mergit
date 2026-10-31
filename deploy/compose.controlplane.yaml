@@ -14,8 +14,15 @@ services:
     restart: unless-stopped
     # The control plane does not share the gateway's database: both define tables named plans, tasks and outbox.
     environment: { POSTGRES_PASSWORD: mergit, POSTGRES_DB: mergit_cp }
-    volumes: ["cp_pgdata:/var/lib/postgresql/data"]
+    # deploy/postgres/pg_hba.conf: from outside this compose network, only the mergit_worker role may log in. The
+    # folder is mounted, not the file, so a `git pull` that replaces the file is seen (apply it with a restart).
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/mergit/pg_hba.conf"]
+    volumes: ["cp_pgdata:/var/lib/postgresql/data", "./postgres:/etc/postgresql/mergit:ro"]
     healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, retries: 30 }
+    # Only the worker VM connects from outside (deploy/worker-vm/README.md), as the restricted mergit_worker role.
+    # Loopback until CP_DB_BIND (deploy/.env) names this server's private-network address. Never 0.0.0.0: Docker's
+    # published ports skip the host firewall, so the port would be open to the internet.
+    ports: ["${CP_DB_BIND:-127.0.0.1}:5433:5432"]
 
   # The gateway posts chain events to the control plane instead of the host.
   gateway:
@@ -32,6 +39,14 @@ services:
       cp_postgres: { condition: service_healthy }
     volumes:
       - ../../mergit-contracts/deployments/agents-base-sepolia.json:/agents.json:ro
+    # /healthz answers 200 only while the database does. The slim image has no curl, so python makes the request;
+    # urlopen raises on a 503, which is a non-zero exit.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     environment:
       DATABASE_URL: postgres://postgres:mergit@cp_postgres:5432/mergit_cp
       GATEWAY_URL: http://gateway:8082

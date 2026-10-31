@@ -30,12 +30,18 @@ www.mergit.site {
 	redir https://mergit.site{uri} permanent
 }
 
+# The API routes a browser calls. One list for app.mergit.site and api.mergit.site, so the two cannot drift;
+# control-plane/tests/test_caddy_routes.py fails when a route in the API is missing from it.
+(api_routes) {
+	@api path /v0/auth/* /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents
+}
+
 # The same frontend on live Base Sepolia data, and the orchestration API on the same origin: the browser calls
 # /v0/auth, /v0/account, /v0/wallet-interest, /v0/plans and /v0/agents here, so sign-in cookies are first-party and there is no CORS. The gateway and the
 # worker reach the API directly over the compose network, so /v0/chain-events and /v0/internal are deliberately not
 # proxied.
 app.mergit.site {
-	@api path /v0/auth/* /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents
+	import api_routes
 	handle @api {
 		reverse_proxy api:8000
 	}
@@ -55,8 +61,28 @@ store.mergit.site {
 	reverse_proxy store:8081
 }
 
-# The same API on its own name, for anything that is not the web app. Optional: the app uses app.mergit.site above.
+# The API on its own name. It serves the browser routes (api_routes) and /healthz, and the one route the agent worker
+# calls from its own VM: /v0/internal/progress, only from the IP in WORKER_VM_IP (deploy/.env, passed in by
+# compose.server.yaml; the default is a documentation address nothing can use). Everything else is 404: the
+# gateway reaches /v0/chain-events over the compose network, and the API's own docs pages are not for the public.
+# The worker's bearer token is still checked by the API; the IP rule only keeps the route off the open internet.
 # Needs an A record for `api`. It sets its own CORS headers (CORS_ORIGINS) and a Secure, HttpOnly session cookie.
 api.mergit.site {
-	reverse_proxy api:8000
+	import api_routes
+	@worker {
+		path /v0/internal/*
+		remote_ip {$WORKER_VM_IP:192.0.2.1}
+	}
+	handle @api {
+		reverse_proxy api:8000
+	}
+	handle @worker {
+		reverse_proxy api:8000
+	}
+	handle /healthz {
+		reverse_proxy api:8000
+	}
+	handle {
+		respond "not found" 404
+	}
 }

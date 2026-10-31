@@ -8,6 +8,8 @@ import socket
 import threading
 from dataclasses import dataclass
 
+import psycopg
+
 from mergit_cp.pr_store import PgPrStore
 
 from .agents import validate_agents_are_priced
@@ -23,6 +25,7 @@ from .progress import HttpProgressReporter, NullProgressReporter, ProgressReport
 from .providers import llm_provider
 from .publish import ReceiptPublisher
 from .sandbox import Sandbox, SandboxConfig, reap_stale
+from .startup import LOCK_CHECK_INTERVAL_S, WorkerIdLock, agents_without_key, sweep_workspaces, watch_lock
 from .tools import ToolLimits
 from .worker import Worker, WorkerDeps
 from .workspace import GitLimits
@@ -141,8 +144,46 @@ def main() -> int:
         return 2
 
     worker_id = cfg.worker_id or socket.gethostname()
+    if not cfg.worker_id:
+        log.warning(
+            "WORKER_ID is not set, so this worker is named after its hostname (%s). A container's hostname "
+            "changes whenever it is recreated, and a restarted worker would then no longer find the jobs and "
+            "sandbox containers its previous run left. Set WORKER_ID to a fixed name, one per process.",
+            worker_id,
+        )
+    try:
+        no_key = agents_without_key(cfg.agents_file)
+    except ConfigError as exc:
+        log.error("configuration error: %s", exc)
+        return 2
+    if no_key:
+        names = ", ".join(f"MERGIT_AGENT_KEY_{i}" for i in no_key)
+        if cfg.require_all_agent_keys:
+            log.error("REQUIRE_ALL_AGENT_KEYS is set and these are missing or malformed: %s", names)
+            return 2
+        log.warning(
+            "no usable key for agent(s) %s: a job for them fails, and the requester loses an attempt", names
+        )
+    try:
+        lock = WorkerIdLock.acquire(cfg.database_url.get_secret_value(), worker_id)
+    except psycopg.Error as exc:
+        # Exit non-zero without a traceback; Docker's restart policy is the retry loop.
+        log.error("cannot reach the database at start-up: %s", " ".join(str(exc).split()))
+        return 1
+    if lock is None:
+        log.error(
+            "another worker process is already running as %r. Starting here would fail its running jobs and "
+            "remove its sandbox containers. Give each process its own WORKER_ID.",
+            worker_id,
+        )
+        return 2
     log.info("model provider: %s", llm_provider())
-    built = build_worker(cfg, worker_id)
+    try:
+        built = build_worker(cfg, worker_id)
+    except psycopg.Error as exc:
+        log.error("cannot reach the database at start-up: %s", " ".join(str(exc).split()))
+        lock.close()
+        return 1
     log.info("failed %d jobs this worker left running before a restart", built.jobs.fail_own_running())
     log.info(
         "reclaimed %d jobs left running past their lease by any worker",
@@ -160,6 +201,10 @@ def main() -> int:
     else:
         log.info("no GITHUB_TOKEN: pull-request requests will not be handled by this worker")
     log.info("removed %d stale sandbox containers", reap_stale(worker_id))
+    log.info(
+        "removed %d abandoned workspace directories",
+        sweep_workspaces(cfg.sandbox_workspace_root, cfg.job_lease_s),
+    )
 
     stop = threading.Event()
 
@@ -168,11 +213,30 @@ def main() -> int:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, request_stop)
+    lost = threading.Event()
+
+    def on_lost() -> None:
+        log.error(
+            "another process took the worker id %r while the database was unreachable, and has failed this "
+            "worker's running jobs. Stopping after the current job.",
+            worker_id,
+        )
+        lost.set()
+        stop.set()
+
+    threading.Thread(
+        target=watch_lock,
+        args=(lock, stop, LOCK_CHECK_INTERVAL_S, on_lost),
+        name="worker-id-lock",
+        daemon=True,
+    ).start()
     try:
         built.worker.run_forever(stop)
     finally:
+        stop.set()
         built.close()
-    return 0
+        lock.close()
+    return 2 if lost.is_set() else 0
 
 
 if __name__ == "__main__":

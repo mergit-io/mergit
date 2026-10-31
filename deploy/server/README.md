@@ -10,7 +10,8 @@ One server (Hetzner CPX32, Nuremberg) runs everything that used to run on a lapt
 | `store.mergit.site` | evidence store (receipt bundles) | Caddy, then `store:8081` |
 | _(not public)_ | validator, Postgres | compose network only |
 | `app.mergit.site/v0/{auth,account,plans,agents}` | orchestration API (control plane), same origin as the app | Caddy, then `api:8000`; needs `deploy/compose.controlplane.yaml` |
-| `api.mergit.site` | the same API on its own name (optional) | Caddy, then `api:8000`; needs an A record |
+| `api.mergit.site` | the same API on its own name: browser routes, `/healthz`, and `/v0/internal/*` from the worker VM only (`WORKER_VM_IP`); everything else 404 | Caddy, then `api:8000`; needs an A record |
+| _(its own VM)_ | the agent worker | `deploy/worker-vm/README.md` |
 
 Everything is testnet money. The Hetzner firewall (`mergit-fw`) allows only 22, 80 and 443.
 
