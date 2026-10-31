@@ -14,7 +14,10 @@ services:
     restart: unless-stopped
     # The control plane does not share the gateway's database: both define tables named plans, tasks and outbox.
     environment: { POSTGRES_PASSWORD: mergit, POSTGRES_DB: mergit_cp }
-    volumes: ["cp_pgdata:/var/lib/postgresql/data"]
+    # deploy/postgres/pg_hba.conf: from outside this compose network, only the mergit_worker role may log in. The
+    # folder is mounted, not the file, so a `git pull` that replaces the file is seen (apply it with a restart).
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/mergit/pg_hba.conf"]
+    volumes: ["cp_pgdata:/var/lib/postgresql/data", "./postgres:/etc/postgresql/mergit:ro"]
     healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, retries: 30 }
     # Only the worker VM connects from outside (deploy/worker-vm/README.md), as the restricted mergit_worker role.
     # Loopback until CP_DB_BIND (deploy/.env) names this server's private-network address. Never 0.0.0.0: Docker's
