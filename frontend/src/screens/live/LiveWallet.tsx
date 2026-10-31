@@ -7,6 +7,7 @@ import { isTrialSession } from "../../auth/account";
 import { useAuth } from "../../auth/context";
 import { useConnectWallet } from "../../auth/useConnectWallet";
 import { MergePrompt } from "../../auth/MergePrompt";
+import { RedeemCode } from "../../auth/RedeemCode";
 import { WalletPicker } from "../../auth/WalletPicker";
 import { injected, switchChain, walletChainId } from "../../chain/client";
 import { formatUsdc } from "../../chain/funding";
@@ -43,7 +44,7 @@ export function LiveWallet() {
   const copy = useCopy();
   const [chainId, setChainId] = useWalletChain();
   const balances = useBalances(address);
-  const { credits, error } = useCredits(creditsFor);
+  const { credits, error, refresh } = useCredits(creditsFor !== null);
   const wrongChain = !trial && chainId !== null && chainId !== LIVE.chainId;
 
   return (
@@ -148,11 +149,14 @@ export function LiveWallet() {
                 <span className="wl-unit">USDC left</span>
               </span>
               <p className="small c2">
-                New accounts get {credits ? formatUsdc(credits.granted) : "…"} test USDC to try Mergit. Tasks paid with
-                credits are always audited and do not count toward an agent&apos;s reputation.
+                Every account gets 5 test USDC once, and it is not renewed. You have received{" "}
+                {credits ? formatUsdc(credits.granted) : "…"} USDC in total. When it runs out, connect a wallet and pay
+                as you go. Tasks paid with credits are always audited and do not count toward an agent&apos;s
+                reputation.
               </p>
             </>
           )}
+          <RedeemCode onRedeemed={refresh} />
         </div>
       </section>
 

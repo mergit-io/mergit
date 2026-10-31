@@ -80,3 +80,45 @@ export async function confirmMerge(
   if (typeof body?.address !== "string") throw new Error("Mergit's API did not answer like the merge service.");
   return body.address;
 }
+
+/**
+ * Redeems a code for the signed-in account. Returns the amount added, in USDC base units. Throws a sentence the person
+ * can act on: every refusal says what to do next, and the server never says which part of a bad code was wrong.
+ */
+export async function redeemCode(
+  code: string,
+  base: string = apiBase(),
+  send: (url: string, init: RequestInit) => Promise<Response> = (url, init) => fetch(url, init),
+): Promise<bigint> {
+  const trimmed = code.trim();
+  if (trimmed === "") throw new Error("Enter a code.");
+  let response: Response;
+  try {
+    response = await send(`${base}/v0/account/redeem`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: trimmed }),
+    });
+  } catch {
+    throw new Error("Mergit's API is unreachable. Check your connection and try again.");
+  }
+  if (response.status === 400) throw new Error("That code is not valid. Check it and try again.");
+  if (response.status === 409) throw new Error("That code has already been used.");
+  if (response.status === 410) throw new Error("That code has expired.");
+  if (response.status === 401) throw new Error("Your session has ended. Sign in again to continue.");
+  if (response.status === 422) throw new Error("That does not look like a code.");
+  if (response.status === 429) {
+    const seconds = Number(response.headers.get("retry-after"));
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("Too many tries. Try again later.");
+    const minutes = Math.ceil(seconds / 60);
+    throw new Error(`Too many tries. Try again in ${String(minutes)} ${minutes === 1 ? "minute" : "minutes"}.`);
+  }
+  if (!response.ok) throw new Error("Mergit could not check the code. Try again in a moment.");
+  const body = (await response.json().catch(() => null)) as { amount_usdc_units?: unknown } | null;
+  const units = body?.amount_usdc_units;
+  if (typeof units !== "string" || !/^[1-9][0-9]*$/.test(units)) {
+    throw new Error("Mergit's API did not answer like the redeem service.");
+  }
+  return BigInt(units);
+}

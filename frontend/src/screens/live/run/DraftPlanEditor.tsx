@@ -1,5 +1,4 @@
 import { useState } from "react";
-import type { Address } from "viem";
 import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { isTrialSession } from "../../../auth/account";
@@ -42,7 +41,7 @@ export function DraftPlanEditor({
   onChanged: () => void;
 }) {
   const { session, account } = useAuth();
-  const { credits, error: creditsError } = useCredits((session?.address ?? null) as Address | null);
+  const { credits, error: creditsError } = useCredits(session !== null);
   // A free-trial account has no wallet: its plans can only be paid from credits, and the API refuses anything else.
   const trial = isTrialSession(account, session?.address);
   const [forms, setForms] = useState<TaskForm[]>(() => toForms(plan));

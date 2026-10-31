@@ -29,7 +29,7 @@ export function LiveOverview() {
   // A free-trial account has no wallet to read balances from; its credits are under the trial address.
   const trial = isTrialSession(account, session?.address);
   const balances = useBalances(trial ? null : creditsFor);
-  const { credits, error: creditsError } = useCredits(creditsFor);
+  const { credits, error: creditsError } = useCredits(creditsFor !== null);
   const { plans, error: plansError } = usePlans();
   const { rows: receipts, error: receiptsError } = useCommitments();
   const counts = plans ? summarizePlans(plans) : null;

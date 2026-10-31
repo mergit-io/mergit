@@ -1,17 +1,24 @@
-import { useEffect, useState } from "react";
-import type { Address } from "viem";
-import { LIVE } from "../config/live";
+import { useCallback, useEffect, useState } from "react";
+import { apiBase } from "./wallet";
 
 export type Credits = { granted: bigint; spent: bigint; remaining: bigint; plansToday: number };
 
-/** Free credits for an address, from the gateway. */
-export function useCredits(address: Address | null) {
+/**
+ * The signed-in account's free credits, from Mergit's API (which asks the gateway for this account only). Credits
+ * belong to the account, not to an address, so linking a wallet does not change them. `refresh` re-reads them, for
+ * after a redeem code has been applied. Pass false while there is no session.
+ */
+export function useCredits(enabled: boolean) {
   const [credits, setCredits] = useState<Credits | null>(null);
   const [error, setError] = useState<string>();
+  const [round, setRound] = useState(0);
+  const refresh = useCallback(() => {
+    setRound((n) => n + 1);
+  }, []);
   useEffect(() => {
-    if (!address) return;
+    if (!enabled) return;
     let live = true;
-    fetch(`${LIVE.gatewayUrl}/v0/credits/${address}`)
+    fetch(`${apiBase()}/v0/account/credits`, { credentials: "include" })
       .then(async (r) => {
         if (!r.ok) throw new Error("Free credits are unavailable right now.");
         const c = (await r.json()) as {
@@ -20,13 +27,15 @@ export function useCredits(address: Address | null) {
           remaining_usdc_units: string;
           plans_today: number;
         };
-        if (live)
+        if (live) {
+          setError(undefined);
           setCredits({
             granted: BigInt(c.granted_usdc_units),
             spent: BigInt(c.spent_usdc_units),
             remaining: BigInt(c.remaining_usdc_units),
             plansToday: c.plans_today,
           });
+        }
       })
       .catch((e: unknown) => {
         if (live) setError(e instanceof Error ? e.message : String(e));
@@ -34,6 +43,6 @@ export function useCredits(address: Address | null) {
     return () => {
       live = false;
     };
-  }, [address]);
-  return { credits, loading: !credits && !error, error };
+  }, [enabled, round]);
+  return { credits, loading: !credits && !error, error, refresh };
 }

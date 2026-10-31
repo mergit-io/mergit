@@ -18,6 +18,11 @@ export type Backend = {
   ethWei?: bigint;
   usdcUnits?: bigint;
   credits?: { granted: string; spent: string; remaining: string; plans_today: number };
+  /**
+   * Redeem codes the API accepts, by the code as typed: the amount in base units, or the status the API refuses
+   * with (`retryAfter` is the Retry-After header of a 429). A redeemed code adds to `credits` and then answers 409.
+   */
+  redeemCodes?: Record<string, string | { status: number; retryAfter?: string }>;
   commitments?: Array<{ taskId: Hex; agentId: bigint; root: Hex; bodyHash: Hex; costMicros: bigint; block: number }>;
   /** Bundles the store serves, keyed by body hash (the only way the app may fetch them). */
   bundles?: Record<string, string>;
@@ -148,6 +153,7 @@ export const CORS = (route: Route) => ({
   "access-control-allow-origin": route.request().headers()["origin"] ?? "*",
   "access-control-allow-credentials": "true",
   "access-control-allow-headers": "content-type",
+  "access-control-expose-headers": "retry-after",
   "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
 });
 
@@ -254,6 +260,13 @@ function rpc(b: Backend) {
 /** Paths the store was asked for in the current test. */
 export const storeCalls: string[] = [];
 
+const creditsBody = (b: Backend) => ({
+  granted_usdc_units: b.credits?.granted ?? "5000000",
+  spent_usdc_units: b.credits?.spent ?? "0",
+  remaining_usdc_units: b.credits?.remaining ?? "5000000",
+  plans_today: b.credits?.plans_today ?? 0,
+});
+
 /** Intercepts every backend host. Returns the requests the API received, for assertions. */
 export async function mockBackend(page: Page, b: Backend = {}) {
   const apiCalls: Array<{ path: string; body: unknown }> = [];
@@ -282,6 +295,26 @@ export async function mockBackend(page: Page, b: Backend = {}) {
       return json(route, { address: typeof address === "string" ? address : ME });
     }
     if (path === "/v0/wallet-interest") return route.fulfill({ status: 204, headers: CORS(route) });
+    if (path === "/v0/account/credits") return json(route, creditsBody(b));
+    if (path === "/v0/account/redeem") {
+      const code = (route.request().postDataJSON() as { code: string }).code;
+      const rule = b.redeemCodes?.[code];
+      if (rule === undefined) return json(route, { detail: { error: "invalid_code" } }, 400);
+      if (typeof rule !== "string") {
+        const headers: Record<string, string> = { ...CORS(route), "content-type": "application/json" };
+        if (rule.retryAfter !== undefined) headers["retry-after"] = rule.retryAfter;
+        return route.fulfill({ status: rule.status, headers, body: JSON.stringify({ detail: { error: "refused" } }) });
+      }
+      const now = creditsBody(b);
+      b.credits = {
+        granted: String(BigInt(now.granted_usdc_units) + BigInt(rule)),
+        spent: now.spent_usdc_units,
+        remaining: String(BigInt(now.remaining_usdc_units) + BigInt(rule)),
+        plans_today: now.plans_today,
+      };
+      if (b.redeemCodes) b.redeemCodes[code] = { status: 409 };
+      return json(route, { amount_usdc_units: rule });
+    }
     if (path === "/v0/account/trial") {
       const started_at = "2026-10-30T10:00:00+00:00";
       b.me = { ...b.me, trial: { started_at } };
@@ -319,12 +352,7 @@ export async function mockBackend(page: Page, b: Backend = {}) {
         }));
       return json(route, rows);
     }
-    return json(route, {
-      granted_usdc_units: b.credits?.granted ?? "5000000",
-      spent_usdc_units: b.credits?.spent ?? "0",
-      remaining_usdc_units: b.credits?.remaining ?? "5000000",
-      plans_today: b.credits?.plans_today ?? 0,
-    });
+    return json(route, creditsBody(b));
   });
   await page.route(`${LIVE_ENV.VITE_STORE_URL}/**`, (route) => {
     storeCalls.push(new URL(route.request().url()).pathname);

@@ -55,7 +55,7 @@ export function verdictFor(taskId: string, money: MoneyEvent[]): Verdict | null 
 }
 
 const DENIAL_REASON: Record<string, string> = {
-  no_credits: "This account has no free credits left.",
+  no_credits: "This account has no free credits left. Redeem a code, or connect a wallet and pay as you go.",
   rate_limited: "This account has used its free-credit plans for today.",
   over_value_cap: "This plan costs more than free credits can cover.",
 };
