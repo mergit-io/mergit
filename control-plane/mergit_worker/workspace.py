@@ -408,11 +408,16 @@ class Workspace:
         """Iterative (not recursive): an agent can make a directory chain deep enough to blow the
         Python call stack, and `list_files` must fail cleanly, not crash the job, over that. The final
         result is sorted by the caller regardless of the order entries are appended here."""
-        stack = [(fd, prefix)]
-        opened = [fd]
+        # One frame per open directory: its fd, its path and the subdirectories still to visit. Only the
+        # directories on the current path are open, so descriptors grow with the depth of the tree, not its
+        # size (see `_find_name`).
+        frames: list[tuple[int, PurePosixPath, list[str]]] = []
+        cur: tuple[int, PurePosixPath] | None = (fd, prefix)
         try:
-            while stack:
-                cur_fd, cur_prefix = stack.pop()
+            while cur is not None:
+                cur_fd, cur_prefix = cur
+                subdirs: list[str] = []
+                frames.append((cur_fd, cur_prefix, subdirs))
                 if len(found) >= _MAX_LIST_ENTRIES:
                     return
                 with os.scandir(cur_fd) as it:
@@ -425,14 +430,23 @@ class Workspace:
                         found.append(f"{rel}@")  # listed, never followed
                     elif entry.is_dir(follow_symlinks=False):
                         found.append(f"{rel}/")
-                        child = _openat(entry.name, os.O_RDONLY | os.O_DIRECTORY, cur_fd)
-                        opened.append(child)
-                        stack.append((child, rel))
+                        subdirs.append(entry.name)
                     else:
                         found.append(str(rel))
+                cur = None
+                while frames:
+                    top_fd, top_prefix, pending = frames[-1]
+                    if pending:
+                        child = pending.pop()
+                        cur = (_openat(child, os.O_RDONLY | os.O_DIRECTORY, top_fd), top_prefix / child)
+                        break
+                    frames.pop()
+                    if top_fd != fd:  # the caller owns and closes the fd it passed in
+                        os.close(top_fd)
         finally:
-            for f in opened[1:]:  # the caller owns and closes the fd it passed in (opened[0])
-                os.close(f)
+            for top_fd, _, _ in frames:
+                if top_fd != fd:
+                    os.close(top_fd)
 
 
 def _find_name(fd: int, name: str, limit: int | None = None) -> str | None:
