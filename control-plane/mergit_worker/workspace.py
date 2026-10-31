@@ -41,6 +41,10 @@ log = logging.getLogger(__name__)
 
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,254}$")
 _MAX_LIST_ENTRIES = 2000
+# The nested-.git scan visits every entry of the checkout, so an agent-made tree could make every Φ evaluation
+# arbitrarily slow. Unlike a listing, it cannot just stop and report what it has: a `.git` planted past the
+# cutoff would then go unseen and git would run over it, so reaching the limit refuses (fails closed) instead.
+_MAX_SCAN_ENTRIES = 500_000
 
 
 class WorkspaceError(Exception):
@@ -431,27 +435,39 @@ class Workspace:
                 os.close(f)
 
 
-def _find_name(fd: int, name: str) -> str | None:
+def _find_name(fd: int, name: str, limit: int | None = None) -> str | None:
     """The relative path of the first entry called `name` anywhere under `fd`, or None. Iterative, for
     the same reason `_walk` is: an attacker-made directory chain must not be able to overflow the
-    stack. Never follows a symlink, so a symlink cannot be used to point this scan outside the tree."""
+    stack. Never follows a symlink, so a symlink cannot be used to point this scan outside the tree.
+
+    Raises `WorkspaceError` rather than answering None when the tree has more than `limit` entries (default
+    `_MAX_SCAN_ENTRIES`) or cannot be scanned in full: "not found" is only true if all of it was looked at."""
+    cap = _MAX_SCAN_ENTRIES if limit is None else limit
+    seen = 0
     stack = [(fd, PurePosixPath())]
     opened: list[int] = []
     try:
         while stack:
             cur_fd, cur_prefix = stack.pop()
             with os.scandir(cur_fd) as it:
-                entries = list(it)
-            for entry in entries:
-                if entry.name == name:
-                    return str(cur_prefix / entry.name)
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    child = _openat(entry.name, os.O_RDONLY | os.O_DIRECTORY, cur_fd)
-                    opened.append(child)
-                    stack.append((child, cur_prefix / entry.name))
+                for entry in it:
+                    seen += 1
+                    if seen > cap:
+                        raise WorkspaceError(
+                            f"the checkout has more than {cap} entries: refusing to run git over a tree "
+                            f"too large to check for a nested {name}"
+                        )
+                    if entry.name == name:
+                        return str(cur_prefix / entry.name)
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        child = _openat(entry.name, os.O_RDONLY | os.O_DIRECTORY, cur_fd)
+                        opened.append(child)
+                        stack.append((child, cur_prefix / entry.name))
         return None
+    except OSError as exc:  # for example out of file descriptors on a very wide tree
+        raise WorkspaceError(f"cannot scan the checkout for a nested {name}: {exc}") from exc
     finally:
         for f in opened:
             os.close(f)

@@ -9,13 +9,12 @@ container is started again on the same checkout, so no stray process survives a 
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
 import uuid
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -38,6 +37,12 @@ SANDBOX_ENV = {
     "PYTEST_ADDOPTS": "-p no:cacheprovider",
     "NO_COLOR": "1",
 }
+
+
+# How long to wait for an exec stream to end once its container was killed. A healthy daemon ends it at once.
+_STREAM_END_AFTER_KILL_S = 30.0
+
+log = logging.getLogger(__name__)
 
 
 class SandboxError(Exception):
@@ -161,14 +166,26 @@ class Sandbox:
             except BaseException as exc:  # reported to the caller below
                 error.append(exc)
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(pump)
+        # A daemon thread, not an executor: an executor's `with` block waits for its thread on exit, so a
+        # stream the daemon never ends would hang the worker there however the wait above is bounded.
+        pumper = threading.Thread(target=pump, name="sandbox-exec-pump", daemon=True)
+        pumper.start()
+        pumper.join(timeout_s)
+        if pumper.is_alive():
             try:
-                future.result(timeout=timeout_s)
-            except FutureTimeout:
-                self._restart()  # kills the process tree; the pump's stream then ends
-                future.result()
-                return CommandResult(-1, out.bytes(), err.bytes(), _ms(started), timed_out=True)
+                self._restart()  # kills the process tree; the pump's stream then normally ends
+            except Exception as exc:  # a stuck or refusing daemon: say so, do not hang or crash the worker
+                raise SandboxError(
+                    f"command timed out and the sandbox could not be restarted: {exc}"
+                ) from exc
+            pumper.join(_STREAM_END_AFTER_KILL_S)
+            if pumper.is_alive():
+                # The container is killed and started again, so nothing the command ran survives; only the
+                # stream reader is stuck. It is abandoned (daemon) and what it captured so far is returned.
+                log.warning(
+                    "exec stream did not end %.0fs after the sandbox was restarted", _STREAM_END_AFTER_KILL_S
+                )
+            return CommandResult(-1, out.bytes(), err.bytes(), _ms(started), timed_out=True)
         if error:
             exc = error[0]
             if isinstance(exc, docker.errors.APIError):
