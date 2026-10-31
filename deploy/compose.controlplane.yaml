@@ -22,6 +22,21 @@ services:
     environment:
       ORCHESTRATOR_URL: http://api:8000
 
+  # The Groq key rotator (tools/keyrelay). The planner and the agents call Groq through it when GROQ_BASE_URL in
+  # secrets/api.env and secrets/worker.env is http://keyrelay:8787/v1 and their GROQ_API_KEY is its proxy token.
+  # It starts only when deploy/secrets/keyrelay/keyrelay.toml exists (update.sh adds the profile), so a checkout
+  # without it is unaffected. No port is published: only api and worker reach it, by name.
+  keyrelay:
+    profiles: ["keyrelay"]
+    build: { context: ../tools/keyrelay }
+    image: mergit-keyrelay:local
+    restart: unless-stopped
+    command: ["serve", "--config", "/etc/keyrelay/keyrelay.toml"]
+    # Run as the host user that owns the secrets, so mode-600 files are readable. Override with KEYRELAY_USER.
+    user: "${KEYRELAY_USER:-1000:1000}"
+    # A directory, not single files: a file bind mount keeps the old file when it is replaced (this bit Caddy).
+    volumes: ["./secrets/keyrelay:/etc/keyrelay:ro"]
+
   api:
     build: { context: .., dockerfile: control-plane/Dockerfile }
     image: mergit-api:local

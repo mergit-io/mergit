@@ -5,7 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 what=${1:-all}
-compose() { docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml "$@"; }
+# The key rotator runs only where it has been configured (see tools/keyrelay/README.md).
+profiles=(); [ -f deploy/secrets/keyrelay/keyrelay.toml ] && profiles=(--profile keyrelay)
+compose() { docker compose "${profiles[@]}" -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml "$@"; }
 
 case "$what" in all|services|web|app) ;; *) echo "usage: $0 [all|services|web|app]" >&2; exit 2 ;; esac
 

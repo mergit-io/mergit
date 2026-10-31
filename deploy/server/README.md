@@ -140,3 +140,77 @@ deploy/server/wallet-interest.sh --emails   # also the signed-in people to tell 
 It is a demand signal, not a verified count. A signed-in person is one row per wallet by account; a signed-out
 visitor is one row per wallet per token their browser keeps, so one person on two browsers counts twice. New rows are
 limited to 60 a minute across everyone (`WALLET_INTEREST_PER_MINUTE`).
+
+## Groq key rotator (keyrelay)
+
+`tools/keyrelay` is a small proxy in front of many Groq keys: the planner (`api`) and the agents (`worker`) call it
+instead of Groq, and it keeps using one key until Groq answers 429, then moves that key to the bottom for its
+`Retry-After` and retries on the next. Read `tools/keyrelay/README.md` first, including its three caveats: Groq's
+limits may be per organization (so keys from one account share a limit), using many accounts' keys may breach the
+terms, and there is no "credits left" to query.
+
+It runs as a compose service **only when `deploy/secrets/keyrelay/keyrelay.toml` exists** (`update.sh` adds the
+`keyrelay` profile when it does), publishes no port, and is reached by name (`keyrelay:8787`). Its files are in a
+directory mount, and the container runs as `KEYRELAY_USER` (default `1000:1000`, the host user that owns the secrets).
+
+One-time setup on the server. Run the commands one at a time, and **never paste a key into a chat or a ticket**:
+
+```bash
+cd ~/mergit/mergit
+mkdir -p deploy/secrets/keyrelay && chmod 700 deploy/secrets/keyrelay
+cp tools/keyrelay/keyrelay.docker.toml deploy/secrets/keyrelay/keyrelay.toml
+head -c 24 /dev/urandom | base64 > deploy/secrets/keyrelay/proxy-token.txt && chmod 600 deploy/secrets/keyrelay/proxy-token.txt
+```
+
+Build `groq-keys.txt` on your laptop (one key per line; the **last** line is used first; include the key that is in
+`api.env` today if you want to keep using it) and copy it over:
+
+```bash
+scp groq-keys.txt viscous@<server>:~/mergit/mergit/deploy/secrets/keyrelay/groq-keys.txt
+ssh viscous@<server> chmod 600 '~/mergit/mergit/deploy/secrets/keyrelay/groq-keys.txt'
+```
+
+Check the keys, start the rotator, and point the API and worker at it (their `GROQ_API_KEY` becomes the proxy token,
+so a real Groq key is no longer in those files):
+
+```bash
+C="docker compose --profile keyrelay -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml"
+$C build keyrelay
+$C run --rm keyrelay check --config /etc/keyrelay/keyrelay.toml      # valid / dead / limited per key, by index
+TOKEN=$(cat deploy/secrets/keyrelay/proxy-token.txt)
+sed -i "s|^GROQ_API_KEY=.*|GROQ_API_KEY=$TOKEN|" deploy/secrets/api.env deploy/secrets/worker.env
+grep -q '^GROQ_BASE_URL=' deploy/secrets/api.env    || echo 'GROQ_BASE_URL=http://keyrelay:8787/v1' >> deploy/secrets/api.env
+grep -q '^GROQ_BASE_URL=' deploy/secrets/worker.env || echo 'GROQ_BASE_URL=http://keyrelay:8787/v1' >> deploy/secrets/worker.env
+$C up -d --force-recreate keyrelay api worker
+$C exec keyrelay keyrelay status --config /etc/keyrelay/keyrelay.toml   # which keys are ok / cooling / dead
+$C logs --tail 20 keyrelay                                              # indexes only, never a key
+```
+
+If keyrelay is down, planning fails with a 502 and the API logs `planner model unavailable: ...`. To go back, restore
+a real `GROQ_API_KEY` in `api.env` and `worker.env`, remove `GROQ_BASE_URL`, and recreate `api` and `worker`.
+
+## Free credits and redeem codes
+
+Every account gets **5 USDC of free credits, once**. They are never renewed. The gateway keeps the ledger **per
+account** (the control plane's user id), not per address, so linking more wallets does not earn more. When the 5 USDC
+is spent, a plan is refused and the app tells the person to connect a wallet and pay as they go.
+
+A **redeem code** gives an account more, once. It adds its amount to the free credits, so a 20 USDC code leaves its
+owner with 25 USDC in total (make the code worth 15 if you want 20 in total). Plans funded from credits are still
+limited to 2 USDC each and 3 a day (`CREDIT_PLAN_CAP_USDC_UNITS`, `CREDIT_PLANS_PER_DAY` on the gateway), whatever the
+account holds.
+
+```bash
+deploy/server/redeem-code.sh create --usdc 20 --note "Asha, first try"      # prints the code once
+deploy/server/redeem-code.sh create --usdc 20 --count 10 --expires-days 30   # ten codes that lapse in 30 days
+deploy/server/redeem-code.sh list                                            # status of every code, never the code
+deploy/server/redeem-code.sh revoke <code_id>                                # an unused code stops working
+```
+
+Codes look like `MRG-7K2Q-XD4M-9TPA-C3VH`. Only a keyed hash is stored, so a copy of the database reveals no code and
+a lost code cannot be recovered (make another). The hash is keyed by `SESSION_SECRET`: rotating that secret makes every
+unredeemed code unusable. A person redeems at **Wallet → Redeem code** (or "Have a code?" in the plan dialog), limited to
+10 attempts an hour. The credit is delivered as a `credits.grant` event, retried for 7 days, once per code.
+
+Unlimited accounts are deliberately not a thing. Unlimited credit would spend real testnet USDC from the treasury
+without bound: give testers a large code instead.
