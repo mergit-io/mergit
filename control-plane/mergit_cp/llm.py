@@ -85,7 +85,7 @@ class AnthropicLLM:
         # attributes, which this isinstance check (unnecessary by the type hint alone) guards against.
         is_real = isinstance(client, AsyncAnthropic)  # pyright: ignore[reportUnnecessaryIsInstance]
         if is_real and not client.api_key and not client.auth_token:
-            raise LLMUnavailable("ANTHROPIC_API_KEY is not set")
+            raise LLMUnavailable("neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set")
         try:
             response = await self._create(messages, tools, model, system, output_schema)
         except APIError as exc:
