@@ -80,6 +80,12 @@ class AnthropicLLM:
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> LLMResult:
+        client = self._client
+        # Production always passes a real AsyncAnthropic; tests pass a bare stub without these
+        # attributes, which this isinstance check (unnecessary by the type hint alone) guards against.
+        is_real = isinstance(client, AsyncAnthropic)  # pyright: ignore[reportUnnecessaryIsInstance]
+        if is_real and not client.api_key and not client.auth_token:
+            raise LLMUnavailable("neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set")
         try:
             response = await self._create(messages, tools, model, system, output_schema)
         except APIError as exc:
@@ -96,7 +102,9 @@ class AnthropicLLM:
             output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_input_tokens or 0,
             cache_write_tokens=usage.cache_creation_input_tokens or 0,
-            model=response.model,
+            # Anthropic resolves the alias to a dated snapshot id in the response; prices.toml and
+            # agents.toml are keyed by the alias, so the alias is what must be priced and recorded.
+            model=model,
         )
         if response.stop_reason in _UNUSABLE:
             raise LLMError(str(response.stop_reason), result)
@@ -215,7 +223,9 @@ class GroqLLM:
             output_tokens=reply.completion_tokens,
             cache_read_tokens=reply.cached_tokens,
             cache_write_tokens=0,
-            model=reply.model or model,
+            # prices.toml and agents.toml are keyed by the requested model id, not whatever the
+            # provider echoes back (see the matching fix in AnthropicLLM.complete).
+            model=model,
         )
         if reply.stop_reason in _UNUSABLE:
             raise LLMError(str(reply.stop_reason), result)
@@ -232,8 +242,9 @@ def build_llm(environ: Mapping[str, str] | None = None) -> LLM:
     provider = llm_provider(env)
     if provider == "groq" and env.get("GROQ_API_KEY"):
         return GroqLLM(env["GROQ_API_KEY"])
-    if not env.get("ANTHROPIC_API_KEY"):
+    if not env.get("ANTHROPIC_API_KEY") and not env.get("ANTHROPIC_AUTH_TOKEN"):
         log.warning(
-            "no model key set (ANTHROPIC_API_KEY or GROQ_API_KEY): planning requests will fail until one is"
+            "no model key set (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY): "
+            "planning requests will fail until one is"
         )
     return AnthropicLLM()
