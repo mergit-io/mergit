@@ -1,4 +1,5 @@
 /* Icons the landing page needs beyond the dashboard set. 24px, stroke-based. */
+import { useId } from "react";
 const PATHS = {
   message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   route:
@@ -58,14 +59,16 @@ export function LIcon({
 
 /** Linear's mark: a disc cut by diagonal lines. */
 export function LinearMark({ size = 20 }: { size?: number }) {
+  // One id per mark: the logo shows several times on a page, and a repeated id makes the clip path ambiguous.
+  const clip = `linear-disc-${useId().replace(/:/g, "")}`;
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
       <defs>
-        <clipPath id="linear-disc">
+        <clipPath id={clip}>
           <circle cx="12" cy="12" r="10" />
         </clipPath>
       </defs>
-      <g clipPath="url(#linear-disc)" fill="none" stroke="#5e5ad6" strokeWidth="2.2">
+      <g clipPath={`url(#${clip})`} fill="none" stroke="#5e5ad6" strokeWidth="2.2">
         {[-8, -3, 2, 7, 12].map((o) => (
           <path key={o} d={`M${String(o)} 0 L${String(o + 24)} 24`} />
         ))}

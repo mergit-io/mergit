@@ -10,7 +10,7 @@
  *
  * `/?story=flows` and `/?story=full` stay available to compare, and to go back if lean is not right.
  */
-import { nav as classicNav } from "../content";
+import { footer, nav as classicNav } from "../content";
 import { buildTrack, type Piece, type Track } from "./track";
 
 /** Timeline length in seconds. */
@@ -25,7 +25,7 @@ const BASE_PX = 260;
 /** Pixels the page rests on a flow while it plays. Scrolling inside that stretch changes nothing. */
 const DWELL_PX = 1000;
 /** Seconds of timeline that pass for each real second while a flow plays. */
-export const FLOW_RATE = 1.5;
+export const FLOW_RATE = 1.2;
 
 /**
  * The two flows. Each scene fades in at `enter`, its steps run from `start` to `end` (a step begins at each of
@@ -63,6 +63,17 @@ export function navFor(variant: Variant): { label: string; href: string }[] {
     { label: "How it works", href: "#how-it-works" },
     { label: "FAQ", href: "#faq" },
   ];
+}
+
+/**
+ * The footer's links for a story: only those whose section the story has (its anchors and the FAQ under it), so none
+ * is a dead link. A column left with no links is dropped.
+ */
+export function footerFor(variant: Variant): typeof footer.columns {
+  const ids = new Set([...anchorsFor(variant).map(([id]) => `#${id}`), "#faq"]);
+  return footer.columns
+    .map((col) => ({ ...col, links: col.links.filter(([, href]) => ids.has(href ?? "")) }))
+    .filter((col) => col.links.length > 0);
 }
 
 /** The flows that play by themselves in a variant. */
@@ -108,8 +119,12 @@ const scrub = (from: number, to: number, pxPerSec = BASE_PX): Piece => ({
 
 const [TEAM, SETTLE] = FLOWS;
 
-/** Pixels per second for the problem scene in the lean story: it is two bars filling, it does not need more. */
-const PROBLEM_PX = 170;
+/**
+ * The lean story scrolls more slowly than the others, so each scene has time to be seen: pixels of scroll per second of
+ * timeline, and the same for the problem scene (two bars filling).
+ */
+const LEAN_PX = 340;
+const PROBLEM_PX = 240;
 
 const PIECES: Record<Variant, Piece[]> = {
   full: [scrub(STORY_START, STORY_T, SCROLL_PX)],
@@ -126,12 +141,12 @@ const PIECES: Record<Variant, Piece[]> = {
   // The time jumps between pieces: 16 s to 54.8 s skips how-it-works and the team, 82 s to 96.8 s skips the
   // integrations and credentials. Each scene on either side of a jump has faded out (or not yet faded in) there.
   lean: [
-    scrub(STORY_START, 6.8),
+    scrub(STORY_START, 6.8, LEAN_PX),
     scrub(6.8, 16, PROBLEM_PX),
-    scrub(SETTLE.enter - 0.2, SETTLE.start),
+    scrub(SETTLE.enter - 0.2, SETTLE.start, LEAN_PX),
     { kind: "play", flow: SETTLE.id, px: DWELL_PX },
-    { kind: "out", flow: SETTLE.id, to: SETTLE.out, px: (SETTLE.out - SETTLE.end) * BASE_PX },
-    scrub(96.8, STORY_T),
+    { kind: "out", flow: SETTLE.id, to: SETTLE.out, px: (SETTLE.out - SETTLE.end) * LEAN_PX },
+    scrub(96.8, STORY_T, LEAN_PX),
   ],
 };
 

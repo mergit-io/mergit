@@ -5,6 +5,7 @@ import {
   FLOW_RATE,
   FLOWS,
   flowsFor,
+  footerFor,
   navFor,
   SCROLL_PX,
   snapPlan,
@@ -44,7 +45,7 @@ describe("the flows", () => {
     }
   });
 
-  it("each flow plays for about seventeen seconds, and every step stays long enough to read", () => {
+  it("each flow plays for about twenty seconds, and every step stays long enough to read", () => {
     for (const f of FLOWS) {
       const seconds = (f.end - f.start) / FLOW_RATE;
       expect(seconds).toBeGreaterThan(12);
@@ -76,9 +77,9 @@ describe("how long each story is to scroll", () => {
     expect(total("flows")).toBeLessThan(15_000);
   });
 
-  it("the lean story is about a third of the flows story: six screens at most", () => {
-    expect(total("lean")).toBeLessThan(total("flows") * 0.4);
-    expect(total("lean")).toBeLessThan(5_500);
+  it("the lean story is under half the flows story: seven screens at most", () => {
+    expect(total("lean")).toBeLessThan(total("flows") * 0.5);
+    expect(total("lean")).toBeLessThan(6_500);
   });
 
   it("a page snapped to a flow's start on a whole pixel is inside the flow, so the flow plays", () => {
@@ -179,5 +180,20 @@ describe("the lean story", () => {
     expect(navFor("flows").map((l) => l.label)).toContain("Integrations");
     const ids = anchorsFor("lean").map((a) => `#${a[0]}`);
     for (const l of navFor("lean")) if (l.href !== "#faq") expect(ids).toContain(l.href);
+  });
+});
+
+describe("footerFor", () => {
+  it("links only to sections the story has, so no footer link is dead", () => {
+    for (const variant of VARIANTS) {
+      const ids = new Set([...anchorsFor(variant).map(([id]) => `#${id}`), "#faq"]);
+      const links = footerFor(variant).flatMap((c) => c.links);
+      expect(links.length).toBeGreaterThan(0);
+      for (const [, href] of links) expect(ids.has(href ?? "")).toBe(true);
+    }
+  });
+
+  it("the lean story keeps How it works and the FAQ", () => {
+    expect(footerFor("lean").flatMap((c) => c.links.map(([label]) => label))).toEqual(["How it works", "FAQ"]);
   });
 });
