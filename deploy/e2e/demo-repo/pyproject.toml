@@ -1,0 +1,10 @@
+[project]
+name = "demo-repo"
+version = "0.0.0"
+description = "A tiny payments helper with one failing test, for Mergit's end-to-end check"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+# `pytest tests/...` (no `python -m`) does not put the repository root on sys.path.
+pythonpath = ["."]
+testpaths = ["tests"]
