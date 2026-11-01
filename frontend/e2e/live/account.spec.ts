@@ -220,6 +220,15 @@ test("the choice can wait: look around first", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
 });
 
+test("the sign-in page tells a first-time visitor they can start free without a wallet", async ({ page }) => {
+  await open(page, { me: null, providers: everything });
+  await page.goto("/signin");
+  await expect(page.getByText("with no wallet needed")).toBeVisible();
+  await expect(page.getByText("committed on Base Sepolia")).toBeVisible();
+  // The picture is an illustration: it must not carry sample data into live mode.
+  await expect(page.locator(".si-art")).not.toContainText(/PR #\d|0x30af/);
+});
+
 test("an emailed code signs in", async ({ page }) => {
   const b: Backend = {
     me: null,

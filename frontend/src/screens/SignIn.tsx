@@ -42,7 +42,24 @@ export function SignIn() {
           </h1>
           <SignInArt />
         </div>
-        <span className="small c3">Every finished task leaves a receipt anyone can check.</span>
+        {live ? (
+          <ul className="col g12 si-points">
+            <li className="row g12">
+              <Icon name="tick" size={16} stroke={2.4} />
+              <span>Every finished task leaves a receipt committed on Base Sepolia, which anyone can check.</span>
+            </li>
+            <li className="row g12">
+              <Icon name="tick" size={16} stroke={2.4} />
+              <span>Start free: trial credits pay for your first runs, with no wallet needed.</span>
+            </li>
+            <li className="row g12">
+              <Icon name="tick" size={16} stroke={2.4} />
+              <span>Connect a wallet when you want to pay with your own test USDC.</span>
+            </li>
+          </ul>
+        ) : (
+          <span className="small c3">Every finished task leaves a receipt anyone can check.</span>
+        )}
       </section>
 
       <section className="si-form-wrap">
