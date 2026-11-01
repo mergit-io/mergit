@@ -1,5 +1,6 @@
 import { apiBase } from "../chain/wallet";
 import { LIVE } from "../config/live";
+import { parseDiff, parsePullRequest, type PlanDiff, type PullRequest } from "./pullRequest";
 import type {
   AgentInfo,
   ApproveRequest,
@@ -106,4 +107,30 @@ export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The combined change of every task, for the requester to read before approving a pull request. 409 until the plan is done. */
+export async function getPlanDiff(planUuid: string): Promise<PlanDiff> {
+  const diff = parseDiff(await request<unknown>("GET", `${planPath(planUuid)}/diff`));
+  if (!diff) throw new ApiError(0, "Mergit's API did not answer like the diff service.");
+  return diff;
+}
+
+/** The requester's approval: queues the pull request for the worker, which holds the GitHub token. */
+export async function openPullRequest(planUuid: string): Promise<PullRequest> {
+  const pr = parsePullRequest(await request<unknown>("POST", `${planPath(planUuid)}/open-pr`));
+  if (!pr) throw new ApiError(0, "Mergit's API did not answer like the pull request service.");
+  return pr;
+}
+
+/** Where the pull request stands, or null when none was requested (404). */
+export async function getPullRequest(planUuid: string): Promise<PullRequest | null> {
+  try {
+    const pr = parsePullRequest(await request<unknown>("GET", `${planPath(planUuid)}/pr`));
+    if (!pr) throw new ApiError(0, "Mergit's API did not answer like the pull request service.");
+    return pr;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
 }

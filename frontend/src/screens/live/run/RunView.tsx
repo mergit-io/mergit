@@ -4,6 +4,7 @@ import type { AgentInfo, PlanDetail, PlanTask, StepEvent } from "../../../api/ty
 import { Icon } from "../../../components/Icon";
 import { ProgressBadge } from "./badges";
 import { ClosePlan } from "./ClosePlan";
+import { PullRequestStep } from "./PullRequestStep";
 import { attemptsOf, stuckTasks, taskProgress } from "./progress";
 import { StepLog } from "./StepLog";
 import { TaskDetail } from "./TaskDetail";
@@ -27,6 +28,7 @@ export function RunView({
   return (
     <>
       <RunBanner detail={detail} onClosed={onClosed} />
+      {detail.state === "done" && <PullRequestStep planUuid={detail.plan_uuid} />}
       <section className="rw-grid">
         <div className="col g16 min0">
           <section className="card" aria-labelledby="tasks-title">

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from mergit_worker.meter import PriceTable
 
-from . import auth, chain_events, oauth, otp, redeem, routes_plans, routes_runs, wallet_interest
+from . import auth, chain_events, oauth, otp, redeem, routes_plans, routes_pr, routes_runs, wallet_interest
 from .agents import load_agents
 from .config import Settings
 from .db import migrate, open_pool
@@ -19,6 +19,7 @@ from .events import EventDeliverer
 from .llm import LLM, build_llm
 from .outcomes import OutcomeProcessor
 from .planner import PgCostSink
+from .pr_store import PgPrStore
 from .spec import require_schemas
 from .stream import PlanBroadcaster
 
@@ -46,6 +47,8 @@ def create_app(
         async with pool.connection() as conn:
             await migrate(conn)
         app.state.pool = pool
+        # The pull-request routes share the worker's queue table; the API holds no GitHub token (see README).
+        app.state.pr_store = PgPrStore.connect(settings.database_url, "api")
         app.state.llm = llm or build_llm()
         app.state.costs = PgCostSink(pool, prices)
         app.state.broadcaster = PlanBroadcaster()
@@ -72,6 +75,7 @@ def create_app(
                     with suppress(asyncio.CancelledError):
                         await task
             await deliverer.aclose()
+            app.state.pr_store.close()
             await pool.close()
 
     app = FastAPI(title="Mergit control plane", version="0", lifespan=lifespan)
@@ -91,6 +95,9 @@ def create_app(
     app.include_router(otp.router)
     app.include_router(wallet_interest.router)
     app.include_router(routes_plans.router)
+    app.include_router(
+        routes_pr.build_router(auth.current_address, routes_pr.store_of_app, auth.owned_addresses_dep)
+    )
     app.include_router(chain_events.router)
     app.include_router(routes_runs.router)
     app.include_router(routes_runs.agents_router)

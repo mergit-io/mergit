@@ -160,8 +160,26 @@ const sseBody = (events: FakeEvent[]) =>
  */
 export async function mockPlanApi(
   page: Page,
-  opts: { plans?: FakePlan[]; created?: FakePlan; events?: FakeEvent[] } = {},
+  opts: {
+    plans?: FakePlan[];
+    created?: FakePlan;
+    events?: FakeEvent[];
+    /** The pull-request step. `after` is what the worker reports on each poll once the request is queued. */
+    pr?: { after: Array<"running" | "done" | "error"> };
+  } = {},
 ) {
+  let prState: "none" | "queued" | "running" | "done" | "error" = "none";
+  const prPolls = [...(opts.pr?.after ?? ["running", "done"])];
+  const prBody = () => ({
+    plan_uuid: "x",
+    requested_by: ME.toLowerCase(),
+    status: prState,
+    branch: prState === "done" ? "mergit/0b7f6a52" : null,
+    commit_sha: prState === "done" ? "a".repeat(40) : null,
+    pr_number: prState === "done" ? 7 : null,
+    pr_url: prState === "done" ? "https://github.com/mergit-io/demo-repo/pull/7" : null,
+    error: prState === "error" ? "patch does not apply" : null,
+  });
   const plans = new Map((opts.plans ?? []).map((p) => [p.plan_uuid, structuredClone(p)]));
   const calls: ApiCall[] = [];
 
@@ -209,6 +227,31 @@ export async function mockPlanApi(
       }));
       Object.assign(plan, { state: "approved", funding, total_budget_usdc_units: total });
       return json(route, { plan_id: plan.plan_id, total_budget_usdc_units: total });
+    }
+    if (method === "GET" && action === "diff") {
+      if (plan.state !== "done") {
+        return json(
+          route,
+          { detail: { message: "the plan is not ready", blockers: ["the plan is " + plan.state] } },
+          409,
+        );
+      }
+      return json(route, {
+        plan_uuid: plan.plan_uuid,
+        repo_url: plan.repo_url,
+        base_ref: plan.ref,
+        tasks: plan.tasks.map((t) => ({ index: t.index, title: t.title, task_id: taskId(t.index, 1) })),
+        diff: "--- a/payments/refund.py\n+++ b/payments/refund.py\n@@ -9,2 +9,2 @@\n-    return min(requested_cents, remaining)\n+    return max(0, min(requested_cents, remaining))\n",
+      });
+    }
+    if (method === "POST" && action === "open-pr") {
+      if (prState === "none" || prState === "error") prState = "queued";
+      return json(route, prBody(), 202);
+    }
+    if (method === "GET" && action === "pr") {
+      if (prState === "none") return json(route, { detail: "no pull request has been requested" }, 404);
+      if (prState === "queued" || prState === "running") prState = prPolls.shift() ?? "done";
+      return json(route, prBody());
     }
     if (method === "POST" && action === "abandon") {
       plan.state = "closed";

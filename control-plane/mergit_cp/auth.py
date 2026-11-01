@@ -166,6 +166,11 @@ async def current_address(principal: PrincipalDep) -> str:
 AddressDep = Annotated[str, Depends(current_address)]
 
 
+async def owned_addresses_dep(principal: PrincipalDep) -> list[str]:
+    """Every requester address the signed-in account owns, lowercase (trial address and linked wallets)."""
+    return [a.lower() for a in principal.owned]
+
+
 def _member(principal: Principal) -> UUID:
     if principal.user_id is None:
         raise _unauthorized("sign in again")  # a session from before accounts existed

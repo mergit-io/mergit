@@ -246,3 +246,54 @@ test("the runs tab lists the requester's plans and opens one", async ({ page }) 
   await row.click();
   await expect(page.getByRole("group", { name: "Task 1" })).toBeVisible();
 });
+
+test.describe("opening the pull request", () => {
+  const done = () =>
+    approvedPlan({
+      state: "done",
+      attempts: [
+        attempt(0, 1, { status: "done", phi_holds: true, receipt_root: `0x${"ee".repeat(32)}` }),
+        attempt(1, 1, { status: "done", phi_holds: true, receipt_root: `0x${"ee".repeat(32)}` }),
+      ],
+    });
+
+  test("a finished plan shows its change, and approving opens the pull request", async ({ page }) => {
+    await mockBackend(page);
+    const plan = done();
+    const calls = await mockPlanApi(page, { plans: [plan], pr: { after: ["running", "done"] } });
+    await page.goto(`/app/runs/${plan.plan_uuid}`);
+
+    const step = page.getByRole("region", { name: "Open a pull request" });
+    await expect(step).toContainText("No pull request has been opened yet");
+    await expect(step).toContainText("+1");
+    await step.getByText("Read the change").click();
+    await expect(step.getByLabel("The combined change")).toContainText("max(0, min(requested_cents, remaining))");
+
+    await step.getByRole("button", { name: "Open the pull request" }).click();
+    expect(only(calls, "POST", "/open-pr")).toHaveLength(1);
+    await expect(step).toContainText("Pull request #7 is open.", { timeout: 15_000 });
+    const link = step.getByRole("link", { name: /View pull request #7/ });
+    await expect(link).toHaveAttribute("href", "https://github.com/mergit-io/demo-repo/pull/7");
+    await expect(link).toHaveAttribute("rel", /noopener/);
+  });
+
+  test("a failed attempt says why and offers to try again", async ({ page }) => {
+    await mockBackend(page);
+    const plan = done();
+    await mockPlanApi(page, { plans: [plan], pr: { after: ["error"] } });
+    await page.goto(`/app/runs/${plan.plan_uuid}`);
+    const step = page.getByRole("region", { name: "Open a pull request" });
+    await step.getByRole("button", { name: "Open the pull request" }).click();
+    await expect(step).toContainText("patch does not apply", { timeout: 15_000 });
+    await expect(step.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  test("a plan that is still running offers no pull request", async ({ page }) => {
+    await mockBackend(page);
+    const plan = approvedPlan({ state: "running", attempts: [attempt(0, 1)] });
+    await mockPlanApi(page, { plans: [plan] });
+    await page.goto(`/app/runs/${plan.plan_uuid}`);
+    await expect(page.getByRole("region", { name: "Tasks" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Open a pull request" })).toHaveCount(0);
+  });
+});
