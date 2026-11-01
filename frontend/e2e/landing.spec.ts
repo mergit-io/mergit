@@ -205,6 +205,32 @@ test.describe("scroll story", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Get started goes to sign in when signed out and to the dashboard when already signed in", async ({
+    page,
+    context,
+  }) => {
+    // Mock project only (the live project runs just e2e/live/): the session is read from this browser alone, with no
+    // server to drop it, so the seeded address below is kept. Served at "/", never under /demo, so the dashboard
+    // is /app (paths.app is /demo only in demo mode, and e2e cannot import it: it reads import.meta.env).
+    const DASHBOARD = "/app";
+    // A plain locator: the closer's button sits in a scene that is hidden until the story reaches it.
+    const getStarted = page.locator("a.sbtn", { hasText: "Get started" });
+    const expectBoth = async (href: string) => {
+      await expect(page.locator(".landing.story-mode")).toBeVisible();
+      await expect(getStarted).toHaveCount(2); // the hero and the closer
+      for (const i of [0, 1]) await expect(getStarted.nth(i)).toHaveAttribute("href", href);
+    };
+
+    await page.goto("/");
+    await expectBoth("/signin");
+
+    await context.addInitScript(() => {
+      localStorage.setItem("mergit-session", JSON.stringify({ address: "0x0", method: "browser", since: 0 }));
+    });
+    await page.goto("/");
+    await expectBoth(DASHBOARD);
+  });
+
   test("the flows story is still there: both flows play themselves", async ({ page }) => {
     // The splash, then real playback of a flow (about 17 s from its first step to its last) at its own pace.
     test.slow();

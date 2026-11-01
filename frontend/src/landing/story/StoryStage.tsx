@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { paths } from "../../app/paths";
+import { useAuth } from "../../auth/context";
 import { MergitLogo } from "../../components/MergitLogo";
 import symbolColour from "./assets/symbol-colour.svg?raw";
 import { storyCopy as c } from "./copy";
@@ -85,6 +86,9 @@ export function StoryStage({ variant }: { variant: Variant }) {
   const root = useRef<HTMLDivElement>(null);
   const art = useRef<SVGSVGElement>(null);
   const track = variantTrack(variant);
+  // Someone already signed in goes straight to the dashboard, as the nav's "Open dashboard" does.
+  const { session } = useAuth();
+  const getStarted = session ? paths.app : paths.signIn;
 
   useLayoutEffect(() => {
     if (!root.current || !art.current) return;
@@ -178,7 +182,7 @@ export function StoryStage({ variant }: { variant: Variant }) {
             </p>
             <div id="h-btns" className="hero-c row-c" style={{ top: 384 }}>
               {demo}
-              <Link to={paths.signIn} className="sbtn glass">
+              <Link to={getStarted} className="sbtn glass">
                 Get started →
               </Link>
             </div>
@@ -344,7 +348,7 @@ export function StoryStage({ variant }: { variant: Variant }) {
             <p id="z-sub">{c.closer.lede}</p>
             <div id="z-btns" className="row">
               {demo}
-              <Link to={paths.signIn} className="sbtn outline">
+              <Link to={getStarted} className="sbtn outline">
                 Get started →
               </Link>
             </div>
