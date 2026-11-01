@@ -340,6 +340,42 @@ def test_approval_freezes_phi_hash_and_agent_picks(app_client: TestClient, setti
         assert stored_hash == mergit_receipt.phi_hash(json.dumps(stored_phi))
 
 
+def test_approve_accepts_auto_and_rejects_options_on_picks(
+    app_client: TestClient, settings: Settings
+) -> None:
+    sign_in(app_client)
+    plan = create(app_client)
+    body = {"agents": {"0": "auto", "1": ["1"]}, "funding": "wallet"}
+    assert app_client.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=body).status_code == 200
+
+    plan2 = create(app_client)  # a second draft, still owned by the same signed-in requester
+    bad = {
+        "agents": {"0": ["1"], "1": ["1"]},
+        "routing": {"0": {"explore": False}},
+        "funding": "wallet",
+    }
+    response = app_client.post(f"/v0/plans/{plan2['plan_uuid']}/approve", json=bad)
+    assert response.status_code == 422
+    assert any(
+        p == "task 0: routing options are only valid when agents is 'auto'"
+        for p in response.json()["detail"]["problems"]
+    )
+
+
+def test_approve_auto_leaves_agents_null(app_client: TestClient, settings: Settings) -> None:
+    sign_in(app_client)
+    plan = create(app_client)
+    body = {"agents": {"0": "auto", "1": ["1"]}, "funding": "wallet"}
+    assert app_client.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=body).status_code == 200
+    with psycopg.connect(settings.database_url) as conn:
+        rows = conn.execute(
+            'SELECT "index", agents, routing FROM tasks WHERE plan_uuid = %s ORDER BY "index"',
+            (plan["plan_uuid"],),
+        ).fetchall()
+    assert rows[0] == (0, None, "auto")
+    assert rows[1] == (1, ["1"], "pick")
+
+
 def test_approve_requires_agent_for_every_task(app_client: TestClient, settings: Settings) -> None:
     sign_in(app_client)
     plan = create(app_client)

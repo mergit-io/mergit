@@ -8,16 +8,18 @@ Follows the same style as `test_chain_events.py`: plans are set up by calling `p
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 import mergit_receipt
 import psycopg
 import pytest
-from psycopg.rows import TupleRow
+from psycopg.rows import TupleRow, dict_row
 from pydantic import SecretStr
 
-from mergit_cp import chain_events, outcomes, plans
+from mergit_cp import chain_events, dispatch, outcomes, plans, routing
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool, migrate, open_pool
 from mergit_cp.planner import TaskDraft
@@ -38,6 +40,98 @@ SETTINGS = Settings(
     worker_token=SecretStr("test-worker-token"),
 )
 
+OPERATOR = "0x" + "9" * 40
+
+
+def routed_settings(
+    tmp_path: Path, database_url: str, agent_ids: list[str], operator: str = OPERATOR, **overrides: object
+) -> Settings:
+    """A roster of ``agent_ids``, all under one ``operator`` unless overridden, for the auto-routing (O6 +
+    routing) tests below -- the plain module-level ``SETTINGS`` above (``agents_file="unused"``) is for
+    pick-mode tests, which never call ``routing.route``/``routing.roster`` and so never read it."""
+    unique = uuid.uuid4().hex
+    chain = tmp_path / f"agents-{unique}.json"
+    chain.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "agent_id": a,
+                        "name": f"agent-{a}",
+                        "operator": operator,
+                        "runtime_key": "0x" + "2" * 40,
+                    }
+                    for a in agent_ids
+                ]
+            }
+        )
+    )
+    config = tmp_path / f"agents-{unique}.toml"
+    agent_table = 'provider = "anthropic"\nmodel = "m"\nsystem_prompt = "s"\n'
+    config.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        + "".join(f"[agents.agent-{a}]\n{agent_table}" for a in agent_ids)
+    )
+    return Settings(
+        database_url=database_url,
+        app_domain="app.mergit.test",
+        session_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
+        gateway_url="http://gateway.invalid",
+        store_url="http://store.invalid",
+        agents_file=str(chain),
+        agents_config=str(config),
+        planner_model="claude-opus-5",
+        planner_provider="anthropic",
+        events_token=SecretStr("test-events-token"),
+        chain_events_token=SecretStr("test-chain-events-token"),
+        worker_token=SecretStr("test-worker-token"),
+        **overrides,  # type: ignore[arg-type]
+    )
+
+
+def funded_event(plan: plans.StoredPlan) -> dict[str, Any]:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "type": "plan.funded",
+        "at": "2026-10-29T00:00:00.000Z",
+        "payload": {
+            "plan_id": plan.plan_id,
+            "requester": plan.requester,
+            "amount_usdc_units": str(plan.total_budget_usdc_units),
+            "tier": "staked",
+            "tx": "0x" + "a" * 64,
+        },
+    }
+
+
+async def release(pool: Pool, task_id: str, n: int) -> None:
+    """``task.released`` for ``task_id``: frees whatever operator concurrency cap it was holding."""
+    async with pool.connection() as conn, conn.transaction():
+        await chain_events.receive(
+            conn,
+            {
+                "event_id": str(uuid.uuid4()),
+                "type": "task.released",
+                "at": "2026-10-29T00:00:00.000Z",
+                "payload": {
+                    "task_id": task_id,
+                    "to": "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01",
+                    "amount_usdc_units": "500000",
+                    "tx": "0x" + format(n, "064x"),
+                },
+            },
+            SETTINGS,
+        )
+
+
+async def dispatch_requested_agent(pool: Pool, task_id: str) -> str:
+    async with pool.connection() as conn:
+        cur = conn.cursor(row_factory=dict_row)
+        await cur.execute("SELECT body FROM outbox WHERE type = 'task.dispatch_requested'")
+        rows = await cur.fetchall()
+    [body] = [r["body"] for r in rows if r["body"]["payload"]["task_id"] == task_id]
+    return str(body["payload"]["agent_id"])
+
 
 def phi(**over: Any) -> dict[str, Any]:
     return {
@@ -56,8 +150,15 @@ def task(index: int, depends_on: list[int] | None = None, budget: int = 500_000)
 
 
 async def _plan(
-    conn: psycopg.AsyncConnection[TupleRow], tasks: list[TaskDraft], agents: dict[int, list[str]]
+    conn: psycopg.AsyncConnection[TupleRow],
+    tasks: list[TaskDraft],
+    agents: dict[int, list[str] | None],
+    *,
+    routing: dict[int, tuple[str, bool, bool]] | None = None,
+    category: str = "test-repair",
 ) -> plans.StoredPlan:
+    """``agents[index] = None`` approves that index as auto-routed (``routing`` defaults to ``'pick'`` for
+    every index when omitted, so every existing caller -- all of them pick-mode -- is unaffected)."""
     plan_uuid = str(uuid.uuid4())
     plan_id = mergit_receipt.plan_id(plan_uuid)
     await plans.insert_draft(
@@ -68,7 +169,7 @@ async def _plan(
         goal="fix it",
         repo_url="https://github.com/mergit-io/demo-repo",
         ref="main",
-        category="test-repair",
+        category=category,
         budget_usdc_units=sum(t.budget_usdc_units for t in tasks),
         planner_model="claude-opus-5",
         tasks=tasks,
@@ -78,6 +179,7 @@ async def _plan(
         plan_uuid,
         picks=agents,
         phi_hashes={t.index: mergit_receipt.phi_hash(plans.phi_json(t.phi)) for t in tasks},
+        routing=routing or {i: ("pick", True, True) for i in agents},
         funding="wallet",
         total_budget_usdc_units=sum(t.budget_usdc_units for t in tasks),
     )
@@ -102,9 +204,9 @@ def run(database_url: str, body: Any) -> Any:
     return asyncio.run(go())
 
 
-async def _process(pool: Pool) -> int:
+async def _process(pool: Pool, settings: Settings = SETTINGS) -> int:
     async with pool.connection() as conn, conn.transaction():
-        return await outcomes.process_due(conn, SETTINGS)
+        return await outcomes.process_due(conn, settings)
 
 
 async def _dispatch_and_escrow(
@@ -368,6 +470,256 @@ def test_abandon_sends_plan_closed(database_url: str) -> None:
             ).fetchone()
         assert plan_loaded is not None and plan_loaded.state == "closed"
         assert event == ("plan.closed", plan.plan_id)
+
+    run(database_url, body)
+
+
+# --- auto-routing wired into dispatch (Task 6) -----------------------------------------------------
+
+
+def test_auto_index_dispatches_routed_agent(database_url: str, tmp_path: Path) -> None:
+    # explore=False everywhere in this section's tests, deliberately: with `explore=True` a single-agent
+    # (or even two-agent) roster's Thompson *sample* can come back infeasible purely by chance (`router.py`
+    # samples cost from a wide, uninformative Gamma(kappa=1, ...) prior), making `route()` return `None` on
+    # an unlucky draw even though the deterministic `greedy` pick is comfortably feasible -- that is a real,
+    # already-handled case (`dispatch_waiting`'s whole job), but it would make these specific dispatch-level
+    # wiring tests flaky for a reason that has nothing to do with what they are checking. `explore=False`
+    # makes `chosen == greedy` always, so these tests stay deterministic without weakening the coverage:
+    # Task 6 wires `route`/`record_draw`/`dispatch_waiting` into dispatch, not the Thompson draw itself,
+    # which `tests/test_routing.py` already covers thoroughly under `explore=True`.
+    settings = routed_settings(tmp_path, database_url, ["501"])
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            is_new = await chain_events.receive(conn, funded_event(plan), settings)
+        assert is_new
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            row = await cur.fetchone()
+        assert row is not None
+        task_id = row[0]
+
+        async with pool.connection() as conn:
+            cur = await conn.execute("SELECT chosen_agent FROM routing_draws WHERE task_id = %s", (task_id,))
+            drawn = await cur.fetchone()
+        assert drawn is not None
+        chosen_agent = drawn[0]
+        assert chosen_agent == "501"  # single-agent roster: deterministic
+
+        agent_in_event = await dispatch_requested_agent(pool, task_id)
+        assert agent_in_event == chosen_agent
+
+        async with pool.connection() as conn:
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+        assert loaded is not None and loaded.state == "running"
+
+    run(database_url, body)
+
+
+def test_auto_index_waits_at_cap_then_dispatches(database_url: str, tmp_path: Path) -> None:
+    settings = routed_settings(tmp_path, database_url, ["601"], router_operator_concurrency_cap=1)
+
+    async def body(pool: Pool) -> None:
+        # A noise plan's unresolved dispatch to the only agent in the roster occupies the one concurrency
+        # slot its operator has -- the auto plan below has nothing eligible to route to until it is freed.
+        async with pool.connection() as conn, conn.transaction():
+            noise = await _plan(conn, [task(0)], {0: ["601"]})
+            noise_task_id = await outcomes.dispatch.dispatch_task(conn, noise, 0, 1, "601", settings)
+
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            is_new = await chain_events.receive(conn, funded_event(plan), settings)
+        assert is_new
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT count(*) FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            n = await cur.fetchone()
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+        assert n is not None and n[0] == 0  # nothing dispatched: the operator is at its concurrency cap
+        assert loaded is not None and loaded.state == "funded"  # never moved to running
+
+        await release(pool, noise_task_id, 1)  # frees the operator's only slot
+
+        async with pool.connection() as conn, conn.transaction():
+            dispatched = await dispatch.dispatch_waiting(conn, settings)
+        assert dispatched == 1
+
+        async with pool.connection() as conn:
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+        assert loaded is not None and loaded.state == "running"
+
+    run(database_url, body)
+
+
+def test_auto_retry_draws_a_different_agent(database_url: str, tmp_path: Path) -> None:
+    """With exactly two roster agents under one operator, "already tried" leaves only one eligible arm for
+    the retry -- so the retry's chosen agent is not just *a* new `routing_draws` row, it is deterministically
+    the OTHER agent."""
+    settings = routed_settings(tmp_path, database_url, ["701", "702"])
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            await chain_events.receive(conn, funded_event(plan), settings)
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id, agent_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            task_id_1, agent_1 = await cur.fetchone()
+
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_1)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id_1,),
+            )
+
+        processed = await _process(pool, settings)
+        assert processed == 1
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id, attempt, agent_id FROM task_dispatches WHERE plan_uuid = %s"
+                " ORDER BY attempt",
+                (plan.plan_uuid,),
+            )
+            rows = await cur.fetchall()
+        assert [r[1] for r in rows] == [1, 2]
+        task_id_2, agent_2 = rows[1][0], rows[1][2]
+        assert {agent_1, agent_2} == {"701", "702"}
+        assert agent_2 != agent_1
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT count(*) FROM routing_draws WHERE task_id = ANY(%s)", ([task_id_1, task_id_2],)
+            )
+            n = await cur.fetchone()
+        assert n is not None and n[0] == 2  # a fresh routing_draws row for the retry, not a reused one
+
+    run(database_url, body)
+
+
+def test_auto_index_stuck_after_all_agents_tried(database_url: str, tmp_path: Path) -> None:
+    """Every roster agent dispatched and failed for an auto index: structurally stuck, even though
+    `settings.max_attempts` (3, the default) was never reached -- there is nothing left in the roster for
+    `routing.candidates` to ever offer `route()` again."""
+    settings = routed_settings(tmp_path, database_url, ["801", "802"])
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            await chain_events.receive(conn, funded_event(plan), settings)
+
+        for _ in range(2):  # both roster agents, one attempt each
+            async with pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT task_id FROM task_dispatches WHERE plan_uuid = %s"
+                    " AND task_id NOT IN (SELECT task_id FROM jobs) ",
+                    (plan.plan_uuid,),
+                )
+                row = await cur.fetchone()
+            assert row is not None
+            task_id = row[0]
+            async with pool.connection() as conn, conn.transaction():
+                assert await outcomes.dispatch.record_escrowed(conn, task_id)
+                await conn.execute(
+                    "UPDATE jobs SET status = 'error', phi_holds = false, finished_at = now()"
+                    " WHERE task_id = %s",
+                    (task_id,),
+                )
+            await _process(pool, settings)
+
+        async with pool.connection() as conn:
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+            assert loaded is not None
+            stuck = await outcomes.stuck_indexes(conn, loaded, settings)
+        assert stuck == [0]
+
+    run(database_url, body)
+
+
+def test_waiting_index_is_not_stuck(database_url: str, tmp_path: Path) -> None:
+    """An auto index with attempts remaining AND a roster agent still untried is not stuck even while the
+    operator currently sits at its concurrency cap -- capacity is transient and must never read as
+    `needs_requester`."""
+    settings = routed_settings(tmp_path, database_url, ["901", "902"], router_operator_concurrency_cap=1)
+
+    async def body(pool: Pool) -> None:
+        # Occupy the operator's one slot with an unrelated, unresolved dispatch to agent "901".
+        async with pool.connection() as conn, conn.transaction():
+            noise = await _plan(conn, [task(0)], {0: ["901"]})
+            await outcomes.dispatch.dispatch_task(conn, noise, 0, 1, "901", settings)
+
+        # The routed plan's only processed attempt (also "901", now failed) leaves "902" untried.
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            task_id = await outcomes.dispatch.dispatch_task(conn, plan, 0, 1, "901", settings)
+            assert await outcomes.dispatch.record_escrowed(conn, task_id)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id,),
+            )
+            await outcomes._mark_processed(conn, task_id)
+
+        async with pool.connection() as conn:
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+            assert loaded is not None
+            # Confirm this really is "waiting on capacity" right now, not just a scenario that happens not
+            # to affect `stuck_indexes`: a route() call at this exact moment has nothing eligible either.
+            arms, ineligible = await routing.candidates(conn, loaded, 0, settings)
+            stuck = await outcomes.stuck_indexes(conn, loaded, settings)
+        assert arms == []
+        assert ineligible == {"901": "already tried on this task", "902": "operator at concurrency cap"}
+        assert stuck == []  # "902" is still untried, and only 1 of 3 default attempts has been used
+
+    run(database_url, body)
+
+
+def test_pick_mode_unchanged(database_url: str) -> None:
+    """A representative pick-mode O6 scenario (retry on failure, through the real `plan.funded` dispatch
+    path this time, not the direct `dispatch_task` calls the older tests above use) must behave exactly as
+    before Task 6: the requester's next listed agent, dispatched directly, with no `routing_draws` row at
+    all -- `routing.route` must never be consulted for a `'pick'`-routing task."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            is_new = await chain_events.receive(conn, funded_event(plan), SETTINGS)
+        assert is_new
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id, agent_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            task_id_1, agent_1 = await cur.fetchone()
+        assert agent_1 == "1"
+
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_1)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id_1,),
+            )
+
+        processed = await _process(pool)
+        assert processed == 1
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT attempt, agent_id FROM task_dispatches WHERE plan_uuid = %s ORDER BY attempt",
+                (plan.plan_uuid,),
+            )
+            rows = await cur.fetchall()
+            n = await (await conn.execute("SELECT count(*) FROM routing_draws")).fetchone()
+        assert rows == [(1, "1"), (2, "2")]
+        assert n is not None and n[0] == 0  # never routed: this is a pick-mode task
 
     run(database_url, body)
 

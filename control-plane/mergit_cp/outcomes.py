@@ -33,7 +33,7 @@ from uuid import UUID
 from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 
-from . import dispatch
+from . import dispatch, routing
 from .config import Settings
 from .db import Pool
 from .events import enqueue
@@ -117,9 +117,25 @@ async def process_one(conn: AsyncConnection[TupleRow], job: FinishedJob, setting
         return
 
     if job.holds is not True:
-        next_agent = _next_agent(task, job.attempt, settings.max_attempts)
-        if next_agent is not None:
-            await dispatch.dispatch_task(conn, plan, job.index, job.attempt + 1, next_agent, settings)
+        if task.routing == "auto":
+            # Mirrors `_next_agent`'s own attempt-cap guard: `route()` itself does not know about
+            # `max_attempts` (it only ever asks "what is eligible right now"), so the cap has to be
+            # enforced here, same as the pick-mode branch below.
+            if job.attempt < settings.max_attempts:
+                pending = await routing.route(conn, plan, job.index, job.attempt + 1, settings)
+                if pending is not None:
+                    assert pending.draw.chosen is not None  # route()'s contract: never None-wrapped
+                    task_id = await dispatch.dispatch_task(
+                        conn, plan, job.index, job.attempt + 1, pending.draw.chosen, settings
+                    )
+                    await routing.record_draw(conn, task_id, pending)
+                # `pending is None` means nothing is eligible right now (every candidate's operator at its
+                # concurrency cap, say) -- an "owed retry" left for `dispatch.dispatch_waiting`'s periodic
+                # sweep, not an error.
+        else:
+            next_agent = _next_agent(task, job.attempt, settings.max_attempts)
+            if next_agent is not None:
+                await dispatch.dispatch_task(conn, plan, job.index, job.attempt + 1, next_agent, settings)
     await _mark_processed(conn, job.task_id)
 
     dispatched = await dispatch.dispatch_ready(conn, plan, settings)
@@ -142,18 +158,45 @@ async def process_one(conn: AsyncConnection[TupleRow], job: FinishedJob, setting
 
 
 async def process_due(conn: AsyncConnection[TupleRow], settings: Settings, limit: int = 20) -> int:
-    """Process every job finished and not yet reacted to, up to ``limit``. Returns how many."""
+    """Process every job finished and not yet reacted to, up to ``limit``, then sweep every plan still
+    `funded`/`running` for anything an auto-routing task left waiting on capacity
+    (`dispatch.dispatch_waiting`) -- the only way a waiting auto task ever gets picked up again once nothing
+    else happens to fail or a new chain event doesn't arrive to trigger it. Both run in whatever transaction
+    the caller already opened (`OutcomeProcessor.process_due` wraps one around this whole call), the same
+    one-transaction discipline `route`'s advisory lock depends on. Returns how many jobs were processed
+    (not how many were (re)dispatched by the sweep)."""
     jobs = await _claim_finished(conn, limit)
     for job in jobs:
         await process_one(conn, job, settings)
+    await dispatch.dispatch_waiting(conn, settings)
     return len(jobs)
 
 
+async def _auto_exhausted(
+    conn: AsyncConnection[TupleRow], plan: StoredPlan, task: StoredTask, last_attempt: int, settings: Settings
+) -> bool:
+    """An auto-routing index is stuck only when it will structurally never be retried again: the attempt
+    cap is reached, or every agent in the roster has already been dispatched at some attempt for this index
+    (so `routing.candidates`' "already tried" exclusion rules out every one of them, forever -- unlike the
+    concurrency cap or probation, which are transient and must never make an index permanently
+    `needs_requester`)."""
+    if last_attempt >= settings.max_attempts:
+        return True
+    cur = await conn.execute(
+        'SELECT DISTINCT agent_id FROM task_dispatches WHERE plan_uuid = %s AND "index" = %s',
+        (plan.plan_uuid, task.draft.index),
+    )
+    tried = {row[0] for row in await cur.fetchall()}
+    roster_ids = {a.agent_id for a in routing.roster(settings)}
+    return bool(roster_ids) and roster_ids.issubset(tried)
+
+
 async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings) -> list[int]:
-    """Indexes whose latest processed attempt did not pass and will never be retried: the attempt cap or
-    the requester's agent list is exhausted. ``needs_requester`` in plan task O6's own words, computed on
-    demand from ``jobs`` and ``tasks.agents`` rather than stored, since it is exactly what
-    ``dispatch_ready`` already would not find ready."""
+    """Indexes whose latest processed attempt did not pass and will never be retried automatically again:
+    for a ``'pick'``-routing task, the attempt cap or the requester's own agent list is exhausted (unchanged
+    from before Task 6); for an ``'auto'``-routing task, see `_auto_exhausted`. ``needs_requester`` in plan
+    task O6's own words, computed on demand from ``jobs``/``tasks.agents``/``task_dispatches`` rather than
+    stored, since it is exactly what ``dispatch_ready``/``dispatch_waiting`` already would not find ready."""
     cur = await conn.execute(_PROCESSED_INDEXES, (plan.plan_uuid,))
     by_index = {index: (passed, last_attempt) for index, passed, last_attempt in await cur.fetchall()}
     stuck: list[int] = []
@@ -162,7 +205,12 @@ async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, setti
         if state is None:
             continue  # never dispatched, or still in flight
         passed, last_attempt = state
-        if not passed and _next_agent(task, int(last_attempt), settings.max_attempts) is None:
+        if passed:
+            continue
+        if task.routing == "auto":
+            if await _auto_exhausted(conn, plan, task, int(last_attempt), settings):
+                stuck.append(task.draft.index)
+        elif _next_agent(task, int(last_attempt), settings.max_attempts) is None:
             stuck.append(task.draft.index)
     return stuck
 

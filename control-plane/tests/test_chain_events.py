@@ -68,6 +68,7 @@ async def _approved_plan(
         plan_uuid,
         picks={t.index: ["1"] for t in tasks},
         phi_hashes={t.index: mergit_receipt.phi_hash(plans.phi_json(t.phi)) for t in tasks},
+        routing={t.index: ("pick", True, True) for t in tasks},
         funding="wallet",
         total_budget_usdc_units=sum(t.budget_usdc_units for t in tasks),
     )

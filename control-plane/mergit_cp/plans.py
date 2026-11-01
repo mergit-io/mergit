@@ -19,6 +19,13 @@ class StoredTask:
     draft: TaskDraft
     phi_hash: str | None
     agents: list[str] | None
+    routing: str
+    """``'pick'`` (the requester's own agent list, the default for every row written before Task 6's
+    migration) or ``'auto'`` (routed by ``mergit_cp/routing.py::route`` at dispatch time)."""
+    explore: bool
+    retry_tolerant: bool
+    """Per-task knobs into ``mergit_cp.router.Mode`` (paper 9.3-9.4), read by ``routing.route``. Irrelevant
+    for a ``'pick'``-routing task, but always set (the column is ``NOT NULL``)."""
 
 
 @dataclass(frozen=True)
@@ -95,6 +102,9 @@ async def load(
             ),
             phi_hash=t["phi_hash"],
             agents=None if t["agents"] is None else list(t["agents"]),
+            routing=t["routing"],
+            explore=t["explore"],
+            retry_tolerant=t["retry_tolerant"],
         )
         for t in await cur.fetchall()
     ]
@@ -126,15 +136,22 @@ async def approve(
     conn: AsyncConnection[TupleRow],
     plan_uuid: str,
     *,
-    picks: dict[int, list[str]],
+    picks: dict[int, list[str] | None],
     phi_hashes: dict[int, str],
+    routing: dict[int, tuple[str, bool, bool]],
     funding: str,
     total_budget_usdc_units: int,
 ) -> None:
+    """``picks[index]`` is ``None`` for an auto-routed index (``tasks.agents`` is written ``NULL``) or the
+    requester's ordered agent list otherwise. ``routing`` maps every index -- both ``'pick'`` and ``'auto'``
+    ones -- to ``(routing, explore, retry_tolerant)``, so the ``UPDATE`` below always sets all three
+    columns consistently rather than leaving two of them at their migration defaults for a pick-mode task."""
     for index, agents in picks.items():
+        routing_value, explore, retry_tolerant = routing[index]
         await conn.execute(
-            'UPDATE tasks SET agents = %s, phi_hash = %s WHERE plan_uuid = %s AND "index" = %s',
-            (agents, phi_hashes[index], plan_uuid, index),
+            "UPDATE tasks SET agents = %s, phi_hash = %s, routing = %s, explore = %s, retry_tolerant = %s"
+            ' WHERE plan_uuid = %s AND "index" = %s',
+            (agents, phi_hashes[index], routing_value, explore, retry_tolerant, plan_uuid, index),
         )
     await conn.execute(
         "UPDATE plans SET state = 'approved', funding = %s, total_budget_usdc_units = %s,"
@@ -180,6 +197,9 @@ def view(plan: StoredPlan) -> dict[str, Any]:
                 "budget_usdc_units": str(t.draft.budget_usdc_units),
                 "depends_on": t.draft.depends_on,
                 "agents": t.agents,
+                "routing": t.routing,
+                "explore": t.explore,
+                "retry_tolerant": t.retry_tolerant,
             }
             for t in plan.tasks
         ],

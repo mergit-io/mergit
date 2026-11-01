@@ -57,11 +57,14 @@ async def on_plan_funded(
     )
     dispatched = await dispatch.dispatch_ready(conn, plan, settings)
     if dispatched:
-        await conn.execute(
-            "UPDATE plans SET state = 'running', updated_at = now() WHERE plan_uuid = %s", (plan.plan_uuid,)
-        )
+        await dispatch.mark_running(conn, plan.plan_uuid)
     else:
-        log.error("plan %s funded but no task was ready to dispatch", plan.plan_id)
+        # A legitimate state once auto-routing exists: every ready index could be routing='auto' with
+        # every candidate agent's operator momentarily at its concurrency cap. The plan stays `funded`;
+        # `dispatch.dispatch_waiting`'s periodic sweep is what moves it once capacity frees up.
+        log.info(
+            "plan %s funded; nothing dispatched yet (auto tasks may be waiting on capacity)", plan.plan_id
+        )
 
 
 async def on_task_escrowed(conn: AsyncConnection[TupleRow], payload: dict[str, Any]) -> None:

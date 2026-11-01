@@ -59,11 +59,21 @@ class EditPlan(BaseModel):
     tasks: list[EditTask]
 
 
+class RoutingOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    explore: bool = True
+    retry_tolerant: bool = True
+
+
 class ApprovePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    agents: dict[str, list[str]]
-    """Per task index: the agent ids the requester allows, in order. The first runs; the rest are retries."""
+    agents: dict[str, list[str] | Literal["auto"]]
+    """Per task index: either the agent ids the requester allows, in order (the first runs; the rest are
+    retries), or the literal ``"auto"`` to let `mergit_cp.routing.route` pick instead."""
+    routing: dict[str, RoutingOptions] = {}
+    """Per-task routing knobs, only meaningful (and only accepted) for an index marked ``"auto"`` above."""
     funding: Literal["wallet", "credits"]
 
 
@@ -215,12 +225,29 @@ async def approve_plan(
         expected = {str(t.index) for t in drafts}
         if set(body.agents) != expected:
             problems.append(f"agents must name every task index exactly once: {sorted(expected, key=int)}")
+
+        auto_indexes = {i for i, picked in body.agents.items() if picked == "auto"}
+        extra_routing = set(body.routing) - auto_indexes
+        problems.extend(
+            f"task {index}: routing options are only valid when agents is 'auto'"
+            for index in sorted(extra_routing, key=int)
+        )
+
+        picks: dict[int, list[str] | None] = {}
+        routing: dict[int, tuple[str, bool, bool]] = {}
         for index, picked in sorted(body.agents.items()):
-            if not 1 <= len(picked) <= settings.max_attempts:
-                problems.append(f"task {index}: pick between 1 and {settings.max_attempts} agents")
-            if len(set(picked)) != len(picked):
-                problems.append(f"task {index}: an agent is listed twice")
-            problems.extend(f"task {index}: unknown agent {a!r}" for a in picked if a not in known)
+            if picked == "auto":
+                opts = body.routing.get(index, RoutingOptions())
+                picks[int(index)] = None
+                routing[int(index)] = ("auto", opts.explore, opts.retry_tolerant)
+            else:
+                if not 1 <= len(picked) <= settings.max_attempts:
+                    problems.append(f"task {index}: pick between 1 and {settings.max_attempts} agents")
+                if len(set(picked)) != len(picked):
+                    problems.append(f"task {index}: an agent is listed twice")
+                problems.extend(f"task {index}: unknown agent {a!r}" for a in picked if a not in known)
+                picks[int(index)] = picked
+                routing[int(index)] = ("pick", True, True)
         if (
             principal.user_id is not None
             and plan.requester in await accounts.trial_addresses(conn, principal.user_id)
@@ -234,8 +261,9 @@ async def approve_plan(
         await plans.approve(
             conn,
             plan.plan_uuid,
-            picks={int(i): picked for i, picked in body.agents.items()},
+            picks=picks,
             phi_hashes={t.index: mergit_receipt.phi_hash(plans.phi_json(t.phi)) for t in drafts},
+            routing=routing,
             funding=body.funding,
             total_budget_usdc_units=total,
         )
