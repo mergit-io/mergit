@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -106,6 +107,15 @@ def test_shipped_agents_toml_covers_the_example_agents():
     registry = json.loads((ROOT.parent / "deploy" / "agents.example.json").read_text())["agents"]
     toml = (ROOT / "agents.toml").read_text()
     assert all(f"[agents.{a['name']}]" in toml for a in registry)
+
+
+def test_shipped_agents_are_priced():
+    """Every model named in the repo's own `agents.toml` must be in the repo's own `prices.toml`, or the
+    worker refuses to start (`validate_agents_are_priced`)."""
+    prices = PriceTable.load(ROOT / "prices.toml")
+    agents = tomllib.loads((ROOT / "agents.toml").read_text())["agents"]
+    for cfg in agents.values():
+        prices.price(cfg["model"])
 
 
 BASE_ENV = {
