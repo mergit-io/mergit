@@ -122,10 +122,10 @@ test.describe("sign in", () => {
     });
   });
 
-  test("Try the demo connects a wallet and opens the dashboard", async ({ page }) => {
+  test("Get started connects a wallet and opens the dashboard", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByRole("button", { name: /Try the demo/ })
+      .getByRole("button", { name: /Get started/ })
       .first()
       .click();
     await expect(page).toHaveURL(/\/app$/);
@@ -208,7 +208,7 @@ test.describe("sign in", () => {
   test("the Connect window fits a phone screen", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 800 });
     await page.goto("/");
-    await page.getByRole("button", { name: "Try the demo" }).first().click();
+    await page.getByRole("button", { name: "Get started" }).first().click();
     const box = await page.getByRole("dialog").boundingBox();
     expect(box?.x).toBeGreaterThanOrEqual(0);
     expect((box?.x ?? 0) + (box?.width ?? Infinity)).toBeLessThanOrEqual(390);

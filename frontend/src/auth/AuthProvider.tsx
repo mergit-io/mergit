@@ -6,7 +6,7 @@ import { AuthContext } from "./context";
 import type { Address } from "viem";
 import { onSessionEnded } from "../api/client";
 import { signOutLive, watchAccount } from "../chain/wallet";
-import { DATA_MODE } from "../config/live";
+import { DATA_MODE, IN_DEMO } from "../config/live";
 import {
   fetchAccount,
   isTrialSession,
@@ -15,7 +15,7 @@ import {
   type Account,
   type AccountCheck,
 } from "./account";
-import { readSession, writeSession, type Session } from "./session";
+import { demoSession, readSession, writeSession, type Session } from "./session";
 import { SignOutSplash } from "./SignOutSplash";
 
 /** Sign-out splash timing, from the landing design video: fade in, hold, then hand over to the landing page. */
@@ -25,7 +25,11 @@ type SplashPhase = "hidden" | "in" | "out";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
-  const [session, setSession] = useState<Session | null>(readSession);
+  // The demo needs no sign-in: it opens signed in as the sample account. (Signing out ends it and returns to the home
+  // page.) Everywhere else the remembered session, if there is one.
+  const [session, setSession] = useState<Session | null>(() =>
+    IN_DEMO ? (readSession() ?? demoSession("browser")) : readSession(),
+  );
   const [account, setAccount] = useState<Account | null>(null);
   // On live data the server is asked once, at load, whether this browser already holds a session cookie (it does
   // after GitHub or Google sends the browser back). Until then the dashboard must not offer the Connect window.

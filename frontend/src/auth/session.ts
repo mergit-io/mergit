@@ -4,11 +4,14 @@
  * wallet connector (and a server-issued session) when the backend exists.
  */
 
+import { IN_DEMO } from "../config/live";
+
 export type WalletKind = "browser" | "walletconnect" | "passkey";
 export type SignInMethod = WalletKind | "github" | "google" | "email";
 export type Session = { address: string; addressShort: string; method: SignInMethod; since: number };
 
-const STORAGE_KEY = "mergit-session";
+// The demo keeps its own record, so visiting it can neither replace nor sign out a real session in the same browser.
+const STORAGE_KEY = IN_DEMO ? "mergit-demo-session" : "mergit-session";
 
 export const DEMO_ADDRESS = "0x6E2d4A9c51b07f3e9d28c4a16b0e7f2c3d119A0b";
 export const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;

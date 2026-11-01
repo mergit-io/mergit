@@ -287,3 +287,28 @@
   text-align: center;
   padding-top: 80px;
 }
+
+/* The demo says what it is on every page. */
+.demo-banner {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding: 8px 40px;
+  background: var(--amber-wash);
+  color: var(--amber);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.demo-banner a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+@media (max-width: 720px) {
+  .demo-banner {
+    padding: 8px 16px;
+  }
+}

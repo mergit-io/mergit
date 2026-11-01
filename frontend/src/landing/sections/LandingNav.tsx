@@ -28,6 +28,9 @@ export function LandingNav() {
           </Link>
         ) : (
           <>
+            <a href={paths.demo} className="l-signin">
+              View demo
+            </a>
             <Link to={paths.signIn} className="l-signin">
               Sign in
             </Link>
@@ -38,7 +41,7 @@ export function LandingNav() {
                 openConnect();
               }}
             >
-              Try the demo <LIcon name="arrowUpRight" size={14} stroke={2} />
+              Get started <LIcon name="arrowUpRight" size={14} stroke={2} />
             </button>
           </>
         )}
