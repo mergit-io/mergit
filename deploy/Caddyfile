@@ -21,13 +21,13 @@
 
 # The site: the frontend on live Base Sepolia data, and the orchestration API on the same origin. It is served on both
 # mergit.site and app.mergit.site, identically. Each page calls /v0/auth, /v0/account, /v0/wallet-interest, /v0/plans
-# and /v0/agents on its own hostname, so there is no CORS. The gateway and the worker reach the API directly over the
+# and /v0/agents (with its /reputation) on its own hostname, so there is no CORS. The gateway and the worker reach the API directly over the
 # compose network, so /v0/chain-events and /v0/internal are deliberately not proxied.
 # deploy/secrets/api.env must say how sign-in works across the two: APP_DOMAIN=app.mergit.site (where GitHub and Google
 # send people back to, since each allows one callback address), EXTRA_DOMAINS=mergit.site (wallet sign-in is accepted
 # from both) and COOKIE_DOMAIN=mergit.site (the session cookie is shared, so signing in on one signs in on the other).
 mergit.site, app.mergit.site {
-	@api path /v0/auth/* /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents
+	@api path /v0/auth/* /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents /v0/agents/*
 	handle @api {
 		reverse_proxy api:8000
 	}

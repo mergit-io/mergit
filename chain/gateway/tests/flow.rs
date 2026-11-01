@@ -738,6 +738,18 @@ async fn committed_receipts_are_listed_newest_first(pool: PgPool) {
 
     let (_, one) = commitments(&w, "?limit=1").await;
     assert_eq!(one.as_array().unwrap().len(), 1);
+
+    // One task's commitment, for the control plane's cost lookup; a task with none is an empty list.
+    let (status, only) = commitments(&w, &format!("?task_id={}", tasks[0])).await;
+    assert_eq!(status, StatusCode::OK);
+    let only = only.as_array().unwrap();
+    assert_eq!(only.len(), 1);
+    assert_eq!(only[0]["task_id"], json!(tasks[0]));
+    let (_, none) = commitments(&w, &format!("?task_id=0x{}", "0".repeat(64))).await;
+    assert_eq!(none, json!([]));
+    let (status, refused) = commitments(&w, "?task_id=nonsense").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(refused["error"], json!("BAD_TASK_ID"));
     assert_eq!(one[0]["task_id"], json!(tasks[1]));
     assert_eq!(commitments(&w, "?limit=0").await.0, StatusCode::BAD_REQUEST);
     assert_eq!(

@@ -11,7 +11,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from mergit_worker.meter import PriceTable
 
-from . import auth, chain_events, oauth, otp, redeem, routes_plans, routes_pr, routes_runs, wallet_interest
+from . import (
+    auth,
+    chain_events,
+    oauth,
+    otp,
+    redeem,
+    routes_plans,
+    routes_pr,
+    routes_reputation,
+    routes_routing,
+    routes_runs,
+    wallet_interest,
+)
 from .agents import load_agents
 from .config import Settings
 from .db import migrate, open_pool
@@ -20,6 +32,7 @@ from .llm import LLM, build_llm
 from .outcomes import OutcomeProcessor
 from .planner import PgCostSink
 from .pr_store import PgPrStore
+from .reputation import GatewayCosts, ReputationUpdater
 from .spec import require_schemas
 from .stream import PlanBroadcaster
 
@@ -30,6 +43,7 @@ def create_app(
     llm: LLM | None = None,
     deliver_events: bool = True,
     process_outcomes: bool = True,
+    update_reputation: bool = True,
     mailer: otp.Mailer | None = None,
 ) -> FastAPI:
     """``deliver_events=False`` leaves events in the outbox, and ``process_outcomes=False`` leaves
@@ -66,15 +80,21 @@ def create_app(
         outcomes_task = (
             asyncio.create_task(processor.run(settings.outcome_poll_s, stop)) if process_outcomes else None
         )
+        costs = GatewayCosts(settings.gateway_url, timeout_s=settings.event_timeout_s)
+        updater = ReputationUpdater(pool, settings, costs)
+        reputation_task = (
+            asyncio.create_task(updater.run(settings.reputation_poll_s, stop)) if update_reputation else None
+        )
         try:
             yield
         finally:
             stop.set()
-            for task in (sender, outcomes_task):
+            for task in (sender, outcomes_task, reputation_task):
                 if task is not None:
                     with suppress(asyncio.CancelledError):
                         await task
             await deliverer.aclose()
+            await costs.aclose()
             app.state.pr_store.close()
             await pool.close()
 
@@ -101,5 +121,7 @@ def create_app(
     app.include_router(chain_events.router)
     app.include_router(routes_runs.router)
     app.include_router(routes_runs.agents_router)
+    app.include_router(routes_reputation.router)
+    app.include_router(routes_routing.router)
     app.include_router(routes_runs.internal_router)
     return app

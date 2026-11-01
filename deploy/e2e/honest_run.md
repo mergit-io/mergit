@@ -21,6 +21,12 @@ its README says how it was checked) and make sure the worker's `GITHUB_TOKEN` ca
 7. Open **Proofs**, then the task. Expect: "Verified, unattested (development key)" and "The task's check
    passed", computed in your browser.
 
+8. Reputation. Open `https://mergit.site/v0/agents/reputation?category=test-repair`. Expect the agent you used to show
+   `counted_outcomes: 0` and `uncounted_credit_outcomes: 1`: this run was funded from free credits, and free-credit
+   work never counts toward reputation. To see a posterior move, repeat the run funded from a wallet; expect
+   `counted_outcomes: 1` within a few seconds of `TaskReleased`, and `basis: "validated outcomes"`. (The figures are
+   the prior until then, and the page says so.)
+
 | Step | Transaction |
 | --- | --- |
 | PlanFunded | |
