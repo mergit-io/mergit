@@ -154,3 +154,16 @@ def test_cors_allows_configured_origin_with_credentials(client: TestClient) -> N
         "/v0/auth/me", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"}
     )
     assert "access-control-allow-origin" not in other.headers
+
+
+@pytest.mark.parametrize(
+    "signature", ["0x" + "00" * 65, "0x" + "ff" * 65, "0x00", "0x", "not hex at all", "0x" + "12" * 64]
+)
+def test_verify_rejects_a_malformed_signature_with_401_not_a_crash(
+    client: TestClient, signature: str
+) -> None:
+    _, body = _signed(_nonce(client))
+    body["signature"] = signature
+    response = client.post("/v0/auth/verify", json=body)
+    assert response.status_code == 401, (signature, response.status_code, response.text)
+    assert client.get("/v0/auth/me").status_code == 401

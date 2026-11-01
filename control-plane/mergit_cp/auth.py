@@ -69,6 +69,12 @@ def _checked_message(body: VerifyBody, settings: Settings) -> SiweMessage:
         message.verify(body.signature, domain=message.domain)
     except VerificationError as exc:
         raise _unauthorized(type(exc).__name__) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # A signature that is not even well formed (wrong length, out-of-range values) makes the signature
+        # library raise its own error types, not VerificationError. Failing to check one is never a session.
+        raise _unauthorized("InvalidSignature") from exc
     return message
 
 
