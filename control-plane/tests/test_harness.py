@@ -68,6 +68,48 @@ class _RecordingProgress:
         self.reports.append((task_id, seq, step_type, cost.usd_micros))
 
 
+def test_tampered_step_output_is_rejected(sandbox, publisher, repo_url):
+    """Flip one character of a non-final step's `output_digest` in a copy of the sealed bundle: the
+    chain no longer commits to what it attests, so the control plane's own `verify()` call must flag
+    it, not just the Rust crates' internal vector tests."""
+    run(sandbox, publisher, [turn(FIX), turn(("finish", {"summary": "done"}))], repo_url)
+    bundle = publisher.bundle()
+    assert bundle["receipt"]["steps"][0]["type"] == "model_call"  # the step we're about to tamper
+    digest = bundle["receipt"]["steps"][0]["output_digest"]
+    flipped = "1" if digest[-1] != "1" else "2"
+    bundle["receipt"]["steps"][0]["output_digest"] = digest[:-1] + flipped
+    result = json.loads(mergit_receipt.verify(json.dumps(bundle), CHAIN_ID, REGISTRY, None))
+    assert result["status"] != "unattested_valid"
+    assert result["reasons"]
+
+
+def test_reordered_steps_are_rejected(sandbox, publisher, repo_url):
+    """Swap two non-terminal steps' positions in a copy of the sealed bundle (their `seq` fields are
+    left untouched, so the list order no longer matches `seq` order): the control plane's own
+    `verify()` call must flag it."""
+    run(sandbox, publisher, [turn(FIX), turn(("finish", {"summary": "done"}))], repo_url)
+    bundle = publisher.bundle()
+    steps = bundle["receipt"]["steps"]
+    assert steps[0]["type"] == "model_call" and steps[2]["type"] == "model_call"  # the steps we're swapping
+    steps[0], steps[2] = steps[2], steps[0]
+    result = json.loads(mergit_receipt.verify(json.dumps(bundle), CHAIN_ID, REGISTRY, None))
+    assert result["status"] != "unattested_valid"
+    assert result["reasons"]
+
+
+def test_dropped_step_is_rejected(sandbox, publisher, repo_url):
+    """Remove one non-terminal step entirely from a copy of the sealed bundle's `steps` array: this is
+    CLAUDE.md invariant 1's "complete trajectory" check, proven from the Python side."""
+    run(sandbox, publisher, [turn(FIX), turn(("finish", {"summary": "done"}))], repo_url)
+    bundle = publisher.bundle()
+    steps = bundle["receipt"]["steps"]
+    assert steps[1]["type"] == "artifact_write"  # the step we're about to drop
+    del steps[1]
+    result = json.loads(mergit_receipt.verify(json.dumps(bundle), CHAIN_ID, REGISTRY, None))
+    assert result["status"] != "unattested_valid"
+    assert result["reasons"]
+
+
 def test_steps_are_reported_live_as_they_are_recorded(sandbox, publisher, repo_url):
     """Every agent-loop step goes to the progress reporter the instant it is recorded, with the same
     seq the receipt gives it; the Φ command and phi_eval steps, added after the loop ends, are not
