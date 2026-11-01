@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextvars
 import json
 import random
 import re
@@ -27,9 +28,11 @@ import pytest
 from hypothesis import HealthCheck, given
 from hypothesis import settings as hyp_settings
 from hypothesis import strategies as st
-from psycopg.rows import dict_row
+from psycopg import AsyncConnection
+from psycopg.rows import TupleRow, dict_row
 from psycopg.types.json import Jsonb
 
+from mergit_cp import reputation
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool
 from mergit_cp.reputation import Posterior, ReputationUpdater, in_probation, ingest_due, posterior, rebuild
@@ -294,9 +297,50 @@ def test_invalid_is_falsification_not_failure(database_url: str, settings: Setti
         assert await posteriors_for(pool, [agent_id]) == []
 
         async with pool.connection() as conn:
-            assert await in_probation(conn, operator, observed_at, int(settings.router_probation_s)) is True
+            assert await in_probation(conn, operator, observed_at, settings.router_probation_s) is True
             after_window = observed_at + timedelta(seconds=settings.router_probation_s + 1)
-            assert await in_probation(conn, operator, after_window, int(settings.router_probation_s)) is False
+            assert await in_probation(conn, operator, after_window, settings.router_probation_s) is False
+
+    run(database_url, body)
+
+
+def test_challenge_resolved_upheld_is_falsification(database_url: str, settings: Settings) -> None:
+    async def body(pool: Pool) -> None:
+        agent_id = rand_id("agent")
+        operators = {agent_id: rand_hex_address()}
+        _, _, task_id = await seed_task(pool, agent_id=agent_id)
+
+        await receive(
+            pool,
+            settings,
+            "challenge.resolved",
+            {"task_id": task_id, "challenge_id": "1", "upheld": True, "tx": tx_n(70)},
+        )
+        async with pool.connection() as conn, conn.transaction():
+            await ingest_due(conn, settings, operators)
+
+        obs = await observations_for(pool, [task_id])
+        assert [o["kind"] for o in obs] == ["falsification"]
+
+    run(database_url, body)
+
+
+def test_challenge_resolved_not_upheld_is_not_falsification(database_url: str, settings: Settings) -> None:
+    async def body(pool: Pool) -> None:
+        agent_id = rand_id("agent")
+        operators = {agent_id: rand_hex_address()}
+        _, _, task_id = await seed_task(pool, agent_id=agent_id)
+
+        await receive(
+            pool,
+            settings,
+            "challenge.resolved",
+            {"task_id": task_id, "challenge_id": "1", "upheld": False, "tx": tx_n(71)},
+        )
+        async with pool.connection() as conn, conn.transaction():
+            await ingest_due(conn, settings, operators)
+
+        assert await observations_for(pool, [task_id]) == []
 
     run(database_url, body)
 
@@ -318,6 +362,31 @@ def test_zero_cost_job_is_not_observed(database_url: str, settings: Settings) ->
         real_obs = await observations_for(pool, [real_task])
         assert [o["kind"] for o in real_obs] == ["cost"]
         assert real_obs[0]["cost_micros"] == 5_000
+
+    run(database_url, body)
+
+
+def test_falsified_task_produces_no_cost_observation(database_url: str, settings: Settings) -> None:
+    """A falsified receipt's own claimed cost must not feed any posterior either, not just its outcome
+    (controller ruling, fix round 1)."""
+
+    async def body(pool: Pool) -> None:
+        agent_id = rand_id("agent")
+        operators = {agent_id: rand_hex_address()}
+        plan_uuid, _, task_id = await seed_task(pool, agent_id=agent_id)
+
+        await seed_cost(pool, task_id=task_id, plan_uuid=plan_uuid, agent_id=agent_id, cost_micros=5_000)
+        await receive(
+            pool, settings, "verdict.recorded", {"task_id": task_id, "verdict": "invalid", "tx": tx_n(72)}
+        )
+
+        async with pool.connection() as conn, conn.transaction():
+            await ingest_due(conn, settings, operators)
+
+        obs = await observations_for(pool, [task_id])
+        kinds = {o["kind"] for o in obs}
+        assert "cost" not in kinds
+        assert kinds == {"falsification"}
 
     run(database_url, body)
 
@@ -366,11 +435,9 @@ async def _run_events(
             await ingest_due(conn, settings, operators, limit=1000)
 
 
-async def _assert_matches_rebuild(
-    pool: Pool, settings: Settings, operators: dict[str, str], agents: list[str]
-) -> None:
+async def _assert_matches_rebuild(pool: Pool, settings: Settings, agents: list[str]) -> None:
     async with pool.connection() as conn:
-        rebuilt = await rebuild(conn, settings, operators)
+        rebuilt = await rebuild(conn, settings)
         cur = conn.cursor(row_factory=dict_row)
         await cur.execute(
             "SELECT agent_id, category, alpha, beta, kappa, tau FROM reputation_posteriors"
@@ -426,7 +493,7 @@ def test_incremental_equals_rebuild(
             for ev in events
         ]
         await _run_events(pool, settings, operators, resolved)
-        await _assert_matches_rebuild(pool, settings, operators, agents)
+        await _assert_matches_rebuild(pool, settings, agents)
 
     run(database_url, body)
 
@@ -496,7 +563,96 @@ def test_concurrent_updaters_lose_nothing(database_url: str, settings: Settings)
         await asyncio.gather(updater(), updater())
         await asyncio.gather(updater(), updater())  # a second round: nothing left to apply, must be a no-op
 
-        await _assert_matches_rebuild(pool, settings, operators, agents)
+        await _assert_matches_rebuild(pool, settings, agents)
+
+    run(database_url, body)
+
+
+def test_concurrent_updater_waits_for_an_inflight_allocation(database_url: str, settings: Settings) -> None:
+    """Fix round 1, Finding 1 regression: the advisory lock must be held from before id allocation to after
+    commit, not taken only around the apply step. `reputation_observations.id` is a bare `bigserial` --
+    sequence values are handed out immediately, independent of commit order. If a transaction (A) can
+    allocate an id and only take the lock later, at its own apply step, a second transaction (B) can race
+    ahead of it: allocate its own (higher) id, apply only that id, and advance `last_id` past A's
+    still-uncommitted (lower) id. The moment A then commits, its row is permanently excluded by `id >
+    last_id` -- a plain numeric comparison, not an MVCC visibility race: A's own apply step, once it finally
+    runs, sees last_id already past its own id and excludes its own row on that basis alone.
+
+    Note on test construction: the reviewer's suggested shape (A does a raw, lock-free insert and holds its
+    transaction open; B runs one real `ingest_due`; commit A; assert B blocked on the lock) does not actually
+    discriminate the two lock placements -- verified empirically both ways. If A holds the lock itself, B
+    blocks on it under *either* placement (old: inside `_apply_due`; new: at the top), and by the time B
+    unblocks, A has already committed, so B's subsequent `id > last_id` read sees A's row regardless of where
+    the lock sits. If A does *not* hold the lock, the fix provides no protection either way, since taking the
+    lock earlier in B's own code cannot make B wait for a connection that never requests it -- consistent
+    with the fix only ever protecting concurrent real `ingest_due` callers (the only writers of this table,
+    per `test_reputation_writes_only_its_tables`), not an out-of-band bypass. Reproducing the actual bug
+    needs *two* real `ingest_due` calls whose candidate-insert and apply phases interleave out of commit
+    order, which requires deterministic control over where each one pauses -- hence the monkeypatched delay
+    below, injected at exactly the old code's lock-acquisition point (the start of `_apply_due`), so the
+    first caller ("slow") is paused there having already allocated its id, while the second ("fast") runs a
+    real, unmodified `ingest_due` to completion. This is the smallest change that makes the test depend on
+    the lock's position rather than on which connection happens to hold a lock neither placement requires it
+    to hold.
+    """
+
+    async def body(pool: Pool) -> None:
+        # Separate agents for slow and fast, each with its own operators map scoped to just that one agent
+        # (fix round 1, Finding 2's `d.agent_id = ANY(...)` filter): this keeps the two candidate sets
+        # genuinely disjoint at the SQL level, not just by task_id, so neither call's own candidate query
+        # can see the other's row at all -- the only interaction between them is the shared advisory lock
+        # and the shared `reputation_applied.last_id`, which is exactly the mechanism under test.
+        slow_agent = rand_id("slow-agent")
+        fast_agent = rand_id("fast-agent")
+        slow_operators = {slow_agent: rand_hex_address()}
+        fast_operators = {fast_agent: rand_hex_address()}
+
+        # `cost` observations, not `falsification`: a falsification row is skipped by `_replay` before it
+        # ever touches `reputation_posteriors` (paper 7.5 iii), which would make the final state-matches-
+        # rebuild check trivially pass regardless of whether the bug reproduced -- the event kind here has
+        # to be one that actually lands in `reputation_posteriors` for this test to mean anything.
+        slow_plan, _, slow_task_id = await seed_task(pool, agent_id=slow_agent)
+        await seed_cost(pool, task_id=slow_task_id, plan_uuid=slow_plan, agent_id=slow_agent, cost_micros=111)
+        fast_plan, _, fast_task_id = await seed_task(pool, agent_id=fast_agent)
+        await seed_cost(pool, task_id=fast_task_id, plan_uuid=fast_plan, agent_id=fast_agent, cost_micros=222)
+
+        slow_marker: contextvars.ContextVar[bool] = contextvars.ContextVar("slow_marker", default=False)
+        candidate_inserted = asyncio.Event()
+        release_slow = asyncio.Event()
+        real_apply_due = reputation._apply_due  # pyright: ignore[reportPrivateUsage]
+
+        async def patched_apply_due(conn: AsyncConnection[TupleRow], s: Settings) -> None:
+            if slow_marker.get():
+                candidate_inserted.set()
+                await release_slow.wait()
+            await real_apply_due(conn, s)
+
+        reputation._apply_due = patched_apply_due  # pyright: ignore[reportPrivateUsage]
+        try:
+
+            async def run_slow() -> None:
+                slow_marker.set(True)
+                async with pool.connection() as conn, conn.transaction():
+                    await ingest_due(conn, settings, slow_operators, limit=50)
+
+            async def run_fast() -> None:
+                async with pool.connection() as conn, conn.transaction():
+                    await ingest_due(conn, settings, fast_operators, limit=50)
+
+            slow = asyncio.create_task(run_slow())
+            await candidate_inserted.wait()  # slow has allocated its candidate's id; now paused
+
+            fast = asyncio.create_task(run_fast())
+            await asyncio.sleep(0.3)  # let fast run to completion if it isn't genuinely blocked by the lock
+            release_slow.set()
+            await slow
+            await fast
+        finally:
+            reputation._apply_due = real_apply_due  # pyright: ignore[reportPrivateUsage]
+
+        obs = await observations_for(pool, [slow_task_id, fast_task_id])
+        assert {o["task_id"] for o in obs} == {slow_task_id, fast_task_id}
+        await _assert_matches_rebuild(pool, settings, [slow_agent, fast_agent])
 
     run(database_url, body)
 

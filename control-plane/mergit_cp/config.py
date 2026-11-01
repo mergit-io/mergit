@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     router_prior_cost_micros: int = Field(default=200_000, gt=0)
     """Prior mean cost, in micro-USD, seeded into a fresh agent's Gamma posterior (paper 8.2). Our
     parameterisation, not the paper's."""
-    router_probation_s: float = Field(default=604800, gt=0)
+    router_probation_s: int = Field(default=604800, gt=0)
     """How long a proven falsification (paper 7.5 iii) keeps an operator's agents in probation, once a
     later task reads `in_probation`. One week by default. Our parameterisation, not the paper's."""
     reputation_poll_s: float = Field(default=1.0, gt=0)

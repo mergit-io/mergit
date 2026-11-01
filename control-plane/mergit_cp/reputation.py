@@ -161,11 +161,14 @@ JOIN task_dispatches d ON d.task_id = e.task_id
 JOIN tasks t ON t.plan_uuid = d.plan_uuid AND t."index" = d."index"
 JOIN plans p ON p.plan_uuid = d.plan_uuid
 WHERE p.funding = 'wallet'
+  -- An agent with no known operator never consumes a LIMIT slot: without this, 50 permanently-unresolvable
+  -- candidates at the head of the id order would stall every newer, real event behind them forever.
+  AND d.agent_id = ANY(%(agent_ids)s)
   AND NOT EXISTS (
       SELECT 1 FROM reputation_observations ro WHERE ro.kind = 'outcome' AND ro.task_id = e.task_id
   )
 ORDER BY e.id
-LIMIT %s
+LIMIT %(limit)s
 """
 
 _COST_CANDIDATES = """
@@ -174,11 +177,23 @@ FROM jobs j
 JOIN task_dispatches d ON d.task_id = j.task_id
 JOIN plans p ON p.plan_uuid = d.plan_uuid
 WHERE j.cost_micros > 0 AND j.receipt_root IS NOT NULL AND p.funding = 'wallet'
+  AND d.agent_id = ANY(%(agent_ids)s)
   AND NOT EXISTS (
       SELECT 1 FROM reputation_observations ro WHERE ro.kind = 'cost' AND ro.task_id = j.task_id
   )
+  -- A falsified receipt's own claimed cost must not feed any posterior either, not just its outcome
+  -- (controller ruling, fix round 1). Forward-looking only: this does not retroactively unwind a cost
+  -- observation already folded into a posterior before a late-arriving falsification verdict -- that
+  -- residual gap is acceptable and matches the paper's own "mitigates rather than eliminates" stance on
+  -- manipulation resistance (paper 7.8, 8.7).
+  AND NOT EXISTS (
+      SELECT 1 FROM money_events m
+      WHERE m.task_id = j.task_id
+        AND ((m.kind = 'verdict.recorded' AND m.verdict = 'invalid')
+             OR (m.kind = 'challenge.resolved' AND m.upheld = true))
+  )
 ORDER BY j.task_id
-LIMIT %s
+LIMIT %(limit)s
 """
 
 _FALSIFICATION_CANDIDATES = """
@@ -194,18 +209,19 @@ FROM earliest e
 JOIN task_dispatches d ON d.task_id = e.task_id
 JOIN plans p ON p.plan_uuid = d.plan_uuid
 WHERE p.funding = 'wallet'
+  AND d.agent_id = ANY(%(agent_ids)s)
   AND NOT EXISTS (
       SELECT 1 FROM reputation_observations ro WHERE ro.kind = 'falsification' AND ro.task_id = e.task_id
   )
 ORDER BY e.id
-LIMIT %s
+LIMIT %(limit)s
 """
 
 
 async def _ingest_outcomes(
     conn: AsyncConnection[TupleRow], settings: Settings, operators: Mapping[str, str], limit: int
 ) -> int:
-    cur = await conn.execute(_OUTCOME_CANDIDATES, (limit,))
+    cur = await conn.execute(_OUTCOME_CANDIDATES, {"agent_ids": list(operators.keys()), "limit": limit})
     candidates = await cur.fetchall()
     if not candidates:
         return 0
@@ -225,6 +241,8 @@ async def _ingest_outcomes(
     placeholders: list[str] = []
     values: list[Any] = []
     for _, task_id, verdict, agent_id, category, requester, budget in candidates:
+        # The SQL above already filters to d.agent_id = ANY(operators), so this is unreachable in correct
+        # operation; kept as a defensive guard, not a reachable control path.
         operator = operators.get(agent_id)
         if operator is None:
             log.warning("outcome for task %s: agent %s has no known operator; skipped", task_id, agent_id)
@@ -246,13 +264,15 @@ async def _ingest_outcomes(
 
 
 async def _ingest_costs(conn: AsyncConnection[TupleRow], operators: Mapping[str, str], limit: int) -> int:
-    cur = await conn.execute(_COST_CANDIDATES, (limit,))
+    cur = await conn.execute(_COST_CANDIDATES, {"agent_ids": list(operators.keys()), "limit": limit})
     candidates = await cur.fetchall()
     if not candidates:
         return 0
     placeholders: list[str] = []
     values: list[Any] = []
     for task_id, agent_id, category, requester, cost_micros in candidates:
+        # The SQL above already filters to d.agent_id = ANY(operators), so this is unreachable in correct
+        # operation; kept as a defensive guard, not a reachable control path.
         operator = operators.get(agent_id)
         if operator is None:
             log.warning("cost for task %s: agent %s has no known operator; skipped", task_id, agent_id)
@@ -273,13 +293,15 @@ async def _ingest_costs(conn: AsyncConnection[TupleRow], operators: Mapping[str,
 async def _ingest_falsifications(
     conn: AsyncConnection[TupleRow], operators: Mapping[str, str], limit: int
 ) -> int:
-    cur = await conn.execute(_FALSIFICATION_CANDIDATES, (limit,))
+    cur = await conn.execute(_FALSIFICATION_CANDIDATES, {"agent_ids": list(operators.keys()), "limit": limit})
     candidates = await cur.fetchall()
     if not candidates:
         return 0
     placeholders: list[str] = []
     values: list[Any] = []
     for task_id, agent_id, category, requester in candidates:
+        # The SQL above already filters to d.agent_id = ANY(operators), so this is unreachable in correct
+        # operation; kept as a defensive guard, not a reachable control path.
         operator = operators.get(agent_id)
         if operator is None:
             log.warning(
@@ -382,9 +404,10 @@ async def _seed_from_posteriors(
 
 
 async def _apply_due(conn: AsyncConnection[TupleRow], settings: Settings) -> None:
-    """Fold every observation not yet applied into `reputation_posteriors`, serialised against any other
-    concurrent updater by a transaction-scoped advisory lock (released on commit or rollback)."""
-    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mergit.reputation'))")
+    """Fold every observation not yet applied into `reputation_posteriors`. Must run with the
+    `mergit.reputation` advisory lock already held by the caller (`ingest_due` takes it as its very first
+    statement, before any candidate insert) -- see `ingest_due`'s docstring for why that ordering, not
+    "lock here", is what makes a high-water-mark `last_id` sound."""
     # The migration seeds this row exactly once; re-create it if it is ever missing (the test suite's own
     # global per-test reset, conftest.py's `client` fixture, truncates every public table between tests,
     # this one included -- same reasoning as the append-only trigger's own comment above).
@@ -439,7 +462,18 @@ async def ingest_due(
 
     Each of the three sources is capped at `limit` candidates per call; a deployment with more than `limit`
     outstanding events of one kind catches up over a few polls rather than in one unbounded pass.
+
+    The advisory lock is taken here, as the very first statement, before any candidate `SELECT`/`INSERT` --
+    not inside `_apply_due`, after them (fix round 1: a reviewer-traced bug). `reputation_observations.id`
+    is a bare `bigserial`: two concurrent calls can allocate ids out of commit order (the one that allocates
+    the *higher* id can still commit *first*). A high-water-mark `last_id` is only sound if id allocation
+    itself happens in lock order -- otherwise the call that commits first can advance `last_id` past an id a
+    still-in-flight call already allocated for a row it hasn't committed yet, permanently stranding that row
+    below the new `last_id` once it does commit (`id > last_id` excludes it forever, independent of MVCC
+    visibility -- a plain numeric comparison bug, not a visibility race). Locking before allocation forces
+    every concurrent `ingest_due` call to run its entire insert-then-apply-then-commit cycle one at a time.
     """
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mergit.reputation'))")
     inserted = await _ingest_outcomes(conn, settings, operators, limit)
     inserted += await _ingest_costs(conn, operators, limit)
     inserted += await _ingest_falsifications(conn, operators, limit)
@@ -471,18 +505,14 @@ async def posterior(
     )
 
 
-async def rebuild(
-    conn: AsyncConnection[TupleRow], settings: Settings, operators: Mapping[str, str]
-) -> dict[tuple[str, str], Posterior]:
+async def rebuild(conn: AsyncConnection[TupleRow], settings: Settings) -> dict[tuple[str, str], Posterior]:
     """Replay the whole `reputation_observations` log in memory from scratch (ignoring `reputation_applied`
     and `reputation_posteriors` entirely) and return what every (agent_id, category) posterior would be.
     Writes nothing. Used only by tests, to check the incremental updater agrees with a full replay.
 
-    `operators` is accepted for symmetry with `ingest_due` (and because a future caller may want to key a
-    result by operator); this function itself never needs it, since the log already carries each
-    observation's own `operator` and this replay doesn't group by it.
+    No `operators` parameter: each `reputation_observations` row already stores its own `operator` value
+    from ingest time, so a replay never needs to look it up again.
     """
-    del operators
     cur = await conn.execute(
         "SELECT kind, agent_id, category, success, cost_micros, weight"
         " FROM reputation_observations ORDER BY id"
