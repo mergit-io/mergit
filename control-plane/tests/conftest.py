@@ -6,12 +6,11 @@ from pathlib import Path
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
 from testcontainers.community.postgres import PostgresContainer
 
 from mergit_cp.app import create_app
 from mergit_cp.config import Settings
-from tests.support import ProcessSandbox, RecordingPublisher, make_repo
+from tests.support import ProcessSandbox, RecordingPublisher, make_repo, make_settings
 
 
 @pytest.fixture
@@ -62,20 +61,8 @@ def agents_files(tmp_path: Path) -> tuple[Path, Path]:
 @pytest.fixture
 def settings(database_url: str, agents_files: tuple[Path, Path]) -> Settings:
     chain, config = agents_files
-    return Settings(
-        database_url=database_url,
-        app_domain=APP_DOMAIN,
-        session_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
-        gateway_url="http://gateway.invalid",
-        store_url="http://store.invalid",
-        agents_file=str(chain),
-        agents_config=str(config),
-        cors_origins=["http://localhost:5173"],
-        planner_model="claude-opus-5",
-        planner_provider="anthropic",
-        events_token=SecretStr("test-events-token"),
-        chain_events_token=SecretStr("test-chain-events-token"),
-        worker_token=SecretStr("test-worker-token"),
+    return make_settings(
+        database_url=database_url, app_domain=APP_DOMAIN, agents_file=str(chain), agents_config=str(config)
     )
 
 

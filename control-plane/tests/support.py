@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import mergit_receipt
+from pydantic import SecretStr
 
+from mergit_cp.config import Settings
 from mergit_worker.harness import AgentSpec, HarnessConfig
 from mergit_worker.llm import LLMError, LLMResult, ToolCall
 from mergit_worker.meter import Price, PriceTable
@@ -34,6 +36,33 @@ def git(cwd: Path, *args: str) -> str:
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
     done = subprocess.run(["git", "-C", str(cwd), *args], env=env, capture_output=True, text=True, check=True)
     return done.stdout
+
+
+def make_settings(
+    *, database_url: str, app_domain: str, agents_file: str, agents_config: str, **overrides: Any
+) -> Settings:
+    """The full `Settings(...)` every control-plane API test needs, with the handful of fields every test
+    varies (`database_url`, `app_domain`, the roster) required, every other field a fixed test value, and
+    `**overrides` for anything else a test wants to tweak (a short poll interval, a tighter cap, ...). One
+    spelling of the whole field list, shared by `tests/conftest.py`'s `settings` fixture and any test file
+    that needs its own roster or settings variant, so a new required `Settings` field only needs updating
+    here."""
+    return Settings(
+        database_url=database_url,
+        app_domain=app_domain,
+        session_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
+        gateway_url="http://gateway.invalid",
+        store_url="http://store.invalid",
+        agents_file=agents_file,
+        agents_config=agents_config,
+        cors_origins=["http://localhost:5173"],
+        planner_model="claude-opus-5",
+        planner_provider="anthropic",
+        events_token=SecretStr("test-events-token"),
+        chain_events_token=SecretStr("test-chain-events-token"),
+        worker_token=SecretStr("test-worker-token"),
+        **overrides,
+    )
 
 
 def make_repo(root: Path) -> str:

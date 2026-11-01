@@ -25,7 +25,6 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
-from pydantic import SecretStr
 from siwe import SiweMessage
 
 from mergit_cp import money
@@ -34,6 +33,7 @@ from mergit_cp.config import Settings
 from mergit_cp.db import Pool, open_pool
 from mergit_cp.reputation import ingest_due
 from tests.conftest import APP_DOMAIN
+from tests.support import make_settings
 
 pytestmark = pytest.mark.postgres
 
@@ -213,20 +213,8 @@ def two_agent_settings(database_url: str, tmp_path: Path, two_agents: TwoAgents)
         '[agents.agent-a]\nprovider = "anthropic"\nmodel = "m-a"\nsystem_prompt = "s"\n'
         '[agents.agent-b]\nprovider = "anthropic"\nmodel = "m-b"\nsystem_prompt = "s"\n'
     )
-    return Settings(
-        database_url=database_url,
-        app_domain=APP_DOMAIN,
-        session_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
-        gateway_url="http://gateway.invalid",
-        store_url="http://store.invalid",
-        agents_file=str(chain),
-        agents_config=str(config),
-        cors_origins=["http://localhost:5173"],
-        planner_model="claude-opus-5",
-        planner_provider="anthropic",
-        events_token=SecretStr("test-events-token"),
-        chain_events_token=SecretStr("test-chain-events-token"),
-        worker_token=SecretStr("test-worker-token"),
+    return make_settings(
+        database_url=database_url, app_domain=APP_DOMAIN, agents_file=str(chain), agents_config=str(config)
     )
 
 
@@ -242,11 +230,15 @@ def two_agent_client(two_agent_settings: Settings) -> Iterator[TestClient]:
             conn.execute("TRUNCATE " + ", ".join(t[0] for t in tables))
 
 
-async def seed_routable_plan(pool: Pool, *, requester: str, category: str = "cat") -> str:
-    """A plan with one task (index 0) and no dispatch at all, so every roster agent starts eligible."""
+async def seed_routable_plan(
+    pool: Pool, *, requester: str, category: str = "cat", retry_tolerant: list[bool] | None = None
+) -> str:
+    """A plan with one task per entry of `retry_tolerant` (default: a single task, `retry_tolerant=True`),
+    at indexes `0..len(retry_tolerant)-1`, and no dispatch at all, so every roster agent starts eligible on
+    every task."""
+    flags = retry_tolerant if retry_tolerant is not None else [True]
     plan_uuid = str(uuid.uuid4())
     plan_id = mergit_receipt.plan_id(plan_uuid)
-    task_phi = phi()
     async with pool.connection() as conn, conn.transaction():
         await conn.execute(
             "INSERT INTO plans (plan_uuid, plan_id, requester, goal, repo_url, ref, category,"
@@ -255,12 +247,35 @@ async def seed_routable_plan(pool: Pool, *, requester: str, category: str = "cat
             " 1000000, 'approved', 'wallet', 1000000, 'claude-opus-5', now())",
             (plan_uuid, plan_id, requester, category),
         )
-        await conn.execute(
-            'INSERT INTO tasks (plan_uuid, "index", title, instructions, phi, phi_hash, budget_usdc_units)'
-            " VALUES (%s, 0, 'task 0', 'do it', %s, %s, 500000)",
-            (plan_uuid, Jsonb(task_phi), mergit_receipt.phi_hash(json.dumps(task_phi))),
-        )
+        for index, retry_tolerant_flag in enumerate(flags):
+            task_phi = phi()
+            await conn.execute(
+                'INSERT INTO tasks (plan_uuid, "index", title, instructions, phi, phi_hash,'
+                " budget_usdc_units, retry_tolerant) VALUES (%s, %s, %s, 'do it', %s, %s, 500000, %s)",
+                (
+                    plan_uuid,
+                    index,
+                    f"task {index}",
+                    Jsonb(task_phi),
+                    mergit_receipt.phi_hash(json.dumps(task_phi)),
+                    retry_tolerant_flag,
+                ),
+            )
     return plan_uuid
+
+
+async def seed_dispatch_only(pool: Pool, *, plan_uuid: str, index: int, agent_id: str) -> None:
+    """One `task_dispatches` row with no matching `jobs` row -- just enough to make `agent_id` "already
+    tried on this task" at `index`, for a plan seeded by `seed_routable_plan` (which dispatches nothing
+    itself). `task_id` must be the `^0x[0-9a-f]{64}$` shape the table's own `CHECK` requires, so it is
+    derived the same way the real dispatch path does, from the plan's own id."""
+    task_id = mergit_receipt.task_id(mergit_receipt.plan_id(plan_uuid), index, 1)
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id)'
+            " VALUES (%s, %s, %s, 1, %s)",
+            (task_id, plan_uuid, index, agent_id),
+        )
 
 
 async def seed_posterior(
@@ -670,6 +685,88 @@ def test_candidates_show_ineligible_reason(client: TestClient, settings: Setting
     assert candidate["eligible"] is False
     assert candidate["reason"] == "already tried on this task"
     assert (candidate["outcomes"], candidate["costs"]) == (0, 0)
+
+
+def test_candidates_sort_by_theta_mean_when_retry_intolerant(
+    two_agent_client: TestClient, two_agent_settings: Settings, two_agents: TwoAgents
+):
+    """`retry_tolerant=False` must rank by `theta_mean`, not `density` -- and these two agents are built so
+    the two metrics actually disagree on the winner, so a sort that silently used `density` here would
+    produce the wrong order, not just a coincidentally-identical one."""
+    address = sign_in(two_agent_client)
+    plan_uuid = run(
+        two_agent_settings.database_url,
+        lambda pool: seed_routable_plan(pool, requester=address, category="cat-y", retry_tolerant=[False]),
+    )
+    # agent_a: theta_mean 0.95 but expensive (cost_mean 1_000_000) -> density ~9.5e-7 (the LOWER density).
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_a, category="cat-y", alpha=95, beta=5, kappa=10, tau=10_000_000
+        ),
+    )
+    # agent_b: theta_mean 0.5 but cheap (cost_mean 10_000) -> density 5e-5 (the HIGHER density).
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_b, category="cat-y", alpha=50, beta=50, kappa=10, tau=100_000
+        ),
+    )
+
+    body = two_agent_client.get(f"/v0/plans/{plan_uuid}/candidates").json()
+    task0 = body["tasks"][0]
+    assert task0["retry_tolerant"] is False
+    candidates = task0["candidates"]
+    by_density = sorted(candidates, key=lambda c: -c["density"])
+    by_theta_mean = sorted(candidates, key=lambda c: -c["theta_mean"])
+    # Sanity check that this test actually discriminates: the two rankings must disagree, or sorting by
+    # the wrong metric would still happen to produce the right-looking order.
+    assert [c["agent_id"] for c in by_density] != [c["agent_id"] for c in by_theta_mean]
+    assert [c["agent_id"] for c in candidates] == [c["agent_id"] for c in by_theta_mean]
+    assert [c["agent_id"] for c in candidates] == [two_agents.agent_a, two_agents.agent_b]
+
+
+def test_candidates_ineligible_always_sorts_after_eligible_regardless_of_metric(
+    two_agent_client: TestClient, two_agent_settings: Settings, two_agents: TwoAgents
+):
+    """agent_b outranks agent_a on BOTH `density` and `theta_mean`, but is already dispatched (ineligible)
+    on every task -- if the sort didn't put eligibility ahead of the metric, agent_b would lead both the
+    `retry_tolerant=True` (density) and `retry_tolerant=False` (theta_mean) task's candidate list."""
+    address = sign_in(two_agent_client)
+    plan_uuid = run(
+        two_agent_settings.database_url,
+        lambda pool: seed_routable_plan(
+            pool, requester=address, category="cat-z", retry_tolerant=[True, False]
+        ),
+    )
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_a, category="cat-z", alpha=10, beta=90, kappa=10, tau=100_000
+        ),
+    )
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_b, category="cat-z", alpha=90, beta=10, kappa=10, tau=100_000
+        ),
+    )
+    for index in (0, 1):
+        run(
+            two_agent_settings.database_url,
+            lambda pool, index=index: seed_dispatch_only(
+                pool, plan_uuid=plan_uuid, index=index, agent_id=two_agents.agent_b
+            ),
+        )
+
+    body = two_agent_client.get(f"/v0/plans/{plan_uuid}/candidates").json()
+    assert len(body["tasks"]) == 2
+    for task in body["tasks"]:
+        candidates = task["candidates"]
+        assert [c["agent_id"] for c in candidates] == [two_agents.agent_a, two_agents.agent_b]
+        assert candidates[0]["eligible"] is True
+        assert candidates[1]["eligible"] is False
+        assert candidates[1]["reason"] == "already tried on this task"
 
 
 def test_attempt_shows_exploratory_flag(client: TestClient, settings: Settings):

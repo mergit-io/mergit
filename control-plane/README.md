@@ -241,18 +241,20 @@ at all (invariant 6), so a free-trial or credits run never earns or spends reput
   `reputation_posteriors` rows only — never a pooled or synthesized one, so an agent with no observations
   yet (new, or only ever run under credits) simply has an empty list.
 
-**Configuration** (`mergit_cp/config.py`). All of the following are *our own parameterisation choices, not
-the paper's* (each is documented that way on the `Settings` field itself): `REPUTATION_POOLING_WEIGHT`
+**Configuration** (`mergit_cp/config.py`). The following are *our own parameterisation choices, not the
+paper's* (each is documented that way on the `Settings` field itself): `REPUTATION_POOLING_WEIGHT`
 (0.25, how much an agent-level posterior counts when pooled into a fresh category),
 `REPUTATION_VALUE_REF_USDC_UNITS` (1_000_000, the budget size an outcome's weight is measured against),
 `ROUTER_PRIOR_COST_MICROS` (200_000, the mean cost seeded into a fresh Gamma posterior),
 `ROUTER_PROBATION_S` (604800, one week, how long a falsification keeps an operator's agents in
 probation), `ROUTER_OPERATOR_CONCURRENCY_CAP` (5, unresolved dispatches per operator before its agents go
 ineligible), `ROUTER_EXPLORE_CAP_PER_OPERATOR` (2, unresolved exploratory draws per operator before a
-further one redirects to greedy), `ROUTER_BUDGET_TOLERANCE` (0.1, how far over budget a sampled cost may
-still count feasible), and `REPUTATION_POLL_S` (1, how often new observations are folded in). `gamma`
-(0.95, the Beta/Gamma decay per update) is the one constant the paper itself fixes, so it is not
-configurable at all.
+further one redirects to greedy), and `ROUTER_BUDGET_TOLERANCE` (0.1, how far over budget a sampled cost
+may still count feasible). `REPUTATION_POLL_S` (1, how often new observations are folded into the
+posteriors) is not one of these — it is a polling-cadence setting, the same convention as
+`OUTCOME_POLL_S`/`EVENT_POLL_S`/`SSE_POLL_S`, not a value the paper's model has an opinion on at all.
+`gamma` (0.95, the Beta/Gamma decay per update) is the one constant the paper itself fixes, so unlike any
+of the above it is not configurable at all.
 
 ## The worker
 
