@@ -156,6 +156,17 @@ def test_step_cost_recorded_from_provider_usage(sandbox, publisher, repo_url):
     assert receipt["meter"]["usd_micros"] == 7_000_000
 
 
+def test_outcome_carries_sealed_cost(sandbox, publisher, repo_url):
+    outcome, _, _ = run(
+        sandbox,
+        publisher,
+        [turn(FIX), turn(("finish", {"summary": "done"}))],
+        repo_url,
+    )
+    assert outcome.cost_micros == publisher.sealed[-1].cost_micros
+    assert outcome.cost_micros > 0
+
+
 def test_budget_exhausted_still_seals_with_phi(sandbox, publisher, repo_url):
     expensive = turn(FIX, input_tokens=1_000_000, output_tokens=0)  # $2 > the 1_000_000 budget
     outcome, receipt, llm = run(

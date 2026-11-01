@@ -50,7 +50,7 @@ WHERE plan_uuid = %(plan_uuid)s AND "index" = ANY(%(indexes)s) AND phi_holds = t
 
 _REPORT = """
 UPDATE jobs SET status = %(status)s, phi_holds = %(holds)s, receipt_root = %(root)s,
-                notes = %(notes)s, patch = %(patch)s, finished_at = now()
+                notes = %(notes)s, patch = %(patch)s, cost_micros = %(cost_micros)s, finished_at = now()
 WHERE task_id = %(task_id)s AND status = 'running' AND claimed_by = %(worker)s
 """
 
@@ -171,12 +171,19 @@ class PgJobStore:
     def report(self, outcome: RunOutcome) -> None:
         """Store the Φ result (`holds` is None when Φ could not run) on the job row for O6."""
         self._finish(
-            outcome.task_id, "done", outcome.holds, outcome.root, "; ".join(outcome.notes), outcome.patch
+            outcome.task_id,
+            "done",
+            outcome.holds,
+            outcome.root,
+            "; ".join(outcome.notes),
+            outcome.patch,
+            outcome.cost_micros,
         )
 
     def fail(self, task_id: str, message: str) -> None:
-        """The task could not be run or sealed. `phi_holds` stays NULL: inconclusive, a person decides."""
-        self._finish(task_id, "error", None, None, message[:2000], None)
+        """The task could not be run or sealed. `phi_holds` stays NULL: inconclusive, a person decides.
+        There is no sealed cost to record from this path, so `cost_micros` stays NULL too."""
+        self._finish(task_id, "error", None, None, message[:2000], None, None)
 
     def _finish(
         self,
@@ -186,6 +193,7 @@ class PgJobStore:
         root: str | None,
         notes: str,
         patch: str | None,
+        cost_micros: int | None,
     ) -> None:
         self._retrying(
             lambda: self._conn.execute(
@@ -197,6 +205,7 @@ class PgJobStore:
                     "root": root,
                     "notes": notes,
                     "patch": patch,
+                    "cost_micros": cost_micros,
                     "worker": self._worker,
                 },
             )

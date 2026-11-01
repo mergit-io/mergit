@@ -100,7 +100,14 @@ def run_task(
     patch = None
     if holds is True:  # only a change that passed Φ is ever shown to the requester or turned into a PR
         patch = _capture_patch(sandbox, cfg.max_patch_bytes, notes)
-    return RunOutcome(task_id=job.task_id, holds=holds, root=sealed.root, notes=notes, patch=patch)
+    return RunOutcome(
+        task_id=job.task_id,
+        holds=holds,
+        root=sealed.root,
+        notes=notes,
+        patch=patch,
+        cost_micros=sealed.cost_micros,
+    )
 
 
 _INFRA_STOPS = {"llm_error"}

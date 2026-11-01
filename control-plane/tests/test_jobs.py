@@ -169,6 +169,22 @@ def test_fail_marks_error_with_null_result(dsn: str, db: Any):
     assert (row["status"], row["phi_holds"], row["notes"]) == ("error", None, "boom")
 
 
+def test_report_stores_cost(dsn: str, db: Any):
+    (task_id,) = seed(db)
+    store = PgJobStore.connect(dsn, "w1")
+    store.claim()
+    store.report(RunOutcome(task_id, True, "0xroot", ["finished"], cost_micros=1234))
+    row = db.execute("SELECT cost_micros FROM jobs").fetchone()
+    assert row["cost_micros"] == 1234
+
+    (task_id_2,) = seed(db)
+    store2 = PgJobStore.connect(dsn, "w1")
+    store2.claim()
+    store2.fail(task_id_2, "boom")
+    row2 = db.execute("SELECT cost_micros FROM jobs WHERE task_id = %s", (task_id_2,)).fetchone()
+    assert row2["cost_micros"] is None
+
+
 def test_another_worker_cannot_overwrite_a_claim(dsn: str, db: Any):
     (task_id,) = seed(db)
     PgJobStore.connect(dsn, "w1").claim()

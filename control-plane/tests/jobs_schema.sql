@@ -37,5 +37,6 @@ CREATE TABLE jobs (
     receipt_root text,      -- worker
     notes text,             -- worker
     patch text,             -- worker; the change of a task that passed Φ, NULL otherwise
+    cost_micros bigint,     -- worker; the sealed bundle's attested cost, NULL when the task never sealed
     finished_at timestamptz -- worker
 );

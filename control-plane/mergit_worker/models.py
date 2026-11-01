@@ -62,3 +62,4 @@ class RunOutcome:
     root: str | None = None
     notes: list[str] = field(default_factory=lambda: list[str]())
     patch: str | None = None  # the passing change, for the PR gate (plan task O9)
+    cost_micros: int | None = None  # the sealed bundle's attested cost; None when the task never sealed
