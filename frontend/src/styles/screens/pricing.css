@@ -1,0 +1,211 @@
+.pr {
+  position: relative;
+  min-height: 100vh;
+  overflow-x: clip;
+}
+/* One large soft glow behind the cards, so the page is not a flat wash. */
+.pr::before {
+  content: "";
+  position: absolute;
+  inset: 120px 0 auto;
+  height: 620px;
+  background:
+    radial-gradient(ellipse 46% 60% at 28% 40%, color-mix(in srgb, var(--mint) 22%, transparent), transparent 70%),
+    radial-gradient(ellipse 46% 60% at 74% 45%, color-mix(in srgb, var(--azure) 20%, transparent), transparent 70%);
+  filter: blur(40px);
+  pointer-events: none;
+}
+.pr-bar,
+.pr-main {
+  position: relative;
+}
+.pr-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 24px 0;
+}
+.pr-main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 56px 24px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+.pr-head {
+  max-width: 680px;
+}
+.pr-assure {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-top: 6px;
+}
+.pr-assure li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--ink2);
+}
+.pr-assure svg {
+  color: var(--mint);
+}
+.pr .plan-card {
+  animation: pr-rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i) * 110ms + 120ms);
+}
+@keyframes pr-rise {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+}
+.pr-title {
+  font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+  font-size: clamp(48px, 7vw, 76px);
+  line-height: 1;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+.pr-lede {
+  font-size: 17px;
+  line-height: 26px;
+}
+.pr-sub {
+  font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+  font-size: 34px;
+  line-height: 40px;
+  font-weight: 400;
+  margin-bottom: -16px;
+}
+.pr-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: var(--surface);
+}
+.pr-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.pr-table thead th {
+  text-align: left;
+  font-weight: 600;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.pr-table td,
+.pr-table tbody th[scope="row"] {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  font-weight: 400;
+}
+.pr-table tbody th[scope="row"] {
+  width: 36%;
+}
+.pr-table tbody:last-of-type tr:last-child td,
+.pr-table tbody:last-of-type tr:last-child th {
+  border-bottom: 0;
+}
+.pr-group th {
+  padding: 18px 20px 8px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  text-align: left;
+  border-bottom: 0;
+}
+.pr-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink3);
+}
+.pr-yes {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--mint-wash);
+  color: var(--mint);
+}
+.pr-table tbody tr:not(.pr-group) th,
+.pr-table tbody tr:not(.pr-group) td {
+  transition: background-color 0.18s ease;
+}
+.pr-table tbody tr:not(.pr-group):hover th,
+.pr-table tbody tr:not(.pr-group):hover td {
+  background: var(--soft);
+}
+/* The set-apart plan's column carries a faint tint, so it reads down the whole table. */
+.pr-table thead th:nth-child(4),
+.pr-table tbody tr:not(.pr-group) td:nth-child(4) {
+  background: color-mix(in srgb, var(--azure) 5%, transparent);
+}
+.pr-group th::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  margin-right: 8px;
+  vertical-align: middle;
+  border-radius: 2px;
+  background: var(--mint);
+}
+.pr-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 44px 24px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  background:
+    radial-gradient(ellipse 60% 120% at 20% 0%, color-mix(in srgb, var(--mint) 16%, transparent), transparent 70%),
+    radial-gradient(ellipse 60% 120% at 80% 100%, color-mix(in srgb, var(--azure) 14%, transparent), transparent 70%),
+    var(--surface);
+}
+.pr-cta-title {
+  font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+  font-size: clamp(30px, 4vw, 42px);
+  line-height: 1.1;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.pr-cta-actions {
+  margin-top: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.pr-cta .btn {
+  position: relative;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pr .plan-card {
+    animation: none;
+  }
+}
+.pr-no {
+  color: var(--ink3);
+}
+.pr-foot {
+  max-width: 640px;
+}
