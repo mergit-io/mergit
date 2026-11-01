@@ -1,22 +1,29 @@
-"""Checks the model credential the way the planner and the agents use it, before a real run depends on it.
+"""Checks the model credential the way the planner and the agents use it, before a real run depends on it:
+every provider actually in use, the planner's own (``Settings.planner_provider``) plus every provider named
+by a deployed agent in ``agents.toml``.
 
-    python -m mergit_cp.llm_check [model]        (run inside the api container, or with the same env)
+    python -m mergit_cp.llm_check        (run inside the api container, or with the same env)
 
-Makes two tiny calls with the configured provider (``ANTHROPIC_API_KEY``, or ``ANTHROPIC_AUTH_TOKEN`` with
-``ANTHROPIC_BASE_URL`` for a gateway such as Claude Lend, or Groq): a plain answer, then one that must call a
-tool, because the agents work by tool calls. Prints the provider, the model, whether each call worked and its
-token counts; never a key or a token. Exit status 0 only if both worked.
+For each distinct provider, makes two tiny calls (a plain answer, then one that must call a tool, because
+the agents work by tool calls) against one representative model: the planner's own model for the planner's
+provider, the first deployed agent's model found for an agent provider. Prints the provider, the endpoint,
+the model, whether each call worked and its token counts; never a key or a token. Exit status 0 only if
+every provider's checks worked.
 """
 
 import asyncio
+import json
 import os
-import sys
+import tomllib
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from mergit_worker.providers import llm_provider
+from mergit_worker.config import ConfigError
+from mergit_worker.providers import ProviderSpec, load_providers
 
-from .llm import LLMError, LLMUnavailable, build_llm
+from .config import Settings
+from .llm import LLMError, LLMUnavailable, build_planner_llm
 
 _TOOL = {
     "name": "report",
@@ -29,15 +36,48 @@ _TOOL = {
 }
 
 
-def _endpoint() -> str:
-    if llm_provider() == "groq":
-        return urlsplit(os.environ.get("GROQ_BASE_URL") or "https://api.groq.com").hostname or "groq"
+def _endpoint(spec: ProviderSpec) -> str:
+    if spec.kind == "openai_chat":
+        return urlsplit(spec.base_url or "").hostname or spec.base_url or spec.name
     return urlsplit(os.environ.get("ANTHROPIC_BASE_URL", "")).hostname or "api.anthropic.com"
 
 
-async def check(model: str) -> bool:
-    llm = build_llm()
-    print(f"provider={llm_provider()}  endpoint={_endpoint()}  model={model}")
+def _agent_model_by_provider(agents_file: Path, agents_config: Path) -> dict[str, str]:
+    """The first deployed agent's model found for each provider it names, read the same way
+    `mergit_worker.agents.validate_agents_have_keys` reads the deploy."""
+    try:
+        registry: list[dict[str, Any]] = json.loads(agents_file.read_text())["agents"]
+        models: dict[str, Any] = tomllib.loads(agents_config.read_text())["agents"]
+    except (OSError, KeyError, ValueError) as exc:
+        raise ConfigError(f"cannot read agent configuration: {exc}") from exc
+    by_provider: dict[str, str] = {}
+    for entry in registry:
+        cfg: dict[str, Any] | None = models.get(str(entry.get("name")))
+        provider = cfg.get("provider") if cfg else None
+        model = cfg.get("model") if cfg else None
+        if provider and model:  # a missing provider/model here is load_agent_spec's own clear error to raise
+            by_provider.setdefault(str(provider), str(model))
+    return by_provider
+
+
+def _providers_in_use(settings: Settings) -> dict[str, str]:
+    """Every provider actually in use, mapped to one representative model: the planner's provider first
+    (so its own model wins if an agent also happens to share it), then each agent provider not already
+    covered."""
+    in_use = {settings.planner_provider: settings.planner_model}
+    agent_models = _agent_model_by_provider(Path(settings.agents_file), Path(settings.agents_config))
+    for name, model in agent_models.items():
+        in_use.setdefault(name, model)
+    return in_use
+
+
+async def _check_one(providers: dict[str, ProviderSpec], name: str, model: str) -> bool:
+    spec = providers.get(name)
+    if spec is None:
+        print(f"provider={name}  model={model}  FAILED  no [providers.{name}] table in agents.toml")
+        return False
+    llm = build_planner_llm(providers, name)
+    print(f"provider={name}  endpoint={_endpoint(spec)}  model={model}")
     ok = True
     steps: list[tuple[str, list[dict[str, Any]], list[dict[str, Any]] | None]] = [
         ("plain answer", [{"role": "user", "content": "Reply with the single word: ready"}], None),
@@ -52,26 +92,33 @@ async def check(model: str) -> bool:
             [_TOOL],
         ),
     ]
-    for name, messages, tools in steps:
+    for step_name, messages, tools in steps:
         try:
             result = await llm.complete(messages, tools, model)
         except (LLMUnavailable, LLMError) as problem:
-            print(f"  {name}: FAILED  {str(problem)[:300]}")
+            print(f"  {step_name}: FAILED  {str(problem)[:300]}")
             ok = False
             continue
         worked = bool(result.tool_calls) if tools else bool(result.text.strip())
         ok = ok and worked
         print(
-            f"  {name}: {'ok' if worked else 'FAILED (the reply did not do what was asked)'}"
+            f"  {step_name}: {'ok' if worked else 'FAILED (the reply did not do what was asked)'}"
             f"  in={result.input_tokens} out={result.output_tokens} served_by={result.model}"
         )
     return ok
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    model = args[0] if args else os.environ.get("PLANNER_MODEL", "claude-haiku-4-5")
-    return 0 if asyncio.run(check(model)) else 1
+async def check(settings: Settings) -> bool:
+    providers = load_providers(Path(settings.agents_config))
+    ok = True
+    for name, model in _providers_in_use(settings).items():
+        ok = await _check_one(providers, name, model) and ok
+    return ok
+
+
+def main() -> int:
+    settings = Settings()  # type: ignore[call-arg]  # read from the environment, as the API does
+    return 0 if asyncio.run(check(settings)) else 1
 
 
 if __name__ == "__main__":

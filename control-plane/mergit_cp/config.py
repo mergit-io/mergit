@@ -31,6 +31,9 @@ class Settings(BaseSettings):
 
     planner_model: str
     """The planner's model (HLD D18 is open, so this is a deployment choice, not a code default)."""
+    planner_provider: str
+    """Which `[providers.<name>]` table in `agents_config` the planner uses (HLD D18 is open, so this is a
+    deployment choice, not a code default)."""
     prices_file: str = "prices.toml"
     planner_max_tasks: int = Field(default=8, ge=1, le=32)
     plans_per_hour: int = Field(default=10, ge=1)

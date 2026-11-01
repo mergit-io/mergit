@@ -10,13 +10,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from mergit_worker.meter import PriceTable
+from mergit_worker.providers import load_providers
 
 from . import auth, chain_events, oauth, otp, redeem, routes_plans, routes_pr, routes_runs, wallet_interest
 from .agents import load_agents
 from .config import Settings
 from .db import migrate, open_pool
 from .events import EventDeliverer
-from .llm import LLM, build_llm
+from .llm import LLM, build_planner_llm
 from .outcomes import OutcomeProcessor
 from .planner import PgCostSink
 from .pr_store import PgPrStore
@@ -49,7 +50,9 @@ def create_app(
         app.state.pool = pool
         # The pull-request routes share the worker's queue table; the API holds no GitHub token (see README).
         app.state.pr_store = PgPrStore.connect(settings.database_url, "api")
-        app.state.llm = llm or build_llm()
+        app.state.llm = llm or build_planner_llm(
+            load_providers(Path(settings.agents_config)), settings.planner_provider
+        )
         app.state.costs = PgCostSink(pool, prices)
         app.state.broadcaster = PlanBroadcaster()
         app.state.mailer = mailer or (otp.SmtpMailer(settings) if settings.email_enabled else None)

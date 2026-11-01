@@ -1,5 +1,5 @@
-"""Which model provider runs, decided once at start-up from the environment, and the provider each agent
-uses, configured once in `agents.toml`."""
+"""The provider each agent and the planner use, configured once in `agents.toml` (or, for the planner, in
+`Settings.planner_provider`)."""
 
 from __future__ import annotations
 
@@ -11,40 +11,32 @@ import pytest
 from mergit_worker.agents import load_agent_spec, validate_agents_are_priced
 from mergit_worker.config import ConfigError
 from mergit_worker.meter import PriceTable
-from mergit_worker.providers import ProviderSpec, llm_provider, load_providers
+from mergit_worker.providers import ProviderSpec, load_providers, provider_key
 from tests.support import KEY, KEY_ADDRESS
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_anthropic_is_the_provider_whenever_its_key_is_set():
-    assert llm_provider({"ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}) == "anthropic"
+def test_provider_key_falls_back_to_anthropics_own_env_vars_when_no_api_key_env_is_named():
+    # A provider with no `api_key_env` (the common single-Anthropic-provider deploy) lets the credential
+    # come from whichever of ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN is set, exactly as the SDK itself would
+    # read it; a gateway such as Claude Lend hands out ANTHROPIC_AUTH_TOKEN (+ ANTHROPIC_BASE_URL) instead
+    # of a real key, and it must still be picked up.
+    spec = ProviderSpec(name="anthropic", kind="anthropic", base_url=None, api_key_env=None)
+    assert provider_key(spec, {"ANTHROPIC_AUTH_TOKEN": "t"}) == "t"
+    assert provider_key(spec, {"ANTHROPIC_API_KEY": "a", "ANTHROPIC_AUTH_TOKEN": "t"}) == "a"
+    assert provider_key(spec, {}) is None
 
 
-def test_an_anthropic_auth_token_counts_as_the_anthropic_credential():
-    # A gateway such as Claude Lend takes ANTHROPIC_AUTH_TOKEN (+ ANTHROPIC_BASE_URL) instead of a real key.
-    # It must win over a Groq key left in the same file, or the deploy would silently keep using Groq.
-    assert llm_provider({"ANTHROPIC_AUTH_TOKEN": "t", "GROQ_API_KEY": "g"}) == "anthropic"
-    # A blank value is not a credential.
-    assert llm_provider({"ANTHROPIC_AUTH_TOKEN": "", "GROQ_API_KEY": "g"}) == "groq"
-
-
-def test_groq_is_the_fallback_when_only_its_key_is_set():
-    assert llm_provider({"GROQ_API_KEY": "g"}) == "groq"
-
-
-def test_with_no_keys_the_default_is_anthropic_so_nothing_changes_for_tests_or_a_keyed_deploy():
-    assert llm_provider({}) == "anthropic"
-
-
-def test_an_explicit_choice_wins_over_the_keys_present():
-    assert llm_provider({"LLM_PROVIDER": "groq", "ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}) == "groq"
-    assert llm_provider({"LLM_PROVIDER": "anthropic", "GROQ_API_KEY": "g"}) == "anthropic"
-
-
-def test_an_unknown_provider_name_is_an_error():
-    with pytest.raises(ConfigError, match="LLM_PROVIDER"):
-        llm_provider({"LLM_PROVIDER": "openia"})
+def test_provider_key_uses_the_named_env_var_when_one_is_given():
+    spec = ProviderSpec(
+        name="openrouter",
+        kind="openai_chat",
+        base_url="https://openrouter.ai/api/v1",
+        api_key_env="OPENROUTER_API_KEY",
+    )
+    assert provider_key(spec, {"OPENROUTER_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}) == "k"
+    assert provider_key(spec, {}) is None
 
 
 def test_the_repo_price_table_prices_the_groq_models_from_groqs_published_prices():

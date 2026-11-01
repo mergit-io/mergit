@@ -1,11 +1,10 @@
-"""Model gateway: one small interface the planner and the agents call, with an Anthropic adapter and a Groq
+"""Model gateway: one small interface the planner calls, with an Anthropic adapter and an OpenAI-compatible
 one.
 
-Nothing outside this module imports a provider SDK, so adding a provider is one more class here. The provider
-is
-chosen once at start-up by `build_llm` (mergit_worker/providers.py): Anthropic when its key is set, Groq when
-only
-Groq's is. Credentials come from the environment and never pass through a prompt.
+Nothing outside this module imports a provider SDK, so adding a provider is one more class here. The planner
+names its provider in `Settings.planner_provider`, exactly as an agent names its own in `agents.toml`
+(`mergit_worker/providers.py`); `build_planner_llm` resolves that name to a client once at start-up.
+Credentials come from the environment and never pass through a prompt.
 """
 
 import asyncio
@@ -20,9 +19,9 @@ import httpx
 from anthropic import APIError, AsyncAnthropic, omit
 from anthropic.types import Message, MessageParam, ToolParam
 
-from mergit_worker.llm import GROQ_BASE_URL, retry_wait
+from mergit_worker.llm import retry_wait
 from mergit_worker.openai_chat import BadReply, parse_reply, to_openai_messages, to_openai_tools
-from mergit_worker.providers import has_anthropic_credential, llm_provider
+from mergit_worker.providers import ProviderSpec, provider_key
 
 
 @dataclass(frozen=True)
@@ -130,28 +129,24 @@ _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _ATTEMPTS = 3
 
 
-class GroqLLM:
-    """Groq's OpenAI-compatible chat API, the fallback when there is no Anthropic key (same translation as the
-    worker's
-    `GroqLLM`, in `mergit_worker/openai_chat.py`). A structured answer is requested as best-effort JSON-schema
-    output
-    (`strict: false`, which every Groq model supports) because the planner validates every answer itself in
-    `check_tasks`, exactly as it does for Anthropic."""
+class OpenAIChatLLM:
+    """Any OpenAI-compatible chat API (Groq, OpenRouter, ...), async for the planner (the worker's sync twin
+    is `mergit_worker.llm.OpenAIChatLLM`). A structured answer is requested as best-effort JSON-schema output
+    (`strict: false`, which every such provider accepts) because the planner validates every answer itself
+    in `check_tasks`, exactly as it does for Anthropic. The key is only ever sent in the `Authorization`
+    header: errors never include it."""
 
     def __init__(
         self,
-        api_key: str | None = None,
+        api_key: str,
         *,
+        base_url: str,
         client: httpx.AsyncClient | None = None,
         timeout_s: float = 120.0,
-        base_url: str = GROQ_BASE_URL,
         sleep: Callable[[float], Any] = asyncio.sleep,
         max_tokens: int = 16000,
     ) -> None:
-        key = api_key or os.environ.get("GROQ_API_KEY")
-        if not key:
-            raise LLMUnavailable("GROQ_API_KEY is not set")
-        self._headers = {"Authorization": f"Bearer {key}"}
+        self._headers = {"Authorization": f"Bearer {api_key}"}
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._http = client or httpx.AsyncClient(timeout=timeout_s)
         self._sleep = sleep
@@ -222,19 +217,47 @@ class GroqLLM:
         return result
 
 
-def build_llm(environ: Mapping[str, str] | None = None) -> LLM:
-    """The planner's model client: Anthropic when its key is set, Groq when only Groq's is.
+class _UnavailableLLM:
+    """Stands in for a provider with no key configured, so start-up never fails for it: a planning request
+    then fails clearly with `LLMUnavailable`, which the API turns into a 502."""
 
-    With no key at all the API still starts, as it always has, so wallet sign-in, credits and the agent list
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        model: str,
+        *,
+        system: str | None = None,
+        output_schema: dict[str, Any] | None = None,
+    ) -> LLMResult:
+        raise LLMUnavailable("no model key is configured for the planner's provider")
+
+
+def build_planner_llm(
+    providers: dict[str, ProviderSpec],
+    name: str,
+    timeout_s: float = 120.0,
+    environ: Mapping[str, str] | None = None,
+) -> LLM:
+    """The planner's model client for its configured provider, named in `Settings.planner_provider` exactly
+    as an agent names its own in `agents.toml`.
+
+    With no key for it, the API still starts, as it always has, so wallet sign-in, credits and the agent list
     work; a planning request then fails with 502. (The worker, which can do nothing without a model, refuses
     to start.)"""
     env = os.environ if environ is None else environ
-    provider = llm_provider(env)
-    if provider == "groq" and env.get("GROQ_API_KEY"):
-        return GroqLLM(env["GROQ_API_KEY"])
-    if not has_anthropic_credential(env):
+    spec = providers[name]
+    key = provider_key(spec, env)
+    if not key:
+        env_var = spec.api_key_env or "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
         log.warning(
-            "no model key set (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY): planning requests "
-            "will fail until one is"
+            "no model key set for provider %r (%s): planning requests will fail until one is", name, env_var
         )
-    return AnthropicLLM()
+        return _UnavailableLLM()
+    if spec.kind == "anthropic":
+        # With its own `api_key_env`, this provider's key may not be the SDK's own env-var default (another
+        # `[providers.*]` table could be anthropic too, with a different key); pass it explicitly so the
+        # right one is actually used, not just checked for presence above.
+        return AnthropicLLM(client=AsyncAnthropic(api_key=key)) if spec.api_key_env else AnthropicLLM()
+    assert spec.base_url is not None  # load_providers requires base_url for kind == "openai_chat"
+    return OpenAIChatLLM(key, base_url=spec.base_url, timeout_s=timeout_s)

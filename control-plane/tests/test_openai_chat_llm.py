@@ -1,5 +1,5 @@
-"""The worker's `OpenAIChatLLM` (any OpenAI-compatible chat API: Groq, OpenRouter, ...) and the planner's
-async Groq adapter, against the documented HTTP shape, faked with respx."""
+"""The worker's `OpenAIChatLLM` and the planner's async twin (any OpenAI-compatible chat API: Groq,
+OpenRouter, ...), against the documented HTTP shape, faked with respx."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import respx
 
 from mergit_cp import llm as cp_llm
 from mergit_worker import llm as worker_llm
+from mergit_worker.providers import ProviderSpec
 
 BASE_URL = "https://api.groq.com/openai/v1"
 URL = f"{BASE_URL}/chat/completions"
@@ -181,7 +182,7 @@ def test_planner_asks_for_a_json_schema_answer_best_effort_and_splits_cached_tok
     )
     schema = {"type": "object", "properties": {"tasks": {"type": "array"}}}
     result = run(
-        cp_llm.GroqLLM("k", sleep=lambda _s: None).complete(
+        cp_llm.OpenAIChatLLM("k", base_url=BASE_URL, sleep=lambda _s: None).complete(
             [{"role": "user", "content": "plan"}],
             None,
             "openai/gpt-oss-120b",
@@ -214,7 +215,9 @@ def test_planner_reports_an_outage_as_unavailable_so_the_api_answers_502():
     respx.post(URL).respond(500, json={})
     with pytest.raises(cp_llm.LLMUnavailable):
         run(
-            cp_llm.GroqLLM("k", sleep=lambda _s: None).complete([{"role": "user", "content": "x"}], None, "m")
+            cp_llm.OpenAIChatLLM("k", base_url=BASE_URL, sleep=lambda _s: None).complete(
+                [{"role": "user", "content": "x"}], None, "m"
+            )
         )
 
 
@@ -226,25 +229,42 @@ def test_planner_reports_a_truncated_answer_as_an_error_that_still_carries_its_u
     )
     with pytest.raises(cp_llm.LLMError) as caught:
         run(
-            cp_llm.GroqLLM("k", sleep=lambda _s: None).complete([{"role": "user", "content": "x"}], None, "m")
+            cp_llm.OpenAIChatLLM("k", base_url=BASE_URL, sleep=lambda _s: None).complete(
+                [{"role": "user", "content": "x"}], None, "m"
+            )
         )
     assert caught.value.reason == "max_tokens" and caught.value.usage.output_tokens == 9
 
 
-def test_the_planner_factory_picks_the_provider_from_the_environment():
-    assert isinstance(cp_llm.build_llm({"GROQ_API_KEY": "g"}), cp_llm.GroqLLM)
-    assert isinstance(cp_llm.build_llm({"ANTHROPIC_API_KEY": "a"}), cp_llm.AnthropicLLM)
+_ANTHROPIC = {"anthropic": ProviderSpec(name="anthropic", kind="anthropic", base_url=None, api_key_env=None)}
+_OPENROUTER = {
+    "openrouter": ProviderSpec(
+        name="openrouter", kind="openai_chat", base_url=BASE_URL, api_key_env="OPENROUTER_API_KEY"
+    )
+}
 
 
-def test_the_api_still_starts_with_no_model_key_so_sign_in_and_credits_work(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv(
-        "ANTHROPIC_API_KEY", "placeholder"
-    )  # the SDK builds its client without contacting anything
-    assert isinstance(cp_llm.build_llm({}), cp_llm.AnthropicLLM)
+def test_the_planner_factory_picks_the_clients_kind_from_the_named_provider():
+    assert isinstance(
+        cp_llm.build_planner_llm(_OPENROUTER, "openrouter", environ={"OPENROUTER_API_KEY": "k"}),
+        cp_llm.OpenAIChatLLM,
+    )
+    assert isinstance(
+        cp_llm.build_planner_llm(_ANTHROPIC, "anthropic", environ={"ANTHROPIC_API_KEY": "a"}),
+        cp_llm.AnthropicLLM,
+    )
+
+
+def test_the_api_still_starts_with_no_model_key_so_sign_in_and_credits_work():
+    # The API still starts and `build_planner_llm` still returns a client; a planning request then fails
+    # clearly with `LLMUnavailable`, which the API turns into a 502 (see tests/test_llm.py).
+    llm = cp_llm.build_planner_llm(_ANTHROPIC, "anthropic", environ={})
+    with pytest.raises(cp_llm.LLMUnavailable):
+        run(llm.complete([{"role": "user", "content": "x"}], None, "m"))
 
 
 def test_the_planner_accepts_a_gateway_token_without_warning(caplog: pytest.LogCaptureFixture):
     env = {"ANTHROPIC_AUTH_TOKEN": "lend-token", "ANTHROPIC_BASE_URL": "https://lend.example"}
     with caplog.at_level("WARNING", logger="mergit_cp.llm"):
-        assert isinstance(cp_llm.build_llm(env), cp_llm.AnthropicLLM)
+        assert isinstance(cp_llm.build_planner_llm(_ANTHROPIC, "anthropic", environ=env), cp_llm.AnthropicLLM)
     assert "no model key" not in caplog.text
