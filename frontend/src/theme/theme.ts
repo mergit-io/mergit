@@ -4,13 +4,10 @@ export type Theme = "light" | "dark";
 
 /** Must match the inline boot script in index.html. */
 export const STORAGE_KEY = "mergit-theme";
-export const DARK_QUERY = "(prefers-color-scheme: dark)";
+/** What a first-time visitor gets, whatever their OS setting. Must match the inline boot script in index.html. */
+export const DEFAULT_THEME: Theme = "light";
 const FADE_CLASS = "theme-fade";
 const FADE_MS = 320;
-
-export function systemTheme(): Theme {
-  return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
-}
 
 export function storedTheme(): Theme | null {
   try {
@@ -26,12 +23,12 @@ export function currentTheme(): Theme {
 }
 
 /**
- * Remember an explicit choice. Picking the theme the OS already uses clears the
- * override, so the app goes back to following the OS from then on.
+ * Remember an explicit choice. Picking the default theme clears the override,
+ * so the stored value only ever means "the visitor chose dark".
  */
 export function persistTheme(theme: Theme) {
   try {
-    if (theme === systemTheme()) localStorage.removeItem(STORAGE_KEY);
+    if (theme === DEFAULT_THEME) localStorage.removeItem(STORAGE_KEY);
     else localStorage.setItem(STORAGE_KEY, theme);
   } catch {
     // Private mode or blocked storage: the switch still works for this page.

@@ -3,9 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#F4F5F7" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0B0C0F" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#F4F5F7" />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -16,20 +15,21 @@
       content="AI agents that do real work. Proof you can verify. One sentence becomes a fix in GitHub, a ticket in Linear and a reply in the thread that asked. Every finished task settles on chain."
     />
     <script>
-      // Set the theme before first paint so a dark-mode visitor never sees a light flash.
-      // Keep the key and logic in sync with src/theme/theme.ts.
+      // Set the theme before first paint so a returning dark-mode visitor never sees a light flash.
+      // A first visit is always light, whatever the OS says. The key and default must match src/theme/theme.ts (src/theme/bootScript.test.ts checks).
       (function () {
         var stored = null;
         try {
           stored = localStorage.getItem("mergit-theme");
         } catch (e) {}
-        var theme =
-          stored === "light" || stored === "dark"
-            ? stored
-            : window.matchMedia("(prefers-color-scheme: dark)").matches
-              ? "dark"
-              : "light";
+        var theme = stored === "dark" ? "dark" : "light";
         document.documentElement.dataset.theme = theme;
+        // The browser's own canvas and chrome follow the theme too, before any CSS has loaded.
+        var meta = { "color-scheme": theme, "theme-color": theme === "dark" ? "#0B0C0F" : "#F4F5F7" };
+        for (var name in meta) {
+          var el = document.querySelector('meta[name="' + name + '"]');
+          if (el) el.setAttribute("content", meta[name]);
+        }
       })();
     </script>
   </head>

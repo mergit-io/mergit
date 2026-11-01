@@ -21,7 +21,7 @@ async function settle(page: Page) {
 }
 
 test.describe("first paint", () => {
-  test("follows a dark OS before the app script runs", async ({ browser }) => {
+  test("opens in light on a first visit even when the OS is dark", async ({ browser }) => {
     const ctx = await browser.newContext({ colorScheme: "dark" });
     await seedSession(ctx);
     const page = await ctx.newPage();
@@ -32,21 +32,21 @@ test.describe("first paint", () => {
       });
     });
     await page.goto("/app");
-    expect(await page.evaluate(() => (window as unknown as { __firstTheme?: string }).__firstTheme)).toBe("dark");
-    expect(await canvasOf(page)).toBe(DARK_CANVAS);
+    expect(await page.evaluate(() => (window as unknown as { __firstTheme?: string }).__firstTheme)).toBe("light");
+    expect(await canvasOf(page)).toBe(LIGHT_CANVAS);
     await ctx.close();
   });
 
-  test("a saved choice beats the OS setting", async ({ browser }) => {
-    const ctx = await browser.newContext({ colorScheme: "dark" });
+  test("a saved dark choice is honoured on the next visit", async ({ browser }) => {
+    const ctx = await browser.newContext({ colorScheme: "light" });
     await seedSession(ctx);
     await ctx.addInitScript(() => {
-      localStorage.setItem("mergit-theme", "light");
+      localStorage.setItem("mergit-theme", "dark");
     });
     const page = await ctx.newPage();
     await page.goto("/app");
-    expect(await themeOf(page)).toBe("light");
-    expect(await canvasOf(page)).toBe(LIGHT_CANVAS);
+    expect(await themeOf(page)).toBe("dark");
+    expect(await canvasOf(page)).toBe(DARK_CANVAS);
     await ctx.close();
   });
 });
@@ -69,7 +69,7 @@ test.describe("toggle", () => {
     expect(await canvasOf(page)).toBe(DARK_CANVAS);
   });
 
-  test("picking the OS theme again clears the override", async ({ page }) => {
+  test("picking light again clears the override", async ({ page }) => {
     await page.goto("/app");
     await toggle(page).click();
     await settle(page);
@@ -127,17 +127,9 @@ test.describe("sync", () => {
     await ctx.close();
   });
 
-  test("follows the OS live until the user picks a theme", async ({ page }) => {
-    await page.emulateMedia({ colorScheme: "light" });
-    await page.goto("/app");
-    expect(await themeOf(page)).toBe("light");
-
+  test("ignores the OS setting, now and when it changes", async ({ page }) => {
     await page.emulateMedia({ colorScheme: "dark" });
-    await expect.poll(() => themeOf(page)).toBe("dark");
-
-    // Explicit choice that differs from the OS: OS changes stop applying.
-    await toggle(page).click();
-    await settle(page);
+    await page.goto("/app");
     expect(await themeOf(page)).toBe("light");
     await page.emulateMedia({ colorScheme: "light" });
     await page.emulateMedia({ colorScheme: "dark" });

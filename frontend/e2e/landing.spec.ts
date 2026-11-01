@@ -50,7 +50,12 @@ test.describe("landing page", () => {
 
   test("renders in both themes with no errors and no stale terms", async ({ browser }) => {
     for (const colorScheme of ["light", "dark"] as const) {
-      const ctx = await browser.newContext({ colorScheme, reducedMotion: "reduce" });
+      // The OS is dark in both rounds: the theme comes from the saved choice alone.
+      const ctx = await browser.newContext({ colorScheme: "dark", reducedMotion: "reduce" });
+      if (colorScheme === "dark")
+        await ctx.addInitScript(() => {
+          localStorage.setItem("mergit-theme", "dark");
+        });
       const page = await ctx.newPage();
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
