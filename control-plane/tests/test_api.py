@@ -674,9 +674,7 @@ def test_candidates_show_ineligible_reason(client: TestClient, settings: Setting
     address = sign_in(client)
     # seed_plan already dispatches agent "1" (the fixture's only agent) on every index, so it is
     # "already tried on this task" and therefore the only candidate, and ineligible.
-    plan_uuid, _, _ = run(
-        settings.database_url, lambda pool: seed_plan(pool, requester=address, n_tasks=1)
-    )
+    plan_uuid, _, _ = run(settings.database_url, lambda pool: seed_plan(pool, requester=address, n_tasks=1))
 
     body = client.get(f"/v0/plans/{plan_uuid}/candidates").json()
     assert len(body["tasks"]) == 1
@@ -698,11 +696,12 @@ def test_candidates_sort_by_theta_mean_when_retry_intolerant(
         two_agent_settings.database_url,
         lambda pool: seed_routable_plan(pool, requester=address, category="cat-y", retry_tolerant=[False]),
     )
-    # agent_a: theta_mean 0.95 but expensive (cost_mean 1_000_000) -> density ~9.5e-7 (the LOWER density).
+    # agent_a: theta_mean 0.95 but pricier (cost_mean 500_000, still inside the task's 500_000 budget, so
+    # both agents are `within_budget` and only the metric orders them) -> density 1.9e-6 (the LOWER density).
     run(
         two_agent_settings.database_url,
         lambda pool: seed_posterior(
-            pool, agent_id=two_agents.agent_a, category="cat-y", alpha=95, beta=5, kappa=10, tau=10_000_000
+            pool, agent_id=two_agents.agent_a, category="cat-y", alpha=95, beta=5, kappa=10, tau=5_000_000
         ),
     )
     # agent_b: theta_mean 0.5 but cheap (cost_mean 10_000) -> density 5e-5 (the HIGHER density).
@@ -843,3 +842,222 @@ def test_agents_list_has_no_reputation_from_credits_plans(client: TestClient, se
     (agent,) = [a for a in body if a["agent_id"] == "1"]
     assert agent["provider"] == "anthropic"
     assert agent["reputation"] == []
+
+
+def test_candidates_report_budget_feasibility(
+    two_agent_client: TestClient, two_agent_settings: Settings, two_agents: TwoAgents
+):
+    """Final review m1: the candidates list must show the router's own budget rule, not ignore it. agent_a's
+    learned $1.00 against this task's $0.50 budget (with kappa = 20) is sampled under budget about 0.12% of
+    the time: ineligible, reason "over budget for this task" -- a string the server really emits now, the
+    one the run screen's fixtures used to assert while the server never produced it. agent_b's learned
+    $0.80 is over budget by mean only: eligible (exploration may still try it), `within_budget` false,
+    and ranked after an agent that fits even though its density is higher."""
+    address = sign_in(two_agent_client)
+    plan_uuid = run(
+        two_agent_settings.database_url,
+        lambda pool: seed_routable_plan(pool, requester=address, category="cat-b"),
+    )
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_a, category="cat-b", alpha=9, beta=1, kappa=20, tau=20_000_000
+        ),
+    )
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_b, category="cat-b", alpha=9, beta=1, kappa=20, tau=16_000_000
+        ),
+    )
+
+    (task,) = two_agent_client.get(f"/v0/plans/{plan_uuid}/candidates").json()["tasks"]
+    by_id = {c["agent_id"]: c for c in task["candidates"]}
+    assert (by_id[two_agents.agent_a]["eligible"], by_id[two_agents.agent_a]["reason"]) == (
+        False,
+        "over budget for this task",
+    )
+    assert by_id[two_agents.agent_a]["within_budget"] is False
+    assert (by_id[two_agents.agent_b]["eligible"], by_id[two_agents.agent_b]["reason"]) == (True, None)
+    assert by_id[two_agents.agent_b]["within_budget"] is False
+
+
+def test_candidates_rank_within_budget_ahead_of_a_better_metric(
+    two_agent_client: TestClient, two_agent_settings: Settings, two_agents: TwoAgents
+):
+    """Both eligible; agent_a has the higher density but a mean cost over the budget, agent_b fits. The
+    deterministic `greedy` pick would be agent_b, so agent_b ranks first."""
+    address = sign_in(two_agent_client)
+    plan_uuid = run(
+        two_agent_settings.database_url,
+        lambda pool: seed_routable_plan(pool, requester=address, category="cat-r"),
+    )
+    # agent_a: theta 0.99, cost_mean 600_000 -> density 1.65e-6, over the 550_000 limit by mean.
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_a, category="cat-r", alpha=99, beta=1, kappa=20, tau=12_000_000
+        ),
+    )
+    # agent_b: theta 0.5, cost_mean 400_000 -> density 1.25e-6, inside the budget.
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool, agent_id=two_agents.agent_b, category="cat-r", alpha=50, beta=50, kappa=20, tau=8_000_000
+        ),
+    )
+    (task,) = two_agent_client.get(f"/v0/plans/{plan_uuid}/candidates").json()["tasks"]
+    candidates = task["candidates"]
+    assert candidates[0]["density"] < candidates[1]["density"]
+    assert [c["agent_id"] for c in candidates] == [two_agents.agent_b, two_agents.agent_a]
+    assert [c["within_budget"] for c in candidates] == [True, False]
+    assert all(c["eligible"] for c in candidates)
+
+
+async def seed_auto_plan(
+    pool: Pool, *, requester: str, budget_usdc_units: int, state: str = "funded", explore: bool = False
+) -> tuple[str, str]:
+    """A funded plan with one auto-routed task (index 0) and nothing dispatched. Returns (plan_uuid,
+    plan_id)."""
+    plan_uuid = str(uuid.uuid4())
+    plan_id = mergit_receipt.plan_id(plan_uuid)
+    task_phi = phi()
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO plans (plan_uuid, plan_id, requester, goal, repo_url, ref, category,"
+            " budget_usdc_units, state, funding, total_budget_usdc_units, planner_model, approved_at)"
+            " VALUES (%s, %s, %s, 'fix the refund', 'https://github.com/acme/widgets', 'main',"
+            " 'test-repair', %s, %s, 'wallet', %s, 'claude-opus-5', now())",
+            (plan_uuid, plan_id, requester, budget_usdc_units, state, budget_usdc_units),
+        )
+        await conn.execute(
+            'INSERT INTO tasks (plan_uuid, "index", title, instructions, phi, phi_hash,'
+            " budget_usdc_units, routing, explore, retry_tolerant)"
+            " VALUES (%s, 0, 'task 0', 'do it', %s, %s, %s, 'auto', %s, true)",
+            (
+                plan_uuid,
+                Jsonb(task_phi),
+                mergit_receipt.phi_hash(json.dumps(task_phi)),
+                budget_usdc_units,
+                explore,
+            ),
+        )
+    return plan_uuid, plan_id
+
+
+async def seed_failed_attempt(pool: Pool, *, plan_uuid: str, plan_id: str, agent_id: str) -> None:
+    """Attempt 1 of index 0, run by `agent_id`, failed its check and already processed by O6."""
+    task_id = mergit_receipt.task_id(plan_id, 0, 1)
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id)'
+            " VALUES (%s, %s, 0, 1, %s)",
+            (task_id, plan_uuid, agent_id),
+        )
+        await conn.execute(
+            'INSERT INTO jobs (task_id, plan_uuid, "index", attempt, agent_id, status, phi_holds,'
+            " finished_at, outcome_processed_at) VALUES (%s, %s, 0, 1, %s, 'done', false, now(), now())",
+            (task_id, plan_uuid, agent_id),
+        )
+
+
+def test_plan_detail_reports_an_unaffordable_auto_task_as_needing_the_requester(
+    client: TestClient, settings: Settings
+):
+    """Final review C1 + M1: an auto task no agent can fit ($0.10 against the cold roster's $0.20 mean, with
+    exploring off) has no attempt at all, so the run screen has nothing to derive "stuck" from. Plan detail
+    carries the server's answer, with why."""
+    address = sign_in(client)
+    plan_uuid, _ = run(
+        settings.database_url, lambda pool: seed_auto_plan(pool, requester=address, budget_usdc_units=100_000)
+    )
+    body = client.get(f"/v0/plans/{plan_uuid}").json()
+    assert body["attempts"] == []
+    assert body["needs_requester"] == [{"index": 0, "reason": "over_budget"}]
+
+
+def test_plan_detail_does_not_report_an_auto_task_that_is_being_retried(
+    two_agent_client: TestClient, two_agent_settings: Settings, two_agents: TwoAgents
+):
+    """Final review M1: the run screen used to call every auto task stuck after one failed attempt (it read
+    the pick list, which an auto task does not have) and told the requester to close the plan. Attempt 1
+    failed, but agent_b is untried and fits the budget, so the server owes a retry: not stuck. Once agent_b
+    has failed too, the roster is exhausted, and it is."""
+    address = sign_in(two_agent_client)
+    db = two_agent_settings.database_url
+    plan_uuid, plan_id = run(
+        db, lambda pool: seed_auto_plan(pool, requester=address, budget_usdc_units=500_000, state="running")
+    )
+    run(
+        db,
+        lambda pool: seed_failed_attempt(
+            pool, plan_uuid=plan_uuid, plan_id=plan_id, agent_id=two_agents.agent_a
+        ),
+    )
+    body = two_agent_client.get(f"/v0/plans/{plan_uuid}").json()
+    assert body["tasks"][0]["agents"] is None
+    assert [a["phi_holds"] for a in body["attempts"]] == [False]
+    assert body["needs_requester"] == []
+
+    async def second_failure(pool: Pool) -> None:
+        task_id = mergit_receipt.task_id(plan_id, 0, 2)
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id)'
+                " VALUES (%s, %s, 0, 2, %s)",
+                (task_id, plan_uuid, two_agents.agent_b),
+            )
+            await conn.execute(
+                'INSERT INTO jobs (task_id, plan_uuid, "index", attempt, agent_id, status, phi_holds,'
+                " finished_at, outcome_processed_at) VALUES (%s, %s, 0, 2, %s, 'done', false, now(), now())",
+                (task_id, plan_uuid, two_agents.agent_b),
+            )
+
+    run(db, second_failure)
+    body = two_agent_client.get(f"/v0/plans/{plan_uuid}").json()
+    assert body["needs_requester"] == [{"index": 0, "reason": "agents_exhausted"}]
+
+
+def test_needs_requester_streams_and_updates(client: TestClient, settings: Settings):
+    """The live stream carries the same list as plan detail, first on connect and again whenever it
+    changes -- an auto task's stuck state can change with no `jobs` row changing at all."""
+    address = sign_in(client)
+    plan_uuid, _ = run(
+        settings.database_url, lambda pool: seed_auto_plan(pool, requester=address, budget_usdc_units=100_000)
+    )
+    events: list[tuple[str, dict[str, Any]]] = []
+    stop = threading.Event()
+
+    def consume() -> None:
+        with client.stream("GET", f"/v0/plans/{plan_uuid}/events") as response:
+            name = None
+            for line in response.iter_lines():
+                if stop.is_set():
+                    return
+                if line.startswith("event: "):
+                    name = line.removeprefix("event: ")
+                elif line.startswith("data: ") and name is not None:
+                    events.append((name, json.loads(line.removeprefix("data: "))))
+                    name = None
+
+    def needs_requester() -> list[Any]:
+        return [d["needs_requester"] for n, d in events if n == "needs_requester"]
+
+    async def raise_budget(pool: Pool) -> None:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE tasks SET budget_usdc_units = 1000000 WHERE plan_uuid = %s", (plan_uuid,)
+            )
+
+    thread = threading.Thread(target=consume, daemon=True)
+    thread.start()
+    try:
+        _wait_for(lambda: len(needs_requester()) == 1)
+        run(settings.database_url, raise_budget)  # now the agent fits: no longer stuck
+        _wait_for(lambda: len(needs_requester()) == 2)
+        time.sleep(0.4)  # several more polls: an unchanged list is not sent again
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+    assert needs_requester() == [[{"index": 0, "reason": "over_budget"}], []]

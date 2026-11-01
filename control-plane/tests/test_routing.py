@@ -546,15 +546,19 @@ def test_explore_cap_hit_with_no_greedy_returns_none(
         noise_task = await seed_dispatch(pool, plan_uuid=noise_uuid, plan_id=noise_id, agent_id=agent)
         await seed_routing_draw(pool, task_id=noise_task, chosen_agent=agent, exploratory=True)
 
-        # A budget far below the agent's prior mean cost (200_000 micros, kappa=1): mean cost is always
+        # A budget well below the agent's prior mean cost (200_000 micros, kappa=1): mean cost is always
         # infeasible (`greedy` is always None), but kappa=1 gives an exponential-shaped sampled-cost
-        # distribution with enough mass near small values that a feasible *sample* is still findable.
-        budget = 36_000
+        # distribution with enough mass near small values that a feasible *sample* is still findable. It
+        # must stay above `router_min_feasible_probability` (final review C1): this budget gives
+        # exp(-200_000 / 66_000), about 0.048 per draw, so the agent is still eligible, not "over budget for
+        # this task" (36_000, this test's old budget, gives about 0.0064 and would now be excluded).
+        budget = 60_000
         routed_uuid, _ = await seed_plan(pool, budget_usdc_units=budget)
         plan = await load_plan(pool, routed_uuid)
 
         async with pool.connection() as conn:
             arms, _ = await routing.candidates(conn, plan, 0, settings)
+            assert not await routing.budget_infeasible(conn, plan, 0, settings)
         assert [a.agent_id for a in arms] == [agent]
         mode = Mode(explore=True, retry_tolerant=True)
         seed_value, expected = _find_seed(
@@ -587,18 +591,40 @@ def test_explore_cap_hit_with_no_greedy_returns_none(
     run(database_url, body)
 
 
-def test_draw_is_recorded_with_seed_and_replays(database_url: str, agents_files: Roster) -> None:
+def test_draw_is_recorded_with_seed_and_replays(
+    database_url: str, agents_files: Roster, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Fix round 1, Finding 3: a `routing_draws` row must be able to replay its own draw from the STORED
     row alone -- `reputation_posteriors` mutates in place over time, so a fresh `candidates()`/`posterior()`
     call against the live database would not actually prove anything about the stored record once those
     posteriors have moved on. This reconstructs `Arm`s purely from `samples.arms`' stored
     alpha/beta/kappa/tau, never touching `candidates()`/`posterior()` again."""
 
-    settings = _settings(agents_files, database_url)
+    # A non-default tolerance (final review m6): the replay below must read it from the row, not from the
+    # settings. 0.37 is what `route` drew with; the replay deliberately has no other way to know that.
+    settings = _settings(agents_files, database_url, router_budget_tolerance=0.37)
 
     async def body(pool: Pool) -> None:
         plan_uuid, plan_id = await seed_plan(pool, budget_usdc_units=1_000_000)
         plan = await load_plan(pool, plan_uuid)
+
+        # Pick a seed whose draw the tolerance actually decides: some arm's sampled cost lies between
+        # 1.1x and 1.37x the budget, so replaying with the default 0.1 instead of the stored 0.37 would
+        # give a different feasibility picture. Without that, this test could not tell the two apart.
+        async with pool.connection() as conn:
+            arms, _ = await routing.candidates(conn, plan, 0, settings)
+        mode = Mode(explore=True, retry_tolerant=True)
+
+        def _feasibility(seed: int, tolerance: float) -> list[bool]:
+            return [s.feasible for s in draw(arms, 1_000_000, mode, tolerance, random.Random(seed)).samples]
+
+        seed_value = next(
+            seed
+            for seed in range(5000)
+            if draw(arms, 1_000_000, mode, 0.37, random.Random(seed)).chosen is not None
+            and _feasibility(seed, 0.37) != _feasibility(seed, 0.1)
+        )
+        monkeypatch.setattr(routing, "secrets", _FixedSecrets(seed_value))
 
         async with pool.connection() as conn:
             pending = await routing.route(conn, plan, 0, 1, settings)
@@ -642,13 +668,187 @@ def test_draw_is_recorded_with_seed_and_replays(database_url: str, agents_files:
         assert {a.agent_id for a in stored_arms} == {a.agent_id for a in pending.arms}
         stored_mode = Mode(explore=row["explore"], retry_tolerant=row["retry_tolerant"])
 
+        assert row["samples"]["budget_tolerance"] == 0.37
         replay = draw(
             stored_arms,
             row["budget_micros"],
             stored_mode,
-            settings.router_budget_tolerance,
+            row["samples"]["budget_tolerance"],
             random.Random(int(row["seed"])),
         )
         assert replay.chosen == row["chosen_agent"]
+        assert replay.greedy == row["greedy_agent"]
+        # Every arm's sampled feasibility replays too, which is the part the tolerance actually decides --
+        # and replaying with the setting's default instead of the stored value would not reproduce it.
+        assert [s.feasible for s in replay.samples] == [a["feasible"] for a in row["samples"]["arms"]]
+        wrong = draw(stored_arms, row["budget_micros"], stored_mode, 0.1, random.Random(int(row["seed"])))
+        assert [s.feasible for s in wrong.samples] != [a["feasible"] for a in row["samples"]["arms"]]
+
+    run(database_url, body)
+
+
+# --- final review C1/m1: over budget is structural, and told apart from waiting -----------------------
+
+
+async def seed_cost_posterior(
+    pool: Pool, *, agent_id: str, category: str, cost_mean_micros: float, kappa: float = 20.0
+) -> None:
+    """A learned cost: a `reputation_posteriors` row for `(agent_id, category)` whose mean cost is
+    `cost_mean_micros`, with `kappa` worth of evidence behind it (20: the steady state under gamma 0.95)."""
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO reputation_posteriors (agent_id, category, alpha, beta, kappa, tau, outcomes, costs)"
+            " VALUES (%s, %s, 5, 5, %s, %s, 10, 20)",
+            (agent_id, category, kappa, kappa * cost_mean_micros),
+        )
+
+
+def test_over_budget_agent_is_excluded_ahead_of_transient_reasons(
+    database_url: str, agents_files: Roster
+) -> None:
+    """An agent no draw will realistically pick for this budget is left out with the real reason
+    `routing.OVER_BUDGET` (the string the run screen shows), checked before probation and the cap, so a
+    transient reason always means "would be drawable once it clears". An agent merely over budget *by mean*
+    stays eligible: exploration may still sample it under budget."""
+    settings = _settings(agents_files, database_url)
+
+    async def body(pool: Pool) -> None:
+        category = rand_id("cat")
+        # Operator A goes into probation (a1 and a2 both run under it).
+        _, _, falsified_task = await seed_task(pool, agent_id=agents_files.a2, category=category)
+        await receive(
+            pool,
+            settings,
+            "verdict.recorded",
+            {
+                "task_id": falsified_task,
+                "verdict": "invalid",
+                "tx": "0x" + format(random.getrandbits(250), "064x"),
+            },
+        )
+        async with pool.connection() as conn, conn.transaction():
+            await ingest_due(conn, settings, {agents_files.a2: agents_files.op_a})
+
+        # a1: learned $1.00 against a $0.50 budget, about 0.0012 per draw -- over budget, and that must win
+        # over its operator's probation. b1: learned $0.80, about 0.04 per draw -- over by mean only.
+        await seed_cost_posterior(
+            pool, agent_id=agents_files.a1, category=category, cost_mean_micros=1_000_000
+        )
+        await seed_cost_posterior(pool, agent_id=agents_files.b1, category=category, cost_mean_micros=800_000)
+
+        plan_uuid, _ = await seed_plan(pool, category=category, budget_usdc_units=500_000)
+        plan = await load_plan(pool, plan_uuid)
+        async with pool.connection() as conn:
+            arms, ineligible = await routing.candidates(conn, plan, 0, settings)
+        assert ineligible == {agents_files.a1: routing.OVER_BUDGET, agents_files.a2: routing.IN_PROBATION}
+        assert {a.agent_id for a in arms} == {agents_files.b1, agents_files.c1}
+
+    run(database_url, body)
+
+
+def test_budget_infeasible_tells_structural_from_transient(database_url: str, agents_files: Roster) -> None:
+    """Final review C1: `route` returns None for two different reasons; `budget_infeasible` must say which.
+    Cold roster throughout (every agent's mean cost is the $0.20 prior)."""
+    settings = _settings(agents_files, database_url, router_operator_concurrency_cap=1)
+
+    async def body(pool: Pool) -> None:
+        async def check(budget: int, explore: bool) -> tuple[bool, routing.PendingDraw | None]:
+            plan_uuid, _ = await seed_plan(pool, budget_usdc_units=budget, explore=explore)
+            plan = await load_plan(pool, plan_uuid)
+            async with pool.connection() as conn:
+                infeasible = await routing.budget_infeasible(conn, plan, 0, settings)
+                pending = await routing.route(conn, plan, 0, 1, settings)
+            return infeasible, pending
+
+        # Structural, exploring off: $0.10 is under every agent's $0.20 mean, so greedy (= chosen) is None.
+        infeasible, pending = await check(100_000, explore=False)
+        assert infeasible is True
+        assert pending is None
+
+        # Same budget, exploring on: each draw has about a 16% chance per agent of sampling under budget,
+        # so this is slow, not stuck -- the classification must not call it structural.
+        infeasible, _ = await check(100_000, explore=True)
+        assert infeasible is False
+
+        # Exploring on, $0.01: about 1e-8 per draw. Every agent is over budget; nothing can be drawn.
+        infeasible, pending = await check(10_000, explore=True)
+        assert infeasible is True
+        assert pending is None
+
+        # Transient: a budget every agent fits, but every operator at its cap of 1. route() is None here
+        # too, and that must NOT read as structural.
+        for agent in (agents_files.a1, agents_files.b1, agents_files.c1):
+            noise_uuid, noise_id = await seed_plan(pool)
+            await seed_dispatch(pool, plan_uuid=noise_uuid, plan_id=noise_id, agent_id=agent)
+        infeasible, pending = await check(1_000_000, explore=False)
+        assert pending is None
+        assert infeasible is False
+
+    run(database_url, body)
+
+
+def test_budget_infeasible_once_the_only_fitting_agent_was_tried(
+    database_url: str, agents_files: Roster
+) -> None:
+    """The retry shape of C1: every agent but c1 has a learned cost over the budget, so once c1 has been
+    tried on the index there is nothing left that fits -- even though three roster agents are untried."""
+    settings = _settings(agents_files, database_url)
+
+    async def body(pool: Pool) -> None:
+        category = rand_id("cat")
+        for agent in (agents_files.a1, agents_files.a2, agents_files.b1):
+            await seed_cost_posterior(pool, agent_id=agent, category=category, cost_mean_micros=1_000_000)
+        plan_uuid, plan_id = await seed_plan(
+            pool, category=category, budget_usdc_units=500_000, explore=False
+        )
+        plan = await load_plan(pool, plan_uuid)
+
+        async with pool.connection() as conn:
+            assert await routing.budget_infeasible(conn, plan, 0, settings) is False
+        await seed_dispatch(pool, plan_uuid=plan_uuid, plan_id=plan_id, agent_id=agents_files.c1)
+        async with pool.connection() as conn:
+            assert await routing.budget_infeasible(conn, plan, 0, settings) is True
+            assert await routing.route(conn, plan, 0, 2, settings) is None
+
+    run(database_url, body)
+
+
+def test_credits_plan_falsification_puts_the_operator_in_probation_for_wallet_routing(
+    database_url: str, agents_files: Roster
+) -> None:
+    """Final review M3: operator A's only history is one forged receipt on a CREDITS-funded plan -- no
+    wallet-plan observation of any kind. Invariant 6 keeps credits work from earning reputation, but a
+    proven falsification is not reputation earned: it must still put the operator in probation, so it is
+    not drawn for wallet-funded work. Before the fix, the falsification was filtered out with the rest of
+    the credits plan's observations, and the forger stayed fully routable."""
+    settings = _settings(agents_files, database_url)
+
+    async def body(pool: Pool) -> None:
+        category = rand_id("cat")
+        _, _, forged = await seed_task(pool, agent_id=agents_files.a1, category=category, funding="credits")
+        await receive(
+            pool,
+            settings,
+            "verdict.recorded",
+            {"task_id": forged, "verdict": "invalid", "tx": "0x" + format(random.getrandbits(250), "064x")},
+        )
+        async with pool.connection() as conn, conn.transaction():
+            await ingest_due(conn, settings, {agents_files.a1: agents_files.op_a})
+
+        routed_uuid, _ = await seed_plan(pool, category=category)  # wallet-funded
+        plan = await load_plan(pool, routed_uuid)
+        async with pool.connection() as conn:
+            arms, ineligible = await routing.candidates(conn, plan, 0, settings)
+            posteriors = await (
+                await conn.execute(
+                    "SELECT count(*) FROM reputation_posteriors WHERE agent_id = %s", (agents_files.a1,)
+                )
+            ).fetchone()
+        assert ineligible == {
+            agents_files.a1: routing.IN_PROBATION,
+            agents_files.a2: routing.IN_PROBATION,
+        }
+        assert {a.agent_id for a in arms} == {agents_files.b1, agents_files.c1}
+        assert posteriors == (0,)  # still no reputation from the credits plan, only the probation
 
     run(database_url, body)

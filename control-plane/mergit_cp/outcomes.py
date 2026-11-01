@@ -28,6 +28,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 from psycopg import AsyncConnection
@@ -69,6 +70,10 @@ SELECT "index", bool_or(phi_holds = true) AS passed, max(attempt) AS last_attemp
 FROM jobs
 WHERE plan_uuid = %s AND outcome_processed_at IS NOT NULL
 GROUP BY "index"
+"""
+
+_LAST_DISPATCHED = """
+SELECT "index", max(attempt) FROM task_dispatches WHERE plan_uuid = %s GROUP BY "index"
 """
 
 _ALL_PASSED = """
@@ -137,7 +142,8 @@ async def process_one(conn: AsyncConnection[TupleRow], job: FinishedJob, setting
                     await routing.record_draw(conn, task_id, pending)
                 # `pending is None` means nothing is eligible right now (every candidate's operator at its
                 # concurrency cap, say) -- an "owed retry" left for `dispatch.dispatch_waiting`'s periodic
-                # sweep, not an error.
+                # sweep, not an error -- or, structurally, that no untried agent can fit this task's
+                # budget (`routing.budget_infeasible`), which the sweep skips and `stuck_reasons` reports.
         else:
             next_agent = _next_agent(task, job.attempt, settings.max_attempts)
             if next_agent is not None:
@@ -200,28 +206,50 @@ async def process_due(pool: Pool, settings: Settings, limit: int = 20) -> int:
     return processed
 
 
-async def _auto_exhausted(
+StuckReason = Literal["attempts_exhausted", "agents_exhausted", "over_budget"]
+"""Why an index needs the requester. ``attempts_exhausted``: ``settings.max_attempts`` attempts were made.
+``agents_exhausted``: every agent it may run with has tried (the requester's pick list, or for an auto task
+the whole roster). ``over_budget``: an auto task with no untried agent that can fit its budget
+(`routing.budget_infeasible`, final review C1) -- possibly before a single attempt was ever made."""
+
+
+async def _auto_stuck_reason(
     conn: AsyncConnection[TupleRow], plan: StoredPlan, task: StoredTask, last_attempt: int, settings: Settings
-) -> bool:
-    """An auto-routing index is stuck only when it will structurally never be retried again: the attempt
-    cap is reached, or every agent in the roster has already been dispatched, at or before
-    ``last_attempt`` (the latest *processed* attempt -- fix round 1, Finding 2: an in-flight retry beyond
-    it must never count toward exhaustion, mirroring `_next_agent`'s own processed-attempt-only view), for
-    this index (so `routing.candidates`' "already tried" exclusion rules out every one of them, forever --
-    unlike the concurrency cap or probation, which are transient and must never make an index permanently
-    `needs_requester`). The roster-exhaustion half is `routing.roster_exhausted`, shared with
-    `dispatch.py`'s owed-retry sweep rather than duplicated here."""
+) -> StuckReason | None:
+    """An auto-routing index with a processed, non-passing attempt and nothing in flight is stuck only when it
+    will structurally never be retried again: the attempt cap is reached; or every agent in the roster has
+    already been dispatched, at or before ``last_attempt`` (the latest *processed* attempt -- fix round 1,
+    Finding 2: an in-flight retry beyond it must never count toward exhaustion, mirroring `_next_agent`'s
+    own processed-attempt-only view), for this index (so `routing.candidates`' "already tried" exclusion
+    rules out every one of them, forever -- unlike the concurrency cap or probation, which are transient
+    and must never make an index permanently `needs_requester`); or no agent left untried can fit the
+    task's budget (final review C1). The last two are `routing.roster_exhausted` and
+    `routing.budget_infeasible`, shared with `dispatch.py`'s owed-retry sweep rather than duplicated here."""
     if last_attempt >= settings.max_attempts:
-        return True
-    return await routing.roster_exhausted(conn, plan, task.draft.index, last_attempt, settings)
+        return "attempts_exhausted"
+    if await routing.roster_exhausted(conn, plan, task.draft.index, last_attempt, settings):
+        return "agents_exhausted"
+    if await routing.budget_infeasible(conn, plan, task.draft.index, settings):
+        return "over_budget"
+    return None
 
 
-async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings) -> list[int]:
-    """Indexes whose latest processed attempt did not pass and will never be retried automatically again:
-    for a ``'pick'``-routing task, the attempt cap or the requester's own agent list is exhausted (unchanged
-    from before Task 6); for an ``'auto'``-routing task, see `_auto_exhausted`. ``needs_requester`` in plan
-    task O6's own words, computed on demand from ``jobs``/``tasks.agents``/``task_dispatches`` rather than
-    stored, since it is exactly what ``dispatch_ready``/``dispatch_waiting`` already would not find ready.
+async def stuck_reasons(
+    conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings
+) -> dict[int, StuckReason]:
+    """Every index that will never be dispatched automatically again, with why: ``needs_requester`` in plan
+    task O6's own words, computed on demand from ``jobs``/``tasks``/``task_dispatches`` (and, for an auto
+    task, the posteriors) rather than stored, since it is exactly what ``dispatch_ready``/``dispatch_waiting``
+    already would not dispatch. The plan detail API (``routes_runs.plan_detail``) and its live stream expose
+    this, so the run screen never has to re-derive it (final review M1).
+
+    - A ``'pick'`` task whose latest processed attempt did not pass and whose attempt cap or pick list is
+      exhausted (unchanged from before Task 6).
+    - An ``'auto'`` task whose latest processed attempt did not pass, with no retry already in flight beyond
+      it, and `_auto_stuck_reason` says so.
+    - An ``'auto'`` task never dispatched at all, on a ``funded``/``running`` plan, that is ready to dispatch
+      (every dependency passed) but `routing.budget_infeasible`: before final review C1 an index like this
+      was skipped here entirely, and left waiting forever.
 
     ``passed`` is read ``is not True`` rather than falsy-checked (fix round 1, Finding 1): a ``bool_or`` over
     an all-``NULL`` (inconclusive) ``phi_holds`` group comes back SQL ``NULL``, which Python already treats
@@ -231,20 +259,44 @@ async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, setti
     the mistake by analogy."""
     cur = await conn.execute(_PROCESSED_INDEXES, (plan.plan_uuid,))
     by_index = {index: (passed, last_attempt) for index, passed, last_attempt in await cur.fetchall()}
-    stuck: list[int] = []
+    cur = await conn.execute(_LAST_DISPATCHED, (plan.plan_uuid,))
+    last_dispatched: dict[int, int] = {index: int(attempt) for index, attempt in await cur.fetchall()}
+    ready: set[int] = set()
+    if plan.state in ("funded", "running"):
+        ready = set(await dispatch.ready_indexes(conn, plan.plan_uuid))
+    stuck: dict[int, StuckReason] = {}
     for task in plan.tasks:
-        state = by_index.get(task.draft.index)
+        index = task.draft.index
+        state = by_index.get(index)
         if state is None:
-            continue  # never dispatched, or still in flight
+            # Never dispatched, or attempt 1 still in flight. Only a ready, never-dispatched auto index can
+            # be stuck here: nothing will ever dispatch it if no agent can fit its budget.
+            if (
+                task.routing == "auto"
+                and index in ready
+                and await routing.budget_infeasible(conn, plan, index, settings)
+            ):
+                stuck[index] = "over_budget"
+            continue
         passed, last_attempt = state
+        last_attempt = int(last_attempt)
         if passed is True:
             continue
         if task.routing == "auto":
-            if await _auto_exhausted(conn, plan, task, int(last_attempt), settings):
-                stuck.append(task.draft.index)
-        elif _next_agent(task, int(last_attempt), settings.max_attempts) is None:
-            stuck.append(task.draft.index)
+            if last_dispatched.get(index, 0) > last_attempt:
+                continue  # a retry is already in flight; it might still pass
+            reason = await _auto_stuck_reason(conn, plan, task, last_attempt, settings)
+            if reason is not None:
+                stuck[index] = reason
+        elif _next_agent(task, last_attempt, settings.max_attempts) is None:
+            exhausted = last_attempt >= settings.max_attempts
+            stuck[index] = "attempts_exhausted" if exhausted else "agents_exhausted"
     return stuck
+
+
+async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings) -> list[int]:
+    """The indexes of `stuck_reasons`, in task order."""
+    return list(await stuck_reasons(conn, plan, settings))
 
 
 async def abandon(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings) -> None:
@@ -277,10 +329,20 @@ class OutcomeProcessor:
     async def process_due(self, limit: int = 20) -> int:
         """Claim and process up to ``limit`` due jobs, one per transaction (fix round 2), then -- once every
         one of those has committed -- run `dispatch.dispatch_waiting`'s capacity sweep, itself one
-        transaction per plan (fix round 1). Returns how many jobs were processed."""
-        processed = await process_due(self._pool, self._settings, limit)
-        await dispatch.dispatch_waiting(self._pool, self._settings)
-        return processed
+        transaction per plan (fix round 1). Returns how many jobs were processed.
+
+        The sweep runs even when job processing raised (final review m4). A job that fails on every pass
+        (Ruling 13's parked poison job) still blocks the jobs queued behind it, but it must not also stop the
+        only path that dispatches every other plan's capacity-waiting or owed auto task. The job error still
+        propagates to `run`, which logs it; a sweep error after a job error is logged here so it cannot
+        replace the job error."""
+        try:
+            return await process_due(self._pool, self._settings, limit)
+        finally:
+            try:
+                await dispatch.dispatch_waiting(self._pool, self._settings)
+            except Exception:
+                log.exception("capacity sweep failed")
 
     async def run(self, poll_s: float, stop: asyncio.Event) -> None:
         while not stop.is_set():

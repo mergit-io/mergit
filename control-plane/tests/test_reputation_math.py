@@ -148,3 +148,32 @@ def test_posterior_rejects_non_positive_fields(fields: dict[str, float]):
     fail loudly here, not with a silent ZeroDivisionError deep inside theta_mean/cost_mean_micros."""
     with pytest.raises(ValueError, match="strictly positive"):
         Posterior(**fields)
+
+
+def test_with_outcome_floors_a_parameter_that_would_underflow():
+    """Final review n2. With the paper's gamma = 0.95 the decay cannot actually reach 0.0: once a parameter
+    is a few subnormal ulps, `0.95 * x` rounds back to `x`, so it stalls there (checked here, so the note in
+    `with_outcome` stays true). `with_outcome` takes any gamma, though, and with 0.5 the smallest subnormal
+    rounds to exactly 0.0, which `Posterior` rejects. The floor keeps both decayed sides positive."""
+    tiny = 5e-324
+    assert 0.95 * tiny == tiny  # stalls, never reaches zero
+    assert 0.5 * tiny == 0.0  # does reach zero
+    after = with_outcome(Posterior(1, tiny, 1, 1), success=True, weight=1.0, gamma=0.5)
+    assert after.beta > 0
+    after = with_outcome(Posterior(tiny, 1, 1, 1), success=False, weight=1.0, gamma=0.5)
+    assert after.alpha > 0
+
+
+def test_pooled_prior_survives_an_agent_whose_mean_rounds_to_one():
+    """Final review n2, the reachable form: after some 660 straight full-weight successes, beta is under
+    2^-53 of alpha, so `theta_mean` rounds to exactly 1.0. Pooling computed `(1 - mean) * n0`, exactly 0.0,
+    and `Posterior` rejected the pooled prior -- every new category for a consistently good agent would
+    have failed to load."""
+    agent = base_prior(200_000)
+    for _ in range(700):
+        agent = with_outcome(agent, success=True, weight=1.0, gamma=0.95)
+    assert agent.theta_mean == 1.0
+    assert 1 - agent.theta_mean == 0.0
+    pooled = pooled_prior(agent, base_prior(200_000), w=0.25)
+    assert pooled.beta > 0
+    assert pooled.theta_mean == pytest.approx(agent.theta_mean)

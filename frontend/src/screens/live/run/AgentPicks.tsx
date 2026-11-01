@@ -63,25 +63,43 @@ function ManualPicks({
   );
 }
 
-/** One ranked candidate: name, model, its track record (or "new" when it has none), and cost. */
-function CandidateRow({ candidate }: { candidate: Candidate }) {
+/**
+ * What a candidate is expected to cost, without presenting a prior as a measurement: an agent with no
+ * metered cost on record shows as such, not as the router's starting estimate in dollars (final review m2,
+ * the same rule as "new, no audited record yet" for its success rate). An agent whose mean cost is over the
+ * task's budget says so, and that only an exploratory draw can still pick it (final review m1).
+ */
+function costLine(candidate: Candidate, explore: boolean): string {
+  const measured = candidate.costs > 0;
   const cost = formatUsdc(BigInt(Math.round(candidate.cost_mean_micros)));
+  if (candidate.within_budget) return measured ? `$${cost} expected` : "no metered cost yet";
+  const over = measured
+    ? `$${cost} expected, over this task's budget`
+    : "no metered cost yet, starting estimate over budget";
+  return `${over} · ${explore ? "only an exploratory pick tries it" : "not picked with exploring off"}`;
+}
+
+/** One ranked candidate: name, model, its track record (or "new" when it has none), and cost. */
+function CandidateRow({ candidate, explore }: { candidate: Candidate; explore: boolean }) {
+  const usable = candidate.eligible && (candidate.within_budget || explore);
   return (
-    <li className={`inner pad-md col g4${candidate.eligible ? "" : " c3"}`}>
+    <li className={`inner pad-md col g4${usable ? "" : " c3"}`}>
       <div className="row between g8">
         <span className="small strong">
           {candidate.name} · {candidate.model}
         </span>
         {candidate.eligible ? (
           <span className="small c2">
-            {candidate.outcomes === 0 ? "new, no audited record yet" : `${String(Math.round(candidate.theta_mean * 100))}%`}
+            {candidate.outcomes === 0
+              ? "new, no audited record yet"
+              : `${String(Math.round(candidate.theta_mean * 100))}%`}
           </span>
         ) : (
           <span className="small c3">Not eligible</span>
         )}
       </div>
       <div className="row between g8">
-        <span className="small c3">{candidate.eligible ? `$${cost} expected` : candidate.reason}</span>
+        <span className="small c3">{candidate.eligible ? costLine(candidate, explore) : candidate.reason}</span>
       </div>
     </li>
   );
@@ -145,7 +163,7 @@ export function AgentPicks({
           {candidates && (
             <ol className="col g6 lr-candidates">
               {candidates.map((c) => (
-                <CandidateRow key={c.agent_id} candidate={c} />
+                <CandidateRow key={c.agent_id} candidate={c} explore={routing.explore} />
               ))}
             </ol>
           )}

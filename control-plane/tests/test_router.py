@@ -1,10 +1,13 @@
 """The pure Thompson-sampling-over-value-density routing policy (paper 9.3-9.4). No database, no I/O."""
 
+import math
 import random
 from collections import Counter
 
+import pytest
+
 from mergit_cp.reputation import Posterior, base_prior, with_cost, with_outcome
-from mergit_cp.router import Arm, Mode, draw
+from mergit_cp.router import Arm, Mode, draw, feasible_probability, mean_feasible
 
 
 def _tight_arm(agent_id: str, theta: float, cost_micros: float, strength: float = 1000.0) -> Arm:
@@ -288,3 +291,58 @@ def test_simulation_value_density_beats_quality_greedy():
         f"[SIMULATED, pooled over {n_seeds} seeds] expected Thompson-over-density success/$ "
         f"({thompson_rate}) to be at least 1.5x quality-only-greedy's ({greedy_rate})"
     )
+
+
+# --- feasible_probability / mean_feasible: the no-draw budget questions routing.py classifies with -------
+
+
+def test_feasible_probability_matches_closed_forms():
+    """For an integer shape kappa, P(Gamma(kappa, rate=tau) >= y) = exp(-y) * sum_{k<kappa} y^k / k!, with
+    y = tau / limit. Covers both evaluation branches (series below kappa + 1, continued fraction above)."""
+    tolerance = 0.1
+    for kappa in (1, 2, 5, 20):
+        for budget in (10_000, 100_000, 500_000, 2_000_000, 50_000_000):
+            mean_cost = 1_000_000
+            p = Posterior(1, 1, kappa, kappa * mean_cost)
+            y = p.tau / (budget * (1 + tolerance))
+            expected = math.exp(-y) * sum(y**k / math.factorial(k) for k in range(kappa))
+            assert feasible_probability(p, budget, tolerance) == pytest.approx(expected, rel=1e-9, abs=1e-300)
+
+
+def test_feasible_probability_matches_the_draw_it_predicts():
+    """Non-integer kappa (the shape after a decayed update, e.g. 0.95 + 1) has no closed form; check it
+    against the empirical rate at which `draw`'s own sampled cost comes out feasible."""
+    p = with_cost(base_prior(200_000), 260_000, gamma=0.95)  # kappa = 1.95
+    budget = 150_000
+    predicted = feasible_probability(p, budget, 0.1)
+    rng = random.Random(7)
+    n = 40_000
+    hits = sum(draw([Arm("a", p)], budget, Mode(), 0.1, rng).samples[0].feasible for _ in range(n))
+    assert 0.05 < predicted < 0.95
+    assert hits / n == pytest.approx(predicted, abs=0.01)
+
+
+def test_feasible_probability_cold_prior_and_mature_overrun():
+    """The two shapes in final review C1. A cold prior (kappa = 1) is exp(-tau / limit): about 0.16 for a
+    $0.10 budget against the $0.20 prior, so exploration still reaches it. A learned $1.00 cost with
+    kappa = 20 against a $0.50 budget is about 0.0012 per draw -- a sweep re-drawing every second would
+    still dispatch it within some 15 minutes, which is why routing.py thresholds this probability rather
+    than treating any non-zero chance as routable."""
+    cold = base_prior(200_000)
+    assert feasible_probability(cold, 100_000, 0.1) == pytest.approx(math.exp(-200_000 / 110_000))
+    mature = Posterior(1, 1, 20, 20 * 1_000_000)
+    assert feasible_probability(mature, 500_000, 0.1) == pytest.approx(0.0011856, rel=1e-3)
+
+
+def test_mean_feasible_is_the_greedy_rule():
+    """`mean_feasible` must agree with the feasibility `draw` uses for `greedy`, arm by arm."""
+    arms = [
+        _tight_arm("fits", 0.9, 1_000_000, strength=3.0),
+        _tight_arm("edge", 0.9, 1_100_000, strength=3.0),
+        _tight_arm("over", 0.9, 1_100_001, strength=3.0),
+    ]
+    d = draw(arms, 1_000_000, Mode(explore=False), 0.1, random.Random(0))
+    by_id = {s.agent_id: s.feasible for s in d.samples}
+    for arm in arms:
+        assert mean_feasible(arm.posterior, 1_000_000, 0.1) == by_id[arm.agent_id]
+    assert by_id == {"fits": True, "edge": True, "over": False}

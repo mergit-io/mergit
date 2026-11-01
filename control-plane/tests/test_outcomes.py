@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import uuid
 from pathlib import Path
 from typing import Any
@@ -993,3 +994,251 @@ def test_abandon_twice_is_idempotent(database_url: str) -> None:
         assert n is not None and n[0] == 2  # both events still sent; the state change was the idempotent part
 
     run(database_url, body)
+
+
+# --- final review C1: a budget no agent can fit is reported, never left waiting forever ---------------
+
+
+def _fresh_agent_ids(n: int) -> list[str]:
+    """Numeric agent ids no other test uses: `reputation_posteriors` is not truncated between these tests,
+    and the C1 tests below seed learned costs for their agents."""
+    return [str(random.randint(10**12, 10**13 - 1)) for _ in range(n)]
+
+
+async def _learned_cost(pool: Pool, agent_id: str, category: str, cost_mean_micros: int) -> None:
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO reputation_posteriors (agent_id, category, alpha, beta, kappa, tau, outcomes, costs)"
+            " VALUES (%s, %s, 5, 5, 20, %s, 10, 20)",
+            (agent_id, category, 20 * cost_mean_micros),
+        )
+
+
+async def _dispatch_count(pool: Pool, plan: plans.StoredPlan) -> int:
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute("SELECT count(*) FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,))
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+async def _stuck(pool: Pool, plan: plans.StoredPlan, settings: Settings) -> dict[int, str]:
+    async with pool.connection() as conn:
+        loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+        assert loaded is not None
+        return dict(await outcomes.stuck_reasons(conn, loaded, settings))
+
+
+def test_budget_infeasible_attempt_one_is_reported_not_left_waiting(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Final review C1, scenario 1, through the production wiring: an auto task budgeted at $0.10 on a cold
+    roster (every agent's mean cost is the $0.20 prior) with exploring off. `greedy`, and so `chosen`, is
+    always None: nothing is ever dispatched. Before the fix, `stuck_indexes` skipped an index with no
+    processed attempt, so the plan sat `funded` ("Starting") forever with nothing reported."""
+    settings = routed_settings(tmp_path, database_url, _fresh_agent_ids(2))
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0, budget=100_000)], {0: None}, routing={0: ("auto", False, True)})
+            await chain_events.receive(conn, funded_event(plan), settings)
+        for _ in range(5):
+            await _process(pool, settings)
+
+        assert await _dispatch_count(pool, plan) == 0
+        assert await _stuck(pool, plan, settings) == {0: "over_budget"}
+
+    run(database_url, body)
+
+
+def test_budget_that_only_exploration_can_reach_is_not_stuck(database_url: str, tmp_path: Path) -> None:
+    """The control for the test above: the same $0.10 budget with exploring ON is slow, not stuck -- each
+    draw samples a cold agent under budget about 16% of the time, and that is exactly what exploration is
+    for. Whatever `route` happened to draw, the index must not be reported."""
+    settings = routed_settings(tmp_path, database_url, _fresh_agent_ids(2))
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0, budget=100_000)], {0: None}, routing={0: ("auto", True, True)})
+            await chain_events.receive(conn, funded_event(plan), settings)
+        assert await _stuck(pool, plan, settings) == {}
+
+    run(database_url, body)
+
+
+def test_budget_infeasible_retry_is_reported_not_left_waiting(database_url: str, tmp_path: Path) -> None:
+    """Final review C1, scenario 2: roster {cheap, cold} and {pricey, learned $1.00 with kappa = 20}, a $0.50
+    task, exploring on. Attempt 1 can only go to the cold agent (the pricey one samples under $0.55 about
+    0.12% of the time, below `router_min_feasible_probability`). When it fails, the only untried agent is
+    over budget: before the fix the retry was owed forever, every sweep drew None, and nothing was
+    reported. Now the sweep skips it and it is `needs_requester` with reason `over_budget`."""
+    cold, pricey = _fresh_agent_ids(2)
+    settings = routed_settings(tmp_path, database_url, [cold, pricey])
+    category = f"cat-{uuid.uuid4().hex[:8]}"
+
+    async def body(pool: Pool) -> None:
+        await _learned_cost(pool, pricey, category, 1_000_000)
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(
+                conn,
+                [task(0, budget=500_000)],
+                {0: None},
+                routing={0: ("auto", True, True)},
+                category=category,
+            )
+            await chain_events.receive(conn, funded_event(plan), settings)
+        # An exploring draw on a cold agent can still sample over budget (about 30% here): sweep until
+        # attempt 1 lands, as production would.
+        for _ in range(60):
+            if await _dispatch_count(pool, plan) == 1:
+                break
+            await dispatch.dispatch_waiting(pool, settings)
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id, agent_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            task_id_1, agent_1 = await cur.fetchone()
+        assert agent_1 == cold
+        assert await _stuck(pool, plan, settings) == {}  # attempt 1 in flight
+
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_1)
+            await conn.execute(
+                "UPDATE jobs SET status = 'done', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id_1,),
+            )
+        for _ in range(5):
+            await _process(pool, settings)
+
+        assert await _dispatch_count(pool, plan) == 1  # no retry: nothing that fits is left
+        assert await _stuck(pool, plan, settings) == {0: "over_budget"}
+
+    run(database_url, body)
+
+
+def test_retry_with_an_affordable_agent_left_is_dispatched_not_reported(
+    database_url: str, tmp_path: Path
+) -> None:
+    """The control for the test above: the same shape, but the second agent's learned cost is $0.40, inside
+    the budget. The retry is dispatched to it and nothing is reported."""
+    cold, affordable = _fresh_agent_ids(2)
+    settings = routed_settings(tmp_path, database_url, [cold, affordable])
+    category = f"cat-{uuid.uuid4().hex[:8]}"
+
+    async def body(pool: Pool) -> None:
+        await _learned_cost(pool, affordable, category, 400_000)
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(
+                conn,
+                [task(0, budget=500_000)],
+                {0: None},
+                routing={0: ("auto", False, True)},
+                category=category,
+            )
+            await chain_events.receive(conn, funded_event(plan), settings)
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            (task_id_1,) = await cur.fetchone()
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_1)
+            await conn.execute(
+                "UPDATE jobs SET status = 'done', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id_1,),
+            )
+        await _process(pool, settings)
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT attempt, agent_id FROM task_dispatches WHERE plan_uuid = %s ORDER BY attempt",
+                (plan.plan_uuid,),
+            )
+            rows = await cur.fetchall()
+        assert [r[0] for r in rows] == [1, 2]
+        assert {rows[0][1], rows[1][1]} == {cold, affordable}
+        assert await _stuck(pool, plan, settings) == {}
+
+    run(database_url, body)
+
+
+def test_unaffordable_task_is_not_reported_before_its_dependencies_pass(
+    database_url: str, tmp_path: Path
+) -> None:
+    """A never-dispatched auto index is only `needs_requester` once it is actually due: an over-budget task
+    still waiting on a dependency is "waiting", and becomes "over_budget" the moment the dependency passes."""
+    settings = routed_settings(tmp_path, database_url, _fresh_agent_ids(1))
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(
+                conn,
+                [task(0), task(1, depends_on=[0], budget=100_000)],
+                {0: ["7"], 1: None},
+                routing={0: ("pick", True, True), 1: ("auto", False, True)},
+            )
+            await chain_events.receive(conn, funded_event(plan), settings)
+        assert await _stuck(pool, plan, settings) == {}
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                'SELECT task_id FROM task_dispatches WHERE plan_uuid = %s AND "index" = 0', (plan.plan_uuid,)
+            )
+            (task_id_0,) = await cur.fetchone()
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_0)
+            await conn.execute(
+                "UPDATE jobs SET status = 'done', phi_holds = true, finished_at = now() WHERE task_id = %s",
+                (task_id_0,),
+            )
+        await _process(pool, settings)
+
+        assert await _stuck(pool, plan, settings) == {1: "over_budget"}
+
+    run(database_url, body)
+
+
+def test_stuck_reasons_name_why(database_url: str) -> None:
+    """Pick mode is unchanged in what counts as stuck; `stuck_reasons` only adds why. A two-agent pick list
+    that ran out before the attempt cap is `agents_exhausted`."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1"]})
+            task_id = await _dispatch_and_escrow(conn, plan, 0, 1, "1")
+            await conn.execute(
+                "UPDATE jobs SET status = 'done', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id,),
+            )
+            await conn.execute("UPDATE plans SET state = 'running' WHERE plan_uuid = %s", (plan.plan_uuid,))
+        await _process(pool)
+        assert await _stuck(pool, plan, SETTINGS) == {0: "agents_exhausted"}
+
+    run(database_url, body)
+
+
+def test_a_failing_job_does_not_stop_the_capacity_sweep(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review m4: `OutcomeProcessor.process_due` used to run `dispatch_waiting` only if job processing
+    did not raise, so one poison job stopped every plan's auto-routing sweep. The sweep must run anyway, and
+    the job's error must still reach `run` (which logs it)."""
+    swept: list[bool] = []
+
+    async def boom(*_: Any, **__: Any) -> int:
+        raise RuntimeError("poison job")
+
+    async def sweep(*_: Any, **__: Any) -> int:
+        swept.append(True)
+        return 0
+
+    monkeypatch.setattr(outcomes, "process_due", boom)
+    monkeypatch.setattr(outcomes.dispatch, "dispatch_waiting", sweep)
+
+    async def body(pool: Pool) -> None:
+        with pytest.raises(RuntimeError, match="poison job"):
+            await outcomes.OutcomeProcessor(pool, SETTINGS).process_due()
+
+    run(database_url, body)
+    assert swept == [True]

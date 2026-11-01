@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { agentName } from "../../../api/useAgents";
-import type { AgentInfo, PlanDetail, PlanTask, StepEvent } from "../../../api/types";
+import type { AgentInfo, NeedsRequesterReason, PlanDetail, PlanTask, StepEvent } from "../../../api/types";
 import { Icon } from "../../../components/Icon";
 import { ProgressBadge } from "./badges";
 import { ClosePlan } from "./ClosePlan";
@@ -23,7 +23,9 @@ export function RunView({
 }) {
   const [selected, setSelected] = useState(detail.tasks[0]?.index ?? 0);
   const task = detail.tasks.find((t) => t.index === selected);
-  const passed = detail.tasks.filter((t) => taskProgress(t, detail.attempts).kind === "passed").length;
+  const passed = detail.tasks.filter(
+    (t) => taskProgress(t, detail.attempts, detail.needs_requester).kind === "passed",
+  ).length;
 
   return (
     <>
@@ -60,6 +62,7 @@ export function RunView({
             key={task.index}
             task={task}
             attempts={detail.attempts}
+            needsRequester={detail.needs_requester}
             money={detail.money_events}
             steps={steps}
             agents={agents}
@@ -83,17 +86,21 @@ function TaskRow({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const progress = taskProgress(task, detail.attempts);
+  const progress = taskProgress(task, detail.attempts, detail.needs_requester);
   const latest = attemptsOf(task.index, detail.attempts).at(-1);
   const agentId = latest?.agent_id ?? task.agents?.[0];
+  // A pick task's attempts are capped by its list. An auto task has no list, so no "of N" to show.
+  const counter = latest
+    ? task.routing === "auto"
+      ? `attempt ${String(latest.attempt)}`
+      : `attempt ${String(latest.attempt)} of ${String(task.agents?.length ?? 1)}`
+    : "";
   return (
     <button type="button" className="tr rw-row" aria-pressed={selected} onClick={onSelect}>
       <span className="mono-s c3 w-28">{task.index + 1}</span>
       <span className="strong grow ellipsis">{task.title}</span>
       <span className="small c2 hide-sm w-130 ellipsis">{agentId ? agentName(agents, agentId) : "—"}</span>
-      <span className="mono-s c3 hide-sm w-110 ellipsis">
-        {latest ? `attempt ${String(latest.attempt)} of ${String(task.agents?.length ?? 1)}` : ""}
-      </span>
+      <span className="mono-s c3 hide-sm w-110 ellipsis">{counter}</span>
       <span className="w-110">
         <ProgressBadge progress={progress} />
       </span>
@@ -132,14 +139,12 @@ function RunBanner({ detail, onClosed }: { detail: PlanDetail; onClosed: () => v
       </div>
     );
   }
-  const stuck = stuckTasks(detail.tasks, detail.attempts);
+  const stuck = stuckTasks(detail.tasks, detail.attempts, detail.needs_requester);
   if (stuck.length === 0) return null;
-  const names = stuck.map((t) => `task ${String(t.index + 1)}`).join(", ");
   return (
     <div className="card pad col g10 lr-banner lr-banner-warn" role="alert">
       <span className="strong">
-        <Icon name="hand" size={16} color="var(--amber)" /> Needs you: {names} failed its check with every agent you
-        picked.
+        <Icon name="hand" size={16} color="var(--amber)" /> Needs you: {stuckSummary(stuck, detail)}.
       </span>
       <span className="small c2">
         Nothing more runs on its own. Close the plan to stop it and get its unspent funds back.
@@ -147,4 +152,25 @@ function RunBanner({ detail, onClosed }: { detail: PlanDetail; onClosed: () => v
       <ClosePlan planUuid={detail.plan_uuid} onClosed={onClosed} />
     </div>
   );
+}
+
+const AUTO_STUCK: Record<NeedsRequesterReason, (names: string) => string> = {
+  over_budget: (names) => `no agent Mergit can route is expected to fit the budget of ${names}`,
+  agents_exhausted: (names) => `${names} failed its check with every agent Mergit could route it to`,
+  attempts_exhausted: (names) => `${names} failed its check on every attempt it is allowed`,
+};
+
+/** One clause per kind of stuck: the requester's picks ran out, or the server's reason for an auto task. */
+function stuckSummary(stuck: PlanTask[], detail: PlanDetail): string {
+  const name = (t: PlanTask) => `task ${String(t.index + 1)}`;
+  const clauses: string[] = [];
+  const picked = stuck.filter((t) => t.routing !== "auto");
+  if (picked.length > 0) clauses.push(`${picked.map(name).join(", ")} failed its check with every agent you picked`);
+  for (const reason of Object.keys(AUTO_STUCK) as NeedsRequesterReason[]) {
+    const routed = stuck.filter(
+      (t) => t.routing === "auto" && detail.needs_requester.some((n) => n.index === t.index && n.reason === reason),
+    );
+    if (routed.length > 0) clauses.push(AUTO_STUCK[reason](routed.map(name).join(", ")));
+  }
+  return clauses.join("; ");
 }

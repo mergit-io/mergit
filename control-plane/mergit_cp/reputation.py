@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -43,6 +44,9 @@ log = logging.getLogger(__name__)
 
 _GAMMA = 0.95
 """Fixed by the paper (this plan's Global Constraints), not a deployment choice."""
+
+_MIN_SHAPE = sys.float_info.min
+"""The smallest positive normal float: the floor a decayed Beta parameter is kept at (see `with_outcome`)."""
 
 
 @dataclass(frozen=True)
@@ -89,11 +93,18 @@ def with_outcome(p: Posterior, success: bool, weight: float, gamma: float) -> Po
 
     `gamma < 1` makes old evidence count for less than new evidence, so a posterior tracks an agent whose
     true success rate drifts over time rather than averaging over its whole history equally.
+
+    The side that only decays is floored at `_MIN_SHAPE` (final review n2): if it ever reached exactly 0.0,
+    `Posterior` would reject it and the updater would fail on every pass from there on. With the paper's
+    `gamma = 0.95` the decay in fact stalls a few subnormal ulps above zero (`0.95 * x` rounds back to `x`
+    there), but a smaller `gamma` does reach zero, and the floor costs nothing: it is far below anything that
+    changes a mean or a draw. (`with_cost` needs no floor: both of its parameters gain a positive term on
+    every update.)
     """
     if success:
-        alpha, beta = gamma * p.alpha + weight, gamma * p.beta
+        alpha, beta = gamma * p.alpha + weight, max(gamma * p.beta, _MIN_SHAPE)
     else:
-        alpha, beta = gamma * p.alpha, gamma * p.beta + weight
+        alpha, beta = max(gamma * p.alpha, _MIN_SHAPE), gamma * p.beta + weight
     return Posterior(alpha, beta, p.kappa, p.tau)
 
 
@@ -119,12 +130,20 @@ def pooled_prior(agent_level: Posterior | None, base: Posterior, w: float) -> Po
     all. The cost side mirrors this exactly: `k0 = max(base.kappa, w * agent_level.kappa)`, and `tau0` is
     picked so the pooled posterior's mean cost equals the agent-level posterior's mean cost
     (`tau0 = k0 * agent_level.cost_mean_micros`), the same way the Beta side preserves `theta_mean`.
+
+    The Beta side scales `alpha` and `beta` by `n0 / (alpha + beta)` rather than computing `mean * n0` and
+    `(1 - mean) * n0` (final review n2, same class): once `beta` is under about 2^-53 of `alpha` -- some 660
+    straight successes at full weight -- `theta_mean` rounds to exactly 1.0, `1 - mean` to exactly 0.0, and
+    the pooled prior for any new category would be rejected by `Posterior`. Both are also floored at
+    `_MIN_SHAPE`, as in `with_outcome`.
     """
     if agent_level is None:
         return base
-    n0 = max(base.alpha + base.beta, w * (agent_level.alpha + agent_level.beta))
-    mean = agent_level.theta_mean
-    new_alpha, new_beta = mean * n0, (1 - mean) * n0
+    total = agent_level.alpha + agent_level.beta
+    n0 = max(base.alpha + base.beta, w * total)
+    scale = n0 / total
+    new_alpha = max(agent_level.alpha * scale, _MIN_SHAPE)
+    new_beta = max(agent_level.beta * scale, _MIN_SHAPE)
     k0 = max(base.kappa, w * agent_level.kappa)
     tau0 = k0 * agent_level.cost_mean_micros
     return Posterior(new_alpha, new_beta, k0, tau0)
@@ -208,8 +227,11 @@ SELECT e.task_id, d.agent_id, p.category, p.requester
 FROM earliest e
 JOIN task_dispatches d ON d.task_id = e.task_id
 JOIN plans p ON p.plan_uuid = d.plan_uuid
-WHERE p.funding = 'wallet'
-  AND d.agent_id = ANY(%(agent_ids)s)
+-- No `p.funding = 'wallet'` filter here, unlike the outcome and cost queries above (final review M3).
+-- Invariant 6 keeps faucet-tier work from *earning* reputation; a proven false receipt earns nothing, it is
+-- evidence of fraud, and it only ever feeds `in_probation` (`_replay` skips it). Dropping it for a credits
+-- plan would let an operator forge where stakes are lowest and stay fully routable where they are highest.
+WHERE d.agent_id = ANY(%(agent_ids)s)
   AND NOT EXISTS (
       SELECT 1 FROM reputation_observations ro WHERE ro.kind = 'falsification' AND ro.task_id = e.task_id
   )
@@ -454,9 +476,11 @@ async def _apply_due(conn: AsyncConnection[TupleRow], settings: Settings) -> Non
 async def ingest_due(
     conn: AsyncConnection[TupleRow], settings: Settings, operators: Mapping[str, str], limit: int = 50
 ) -> int:
-    """Insert new observations (outcome/cost/falsification) from `money_events` and `jobs`, for
-    wallet-funded plans only (invariant 6: a credits-funded plan yields no observation at all), then fold
-    every unapplied observation into the posterior rows. Returns how many new observations were inserted
+    """Insert new observations (outcome/cost/falsification) from `money_events` and `jobs`, then fold every
+    unapplied observation into the posterior rows. Outcomes and costs come from wallet-funded plans only
+    (invariant 6: a credits-funded plan earns no reputation); a falsification is recorded whatever the plan's
+    funding, since it never updates a posterior and only ever puts the operator in probation (final review
+    M3). Returns how many new observations were inserted
     (not how many were applied -- an observation inserted by a concurrent, still-uncommitted updater is
     counted there, not here).
 
@@ -525,7 +549,7 @@ async def stored_posteriors(conn: AsyncConnection[TupleRow], agent_id: str) -> l
     including the agent-level `'*'` row), in display shape (`category`, `theta_mean`, `cost_mean_micros`,
     `density`, `outcomes`, `costs`). Reads only what is actually stored -- no pooling, no synthesized prior
     row -- so an agent with no observations yet (e.g. one that has only ever run credits-funded plans,
-    which invariant 6 guarantees yield no observation at all) gets an empty list."""
+    which invariant 6 guarantees yield no outcome or cost observation) gets an empty list."""
     cur = await conn.execute(
         "SELECT category, alpha, beta, kappa, tau, outcomes, costs FROM reputation_posteriors"
         " WHERE agent_id = %s ORDER BY category",

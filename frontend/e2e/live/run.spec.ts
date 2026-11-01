@@ -274,6 +274,7 @@ test("an inconclusive task with no agent left asks the requester, who can close 
     {
       state: "running",
       attempts: [attempt(0, 1, { status: "error", phi_holds: null, agent_id: "1", notes: "Φ timed out" })],
+      needs_requester: [{ index: 0, reason: "agents_exhausted" }],
     },
     ["1"],
   );
@@ -288,6 +289,66 @@ test("an inconclusive task with no agent left asks the requester, who can close 
   await banner.getByRole("button", { name: "Yes, close it" }).click();
   await expect(page.getByText("This plan is closed.")).toBeVisible();
   expect(only(calls, "POST", "/abandon")).toHaveLength(1);
+});
+
+/** The plan approved with task 1 routed by Mergit (no pick list) and task 2 picked. */
+function autoRoutedPlan(over: Parameters<typeof approvedPlan>[0] = {}) {
+  const plan = approvedPlan({ state: "running", ...over });
+  return {
+    ...plan,
+    tasks: plan.tasks.map((t) => (t.index === 0 ? { ...t, agents: null, routing: "auto" as const } : t)),
+  };
+}
+
+test("a routed task whose attempt failed is being retried, not stuck", async ({ page }) => {
+  // Final review M1: the screen used to read the pick list, which a routed task does not have, and called
+  // it stuck after its first failure, telling the requester to close a plan the server was still retrying.
+  await mockBackend(page);
+  const plan = autoRoutedPlan({ attempts: [attempt(0, 1, { status: "done", phi_holds: false, agent_id: "1" })] });
+  await mockPlanApi(page, { plans: [plan] });
+  await page.goto(`/app/runs/${plan.plan_uuid}`);
+
+  const row = page.getByRole("button", { name: /Reproduce the failing refund/ });
+  await expect(row).toContainText("Retrying");
+  await expect(row).toContainText("attempt 1");
+  await expect(row).not.toContainText("attempt 1 of");
+  await expect(page.getByRole("complementary", { name: "Task 1 details" })).toContainText(
+    "Mergit is routing a retry to another agent.",
+  );
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a routed task no agent can afford asks the requester before it ever starts", async ({ page }) => {
+  await mockBackend(page);
+  const plan = autoRoutedPlan({ state: "funded", needs_requester: [{ index: 0, reason: "over_budget" }] });
+  await mockPlanApi(page, { plans: [plan] });
+  await page.goto(`/app/runs/${plan.plan_uuid}`);
+
+  await expect(page.getByRole("alert")).toContainText(
+    "Needs you: no agent Mergit can route is expected to fit the budget of task 1.",
+  );
+  const panel = page.getByRole("complementary", { name: "Task 1 details" });
+  await expect(panel).toContainText("Needs you");
+  await expect(panel).toContainText("expected to fit its budget, so it has not started.");
+});
+
+test("a routed task the server stops retrying turns into needs-you over the stream", async ({ page }) => {
+  await mockBackend(page);
+  const plan = autoRoutedPlan({
+    attempts: [
+      attempt(0, 1, { status: "done", phi_holds: false, agent_id: "1" }),
+      attempt(0, 2, { status: "done", phi_holds: false, agent_id: "2" }),
+    ],
+  });
+  await mockPlanApi(page, {
+    plans: [plan],
+    events: [{ event: "needs_requester", data: { needs_requester: [{ index: 0, reason: "agents_exhausted" }] } }],
+  });
+  await page.goto(`/app/runs/${plan.plan_uuid}`);
+
+  await expect(page.getByRole("alert")).toContainText(
+    "Needs you: task 1 failed its check with every agent Mergit could route it to.",
+  );
 });
 
 test("the runs tab lists the requester's plans and opens one", async ({ page }) => {

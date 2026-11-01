@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     router_budget_tolerance: float = Field(default=0.1, ge=0)
     """How far over a task's budget a sampled cost may still count as feasible, as a fraction of the
     budget (paper 9.4's Thompson draw). Our parameterisation, not the paper's."""
+    router_min_feasible_probability: float = Field(default=0.01, gt=0, le=0.25)
+    """The smallest chance, per Thompson draw, that an agent's sampled cost fits a task's budget (with
+    `router_budget_tolerance`) for the router to still consider that agent for that task at all. Below it
+    the agent is "over budget for this task". The capacity sweep re-draws every `outcome_poll_s`, so any
+    non-zero chance would eventually dispatch an agent the router itself expects to overrun the budget,
+    after a silent wait of about `outcome_poll_s / p`. An auto task with no untried agent at or above it
+    (or, with exploring off, none whose mean cost fits) is reported as needing the requester instead of
+    left waiting. Capped at 0.25 so an agent whose mean cost fits can never fall under it (see
+    `routing.over_budget`). Our parameterisation, not the paper's."""
 
     @model_validator(mode="before")
     @classmethod

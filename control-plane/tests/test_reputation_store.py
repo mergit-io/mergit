@@ -182,10 +182,16 @@ def test_pass_and_fail_update_the_category_and_agent_rows(database_url: str, set
     run(database_url, body)
 
 
-def test_credits_plan_produces_no_observation(database_url: str, settings: Settings) -> None:
+def test_credits_plan_produces_no_outcome_or_cost_observation(database_url: str, settings: Settings) -> None:
+    """Invariant 6: a credits-funded plan earns no reputation -- its outcome and its cost produce no
+    observation and no posterior row. Its proven falsification, though, IS recorded (final review M3): it
+    is evidence of fraud, not reputation earned, it never touches a posterior, and it puts the operator in
+    probation. Before the fix this test asserted the falsification was dropped too."""
+
     async def body(pool: Pool) -> None:
         agent_id = rand_id("agent")
-        operators = {agent_id: rand_hex_address()}
+        operator = rand_hex_address()
+        operators = {agent_id: operator}
         _, _, pass_task = await seed_task(pool, agent_id=agent_id, funding="credits")
         cost_plan_uuid, _, cost_task = await seed_task(pool, agent_id=agent_id, funding="credits")
         _, _, invalid_task = await seed_task(pool, agent_id=agent_id, funding="credits")
@@ -196,6 +202,7 @@ def test_credits_plan_produces_no_observation(database_url: str, settings: Setti
         await seed_cost(
             pool, task_id=cost_task, plan_uuid=cost_plan_uuid, agent_id=agent_id, cost_micros=5000
         )
+        observed_at = datetime.now(UTC)
         await receive(
             pool,
             settings,
@@ -206,8 +213,11 @@ def test_credits_plan_produces_no_observation(database_url: str, settings: Setti
         async with pool.connection() as conn, conn.transaction():
             await ingest_due(conn, settings, operators)
 
-        assert await observations_for(pool, [pass_task, cost_task, invalid_task]) == []
+        assert await observations_for(pool, [pass_task, cost_task]) == []
+        assert [o["kind"] for o in await observations_for(pool, [invalid_task])] == ["falsification"]
         assert await posteriors_for(pool, [agent_id]) == []
+        async with pool.connection() as conn:
+            assert await in_probation(conn, operator, observed_at, settings.router_probation_s) is True
 
     run(database_url, body)
 
@@ -366,27 +376,50 @@ def test_zero_cost_job_is_not_observed(database_url: str, settings: Settings) ->
     run(database_url, body)
 
 
-def test_falsified_task_produces_no_cost_observation(database_url: str, settings: Settings) -> None:
-    """A falsified receipt's own claimed cost must not feed any posterior either, not just its outcome
-    (controller ruling, fix round 1)."""
+def test_falsified_task_cost_lands_before_the_verdict_in_production_order(
+    database_url: str, settings: Settings
+) -> None:
+    """Final review M2, rewritten to seed events in the order production produces them. The worker seals and
+    records `cost_micros` at the end of the run; the updater polls every second, so the cost observation is
+    ingested long before an audit's `invalid` verdict (minutes later) or an upheld challenge (later still)
+    can exist. `_COST_CANDIDATES`' falsification filter therefore does not fire in practice: the cost stays
+    in the log and in the posterior. The previous version of this test seeded the verdict first and so
+    passed on an ordering production never produces.
+
+    This is the known limitation the controller deferred under Ruling 4 / the final review's M2 ruling (a
+    retraction kind, or deferring ingestion to settlement, is a protocol decision, not a patch). This test
+    pins what actually happens today so nobody reads protection into the filter that is not there. What
+    does hold: the falsification itself is still recorded, and it still never touches a posterior."""
 
     async def body(pool: Pool) -> None:
         agent_id = rand_id("agent")
+        category = rand_id("cat")
         operators = {agent_id: rand_hex_address()}
-        plan_uuid, _, task_id = await seed_task(pool, agent_id=agent_id)
+        plan_uuid, _, task_id = await seed_task(pool, agent_id=agent_id, category=category)
 
+        # 1. The receipt is sealed with its claimed cost, and the updater's next poll ingests it.
         await seed_cost(pool, task_id=task_id, plan_uuid=plan_uuid, agent_id=agent_id, cost_micros=5_000)
+        async with pool.connection() as conn, conn.transaction():
+            await ingest_due(conn, settings, operators)
+        assert [o["kind"] for o in await observations_for(pool, [task_id])] == ["cost"]
+        (cost_row,) = [r for r in await posteriors_for(pool, [agent_id]) if r["category"] == category]
+        assert cost_row["costs"] == 1
+
+        # 2. Later, the audit proves the receipt false.
         await receive(
             pool, settings, "verdict.recorded", {"task_id": task_id, "verdict": "invalid", "tx": tx_n(72)}
         )
-
         async with pool.connection() as conn, conn.transaction():
             await ingest_due(conn, settings, operators)
 
-        obs = await observations_for(pool, [task_id])
-        kinds = {o["kind"] for o in obs}
-        assert "cost" not in kinds
-        assert kinds == {"falsification"}
+        # The falsified cost is NOT retracted (the deferred Ruling 4 / M2 gap): it is still in the log and
+        # still folded into the posterior. The falsification is recorded alongside it, and changes no
+        # posterior.
+        kinds = [o["kind"] for o in await observations_for(pool, [task_id])]
+        assert kinds == ["cost", "falsification"]
+        (after,) = [r for r in await posteriors_for(pool, [agent_id]) if r["category"] == category]
+        assert after["costs"] == 1
+        assert (after["kappa"], after["tau"]) == (cost_row["kappa"], cost_row["tau"])
 
     run(database_url, body)
 

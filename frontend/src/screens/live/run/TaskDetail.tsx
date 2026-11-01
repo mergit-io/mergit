@@ -1,25 +1,40 @@
 import { Link } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { agentName } from "../../../api/useAgents";
-import type { AgentInfo, Attempt, MoneyEvent, PlanTask, StepEvent } from "../../../api/types";
+import type { AgentInfo, Attempt, MoneyEvent, NeedsRequester, PlanTask, StepEvent } from "../../../api/types";
 import { formatUsdc } from "../../../chain/funding";
 import { Badge } from "../../../components/Badge";
 import { OutcomeBadge, ProgressBadge, VerdictBadge } from "./badges";
 import { phiCommand } from "./format";
 import { attemptOutcome, attemptsOf, taskProgress, verdictFor, type TaskProgress, type Verdict } from "./progress";
 
-function progressNote(progress: TaskProgress, agents: AgentInfo[] | null): string {
+function progressNote(task: PlanTask, progress: TaskProgress, agents: AgentInfo[] | null): string {
   switch (progress.kind) {
     case "waiting":
-      return "Waits for the tasks it depends on, then for its budget to be locked in Escrow.";
+      return task.routing === "auto"
+        ? "Waits for the tasks it depends on, then for Mergit to route it to an agent and lock its budget in Escrow."
+        : "Waits for the tasks it depends on, then for its budget to be locked in Escrow.";
     case "running":
       return `${agentName(agents, progress.attempt.agent_id)} is working on attempt ${String(progress.attempt.attempt)}.`;
     case "passed":
       return "Its check held. The task is done.";
     case "retrying":
-      return `Attempt ${String(progress.failed.attempt)} did not pass its check. Retrying with ${agentName(agents, progress.nextAgent)}.`;
+      return progress.nextAgent === null
+        ? `Attempt ${String(progress.failed.attempt)} did not pass its check. Mergit is routing a retry to another agent.`
+        : `Attempt ${String(progress.failed.attempt)} did not pass its check. Retrying with ${agentName(agents, progress.nextAgent)}.`;
     case "stuck":
-      return "Every agent you picked has tried this task and its check never held.";
+      switch (progress.reason) {
+        case undefined:
+          return "Every agent you picked has tried this task and its check never held.";
+        case "over_budget":
+          return progress.failed
+            ? "Its check never held, and no agent Mergit can still route it to is expected to fit its budget."
+            : "No agent Mergit can route it to is expected to fit its budget, so it has not started.";
+        case "agents_exhausted":
+          return "Every agent Mergit could route it to has tried this task and its check never held.";
+        case "attempts_exhausted":
+          return "This task used every attempt it is allowed and its check never held.";
+      }
   }
 }
 
@@ -46,17 +61,19 @@ function AttemptMeta({ steps, verdict, receipt }: { steps: number; verdict: Verd
 export function TaskDetail({
   task,
   attempts,
+  needsRequester,
   money,
   steps,
   agents,
 }: {
   task: PlanTask;
   attempts: Attempt[];
+  needsRequester: NeedsRequester[];
   money: MoneyEvent[];
   steps: StepEvent[];
   agents: AgentInfo[] | null;
 }) {
-  const progress = taskProgress(task, attempts);
+  const progress = taskProgress(task, attempts, needsRequester);
   const mine = attemptsOf(task.index, attempts);
   const stepCount = (taskId: string) => steps.filter((s) => s.task_id === taskId).length;
 
@@ -69,7 +86,7 @@ export function TaskDetail({
           <ProgressBadge progress={progress} />
           <span className="mono-s c3">{formatUsdc(BigInt(task.budget_usdc_units))} USDC</span>
         </div>
-        <p className="small c2">{progressNote(progress, agents)}</p>
+        <p className="small c2">{progressNote(task, progress, agents)}</p>
       </div>
 
       <div className="col g6">

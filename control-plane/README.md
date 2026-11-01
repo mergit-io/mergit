@@ -17,10 +17,10 @@ start, under an advisory lock, so several instances can start together.
 | `POST /v0/plans/{plan_uuid}/abandon` | Requester gives up on this plan: moves it to `closed` and sends `plan.closed` (O6) |
 | `POST /v0/chain-events` | Everything the gateway reports back (spec/events-v0.md). Idempotent on `event_id`; requires `Authorization: Bearer CHAIN_EVENTS_TOKEN` |
 | `GET /v0/plans` | The signed-in requester's own plans, summary only |
-| `GET /v0/plans/{plan_uuid}` | The plan, its tasks, every attempt (`jobs`, each with its routing draw if one was made) and every money/verdict event concerning it. Requester-only (`403`/`404`) |
+| `GET /v0/plans/{plan_uuid}` | The plan, its tasks, every attempt (`jobs`, each with its routing draw if one was made), every money/verdict event concerning it, and `needs_requester` (the tasks that will not run again on their own, with why). Requester-only (`403`/`404`) |
 | `GET /v0/plans/{plan_uuid}/candidates` | Every roster agent's posterior for each task, ranked, eligible or not. Requester-only (`403`/`404`); see "Reputation and routing" below |
 | `GET /v0/agents` | `{agent_id, name, model, provider, reputation}` for every deployed agent |
-| `GET /v0/plans/{plan_uuid}/events` | Server-Sent Events: `plan.state`, `task.state`, `step.recorded`, `verdict`, `money`, as the plan runs |
+| `GET /v0/plans/{plan_uuid}/events` | Server-Sent Events: `plan.state`, `task.state`, `needs_requester`, `step.recorded`, `verdict`, `money`, as the plan runs |
 | `POST /v0/internal/progress` | The worker reports one step; requires `Authorization: Bearer WORKER_TOKEN` |
 
 Amounts are decimal strings of USDC base units everywhere. Only the requester may edit or approve, and only a
@@ -154,7 +154,7 @@ the event in `chain_events_seen`, so the raw log and the ledger commit together 
 
 ## Run API and live stream (plan task O7)
 
-`GET /v0/plans` and `GET /v0/plans/{plan_uuid}` are read-only and requester-scoped. The detail view adds two
+`GET /v0/plans` and `GET /v0/plans/{plan_uuid}` are read-only and requester-scoped. The detail view adds three
 things on top of the plan and its tasks:
 
 - **`attempts`**: one row per `jobs` entry (task_id, index, attempt, agent_id, status, `phi_holds`,
@@ -162,6 +162,12 @@ things on top of the plan and its tasks:
 - **`money_events`**: this plan's rows of the money ledger above, oldest first. Each keeps the `{type, at,
   payload}` shape (the payload is the gateway's own fields, rebuilt from the typed columns) and adds `id`,
   `task_id`, `index`, `attempt` and `tx`. Scoped by `plan_uuid`, so one plan never sees another's events.
+- **`needs_requester`**: `[{index, reason}]`, every task that will never be dispatched automatically again
+  (`outcomes.stuck_reasons`). `reason` is `attempts_exhausted` (`MAX_ATTEMPTS` reached), `agents_exhausted`
+  (the pick list, or for an auto-routed task the whole roster, has tried it) or `over_budget` (an
+  auto-routed task with no untried agent that can fit its budget, possibly before any attempt). The run
+  screen reads this rather than re-deriving it: for an auto-routed task it cannot, since whether a failed
+  attempt is retried depends on the roster, the posteriors and the budget.
 
 **`credits.denied` (issue #23) needs no handler, only this read.** It only ever arrives before
 `plan.funded` (the gateway tries credits first and sends `plan.funded` only once money actually landed), so
@@ -175,7 +181,8 @@ now carry it; see `test_credits_denied_carries_its_reason_in_plan_detail` and
 
 **`GET /v0/plans/{plan_uuid}/events`** (SSE) sends a full snapshot of plan and task state on connect, then:
 
-- `plan.state`, `task.state` and the ledger rows (`verdict` for a verdict, `money` for the rest) are re-read from the database at most every
+- `plan.state`, `task.state`, `needs_requester` (`{"needs_requester": [...]}`, the whole list) and the ledger
+  rows (`verdict` for a verdict, `money` for the rest) are re-read from the database at most every
   `SSE_POLL_S` (1s) and sent only when something changed since the last poll;
 - `step.recorded` is relayed the moment the worker posts it to `POST /v0/internal/progress`
   (`{task_id, seq, type, cost}`, found to a plan through `task_dispatches` → `jobs`), with no polling delay.
@@ -213,8 +220,12 @@ without it, `GET /v0/plans/{plan_uuid}/events` sees no session and answers `401`
 A cost-adjusted Beta x Gamma posterior per `(agent, category)` (paper 8.2-8.8) feeds a Thompson-sampling
 router (paper 7.5, 9.3-9.4) that, for an `'auto'`-routed task, draws which agent to dispatch instead of
 the requester picking one up front. All of this (`reputation.py`, `router.py`, `routing.py`) only ever
-reads `money_events` and `jobs` for a **wallet-funded** plan: a credits-funded plan yields no observation
-at all (invariant 6), so a free-trial or credits run never earns or spends reputation.
+reads outcomes and costs from `money_events` and `jobs` for a **wallet-funded** plan only: a credits-funded
+plan yields no outcome or cost observation (invariant 6), so a free-trial or credits run never earns
+reputation. A proven falsification (`verdict.recorded invalid`, or an upheld challenge) is recorded whatever
+the plan's funding: it never changes a posterior, it only puts the operator in probation, and dropping it
+for credits plans would let an operator forge where stakes are lowest and stay routable where they are
+highest.
 
 - **The posterior.** `alpha`/`beta` (a Beta distribution) track success rate; `kappa`/`tau` (a Gamma
   distribution) track mean cost in micro-USD. `theta_mean = alpha / (alpha + beta)`, `cost_mean_micros =
@@ -226,16 +237,29 @@ at all (invariant 6), so a free-trial or credits run never earns or spends reput
   pooled from the agent's own cross-category row (or the base prior, if even that is fresh).
 - **The draw.** `routing.candidates` first narrows the roster to agents not already tried on this task
   index, not in probation (a proven false receipt, paper 7.5 iii), and not past their operator's
-  concurrency cap; `router.draw` then samples a `theta_tilde`/`cost_tilde` per eligible agent and picks
+  concurrency cap, and not **over budget for this task** (a single draw of its cost fits the budget less
+  than `ROUTER_MIN_FEASIBLE_PROBABILITY` of the time); `router.draw` then samples a
+  `theta_tilde`/`cost_tilde` per eligible agent and picks
   the best feasible one (sampled, when `explore` is on; by posterior mean otherwise). `routing.route`
   wraps this with an advisory lock, a cap-aware redirect to the deterministic "greedy" choice, and
   `routing_draws`, one row per dispatch recording the seed, every arm's posterior parameters and sample,
-  and what was actually chosen versus what greedy would have picked — enough to replay a draw from the
-  row alone, independent of how far the live posteriors have since moved on.
+  what was actually chosen versus what greedy would have picked, and the budget tolerance the draw used —
+  enough to replay a draw from the row alone, independent of how far the live posteriors or the settings
+  have since moved on.
+- **Waiting versus stuck.** An auto task that `route()` cannot serve is either waiting (every agent that
+  could fit its budget is in probation or at its operator's cap; the capacity sweep retries it) or stuck:
+  no untried agent can fit its budget at all (`routing.budget_infeasible`: with exploring on, every one
+  is over budget for this task; with it off, none has a mean cost inside the budget). A stuck task is
+  reported as needing the requester, with reason `over_budget`, even if it was never dispatched once,
+  alongside the existing `attempts_exhausted` and `agents_exhausted`.
 - **The read API** only presents this machinery; it never calls `route()` or changes anything.
   `GET /v0/plans/{plan_uuid}/candidates` shows, per task, every roster agent's `theta_mean`,
-  `cost_mean_micros`, `density`, real `outcomes`/`costs` counts, and (for an ineligible one) the reason,
-  ranked the same way a draw would rank them. `GET /v0/plans/{plan_uuid}`'s `attempts` gain a `routing`
+  `cost_mean_micros`, `density`, real `outcomes`/`costs` counts, `within_budget` (its mean cost fits the
+  task's budget; false means only an exploratory draw can pick it), and (for an ineligible one) the
+  reason, ranked the way the deterministic greedy pick ranks them: eligible, then within budget, then by
+  the draw's metric. `GET /v0/plans/{plan_uuid}` gains `needs_requester`, `[{index, reason}]` for every
+  task that will not be dispatched automatically again (also streamed on `/events` as a
+  `needs_requester` event whenever it changes), and its `attempts` gain a `routing`
   field (`{exploratory, seed, greedy_agent}`, or `null` for a `'pick'`-routed task or an `'auto'` one whose
   draw hasn't landed yet). `GET /v0/agents`' `reputation` list is the agent's real, stored
   `reputation_posteriors` rows only — never a pooled or synthesized one, so an agent with no observations
@@ -249,8 +273,11 @@ paper's* (each is documented that way on the `Settings` field itself): `REPUTATI
 `ROUTER_PROBATION_S` (604800, one week, how long a falsification keeps an operator's agents in
 probation), `ROUTER_OPERATOR_CONCURRENCY_CAP` (5, unresolved dispatches per operator before its agents go
 ineligible), `ROUTER_EXPLORE_CAP_PER_OPERATOR` (2, unresolved exploratory draws per operator before a
-further one redirects to greedy), and `ROUTER_BUDGET_TOLERANCE` (0.1, how far over budget a sampled cost
-may still count feasible). `REPUTATION_POLL_S` (1, how often new observations are folded into the
+further one redirects to greedy), `ROUTER_BUDGET_TOLERANCE` (0.1, how far over budget a sampled cost
+may still count feasible), and `ROUTER_MIN_FEASIBLE_PROBABILITY` (0.01, the chance per draw of sampling a
+cost within budget below which an agent is "over budget for this task"; the capacity sweep re-draws every
+`OUTCOME_POLL_S`, so without it any non-zero chance would eventually dispatch an agent expected to overrun
+the budget). `REPUTATION_POLL_S` (1, how often new observations are folded into the
 posteriors) is not one of these — it is a polling-cadence setting, the same convention as
 `OUTCOME_POLL_S`/`EVENT_POLL_S`/`SSE_POLL_S`, not a value the paper's model has an opinion on at all.
 `gamma` (0.95, the Beta/Gamma decay per update) is the one constant the paper itself fixes, so unlike any

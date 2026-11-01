@@ -49,6 +49,11 @@ async def _task_states(conn: AsyncConnection[TupleRow], plan_uuid: str) -> list[
     ]
 
 
+async def ready_indexes(conn: AsyncConnection[TupleRow], plan_uuid: str) -> list[int]:
+    """Indexes `dispatch_ready` would dispatch right now: every dependency passed, nothing dispatched yet."""
+    return ready_tasks(await _task_states(conn, plan_uuid))
+
+
 async def dispatch_task(
     conn: AsyncConnection[TupleRow],
     plan: StoredPlan,
@@ -110,6 +115,11 @@ async def dispatch_ready(conn: AsyncConnection[TupleRow], plan: StoredPlan, sett
     for index in ready_tasks(states):
         task = next(t for t in plan.tasks if t.draft.index == index)
         if task.routing == "auto":
+            if await routing.budget_infeasible(conn, plan, index, settings):
+                # Structural, not capacity: no untried agent can fit this task's budget, so `route` could
+                # only return None (final review C1). Skipped without taking its advisory lock;
+                # `outcomes.stuck_indexes` reports it as needing the requester.
+                continue
             pending = await routing.route(conn, plan, index, 1, settings)
             if pending is None:
                 continue
@@ -167,10 +177,11 @@ async def _dispatch_owed_auto_retries(
     resolved or not), and an index with nothing eligible right now simply draws `None` again and is left
     for the next sweep -- no double dispatch, no busy-looping into an error.
 
-    A roster-*exhausted* index (fix round 1, Minor #7) is skipped before ever calling `route`, so a
+    A roster-*exhausted* index (fix round 1, Minor #7), or one with no untried agent that can fit its budget
+    (`routing.budget_infeasible`, final review C1), is skipped before ever calling `route`, so a
     structurally-stuck index is recognized without re-taking `route`'s global advisory lock on every single
-    sweep: `routing.roster_exhausted` is the one shared place this check lives (also used by
-    `outcomes._auto_exhausted`), so this never has to duplicate or work around it.
+    sweep: both checks live in `routing.py` (and are shared with `outcomes._auto_stuck_reason`), so this
+    never has to duplicate or work around them.
     """
     from . import routing
 
@@ -182,6 +193,8 @@ async def _dispatch_owed_auto_retries(
         last_attempt = int(last_attempt)
         if await routing.roster_exhausted(conn, plan, index, last_attempt, settings):
             continue
+        if await routing.budget_infeasible(conn, plan, index, settings):
+            continue  # final review C1: structurally unroutable for its budget, reported, not retried
         attempt = last_attempt + 1
         pending = await routing.route(conn, plan, index, attempt, settings)
         if pending is None:

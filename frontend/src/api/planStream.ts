@@ -1,4 +1,4 @@
-import type { Attempt, MoneyEvent, PlanDetail, PlanState, StepEvent } from "./types";
+import type { Attempt, MoneyEvent, NeedsRequester, PlanDetail, PlanState, StepEvent } from "./types";
 
 /**
  * The live state of one plan: the detail from `GET /v0/plans/{id}`, kept current by the events from
@@ -8,11 +8,19 @@ import type { Attempt, MoneyEvent, PlanDetail, PlanState, StepEvent } from "./ty
  * idempotently: a repeated attempt, money event or step changes nothing.
  */
 
-export const PLAN_EVENT_NAMES = ["plan.state", "task.state", "verdict", "money", "step.recorded"] as const;
+export const PLAN_EVENT_NAMES = [
+  "plan.state",
+  "task.state",
+  "needs_requester",
+  "verdict",
+  "money",
+  "step.recorded",
+] as const;
 
 export type PlanStreamEvent =
   | { name: "plan.state"; data: { state: PlanState } }
   | { name: "task.state"; data: Attempt }
+  | { name: "needs_requester"; data: { needs_requester: NeedsRequester[] } }
   | { name: "verdict" | "money"; data: MoneyEvent }
   | { name: "step.recorded"; data: StepEvent };
 
@@ -49,6 +57,8 @@ export const initialPlanStream: PlanStreamState = {
 const byIndexThenAttempt = (a: Attempt, b: Attempt) => a.index - b.index || a.attempt - b.attempt;
 const moneyKey = (m: MoneyEvent) => `${m.type}|${m.at}|${JSON.stringify(m.payload)}`;
 
+const sameNeeds = (a: NeedsRequester[], b: NeedsRequester[]) => JSON.stringify(a) === JSON.stringify(b);
+
 const sameAttempt = (a: Attempt, b: Attempt) =>
   a.status === b.status &&
   a.phi_holds === b.phi_holds &&
@@ -72,6 +82,11 @@ export function applyToDetail(detail: PlanDetail, event: PlanStreamEvent): PlanD
     case "task.state": {
       const attempts = upsertAttempt(detail.attempts, event.data);
       return attempts === detail.attempts ? detail : { ...detail, attempts };
+    }
+    case "needs_requester": {
+      // Sent whole, so it replaces the list rather than merging into it.
+      const next = event.data.needs_requester;
+      return sameNeeds(detail.needs_requester, next) ? detail : { ...detail, needs_requester: next };
     }
     case "verdict":
     case "money": {

@@ -56,6 +56,8 @@ export type FakePlan = {
   tasks: FakeTask[];
   attempts: FakeAttempt[];
   money_events: Array<{ type: string; at: string; payload: Record<string, unknown> }>;
+  /** Plan detail's server-computed list of tasks that will not run again on their own. */
+  needs_requester: Array<{ index: number; reason: "attempts_exhausted" | "agents_exhausted" | "over_budget" }>;
 };
 
 /** One Server-Sent Event the fake stream sends, as the control plane names them. */
@@ -68,7 +70,14 @@ export const AGENTS = [
     model: "claude-sonnet-5",
     provider: "openrouter",
     reputation: [
-      { category: "test-repair", theta_mean: 0.72, cost_mean_micros: 150_000, density: 4.8e-6, outcomes: 12, costs: 12 },
+      {
+        category: "test-repair",
+        theta_mean: 0.72,
+        cost_mean_micros: 150_000,
+        density: 4.8e-6,
+        outcomes: 12,
+        costs: 12,
+      },
     ],
   },
   {
@@ -140,6 +149,7 @@ export function draftPlan(over: Partial<FakePlan> = {}): FakePlan {
     ],
     attempts: [],
     money_events: [],
+    needs_requester: [],
     ...over,
   };
 }
@@ -186,10 +196,14 @@ export type FakeCandidate = {
   costs: number;
   eligible: boolean;
   reason: string | null;
+  within_budget: boolean;
 };
 
 /** What `GET /v0/plans/{uuid}/candidates` answers for one "auto"-routable task, ranked eligible-first. */
-export function taskCandidates(index: number, over: Partial<FakeCandidate>[] = []): {
+export function taskCandidates(
+  index: number,
+  over: Partial<FakeCandidate>[] = [],
+): {
   index: number;
   routing: "pick" | "auto";
   explore: boolean;
@@ -210,7 +224,11 @@ export function taskCandidates(index: number, over: Partial<FakeCandidate>[] = [
       costs: 12,
       eligible: true,
       reason: null,
+      within_budget: true,
     },
+    // What the control plane sends for an agent no draw will realistically pick for task 1's $0.50 budget
+    // (`routing.OVER_BUDGET`): a learned $2.00 mean cost over 20 metered runs, sampled under budget well
+    // under 1% of the time, so ineligible with that reason, and over budget by mean too.
     {
       agent_id: "2",
       name: "coder-b",
@@ -218,12 +236,13 @@ export function taskCandidates(index: number, over: Partial<FakeCandidate>[] = [
       provider: "openrouter",
       operator: `0x${"2".repeat(40)}`,
       theta_mean: 0.5,
-      cost_mean_micros: 300_000,
-      density: 0,
+      cost_mean_micros: 2_000_000,
+      density: 2.5e-7,
       outcomes: 0,
-      costs: 0,
+      costs: 20,
       eligible: false,
       reason: "over budget for this task",
+      within_budget: false,
     },
   ];
   return {
@@ -300,7 +319,12 @@ export async function mockPlanApi(
       return route.fulfill({
         status: 200,
         headers: { ...CORS(route), "content-type": "text/event-stream", "cache-control": "no-cache" },
-        body: sseBody([{ event: "plan.state", data: { state: plan.state } }, ...(opts.events ?? [])]),
+        body: sseBody([
+          { event: "plan.state", data: { state: plan.state } },
+          // The real stream sends the whole list on connect too, then again whenever it changes.
+          { event: "needs_requester", data: { needs_requester: plan.needs_requester } },
+          ...(opts.events ?? []),
+        ]),
       });
     }
     if (method === "GET" && !action) return json(route, plan);

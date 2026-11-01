@@ -19,10 +19,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from . import money, plans, reputation, routing, runs
+from . import money, outcomes, plans, reputation, routing, runs
 from .agents import Agent
 from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
+from .config import Settings
 from .db import Pool
+from .router import mean_feasible
 from .routes_plans import get_agents
 from .stream import PlanBroadcaster, sse
 
@@ -54,16 +56,28 @@ async def list_plans(principal: PrincipalDep, pool: PoolDep) -> list[dict[str, A
     return [runs.plan_summary_view(s) for s in summaries]
 
 
+def _needs_requester_view(stuck: dict[int, outcomes.StuckReason]) -> list[dict[str, Any]]:
+    return [{"index": index, "reason": reason} for index, reason in sorted(stuck.items())]
+
+
 @router.get("/{plan_uuid}")
-async def plan_detail(plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
+async def plan_detail(
+    plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep, settings: SettingsDep
+) -> dict[str, Any]:
+    """The plan, its attempts and its ledger, plus `needs_requester`: every task index that will never be
+    dispatched automatically again, with why (`outcomes.stuck_reasons`, final review M1). The run screen
+    reads that instead of re-deriving it, since for an auto-routed task it cannot: there is no pick list to
+    run out, and whether a failed attempt is being retried depends on the roster, posteriors and budget."""
     async with pool.connection() as conn:
         plan = await _owned_plan(conn, plan_uuid, principal)
         attempts = await runs.attempts(conn, plan_uuid)
         draws = await runs.routing_draws_for_tasks(conn, [a.task_id for a in attempts])
         ledger = await money.list_for_plan(conn, plan_uuid)
+        stuck = await outcomes.stuck_reasons(conn, plan, settings)
     view = plans.view(plan)
     view["attempts"] = [{**runs.attempt_view(a), "routing": draws.get(a.task_id)} for a in attempts]
     view["money_events"] = [money.view(m) for m in ledger]
+    view["needs_requester"] = _needs_requester_view(stuck)
     return view
 
 
@@ -73,8 +87,17 @@ async def plan_candidates(
 ) -> dict[str, Any]:
     """A presentation of every roster agent's posterior for each of this plan's tasks -- eligible or not,
     with a human-readable reason for the ones that aren't -- sorted the way a reader would expect to scan
-    them: eligible first, then by the same metric `routing.route`'s draw would actually rank on
-    (`density`, or `theta_mean` when `retry_tolerant` is false; see `Posterior.density`'s own docstring).
+    them: eligible first, then those whose mean cost fits the task's budget, then by the same metric
+    `routing.route`'s draw would actually rank on (`density`, or `theta_mean` when `retry_tolerant` is
+    false; see `Posterior.density`'s own docstring). That is the order the deterministic `greedy` pick
+    ranks them in.
+
+    Budget feasibility comes from the same rules `route` applies (final review m1). An agent no draw will
+    realistically pick for this budget is ineligible with reason `routing.OVER_BUDGET`, whatever the mode.
+    `within_budget` is `router.mean_feasible`: false means only an exploratory draw can pick the agent,
+    and with exploring off it never will. It is mode-independent on purpose, since the requester can still
+    switch exploring on or off on a draft plan after this is fetched.
+
     This never calls `route()` and never mutates anything -- it only reads `routing.candidates` and
     `reputation.posterior`/`observation_counts`."""
     async with pool.connection() as conn:
@@ -106,10 +129,13 @@ async def plan_candidates(
                         "costs": costs,
                         "eligible": agent_id not in ineligible,
                         "reason": ineligible.get(agent_id),
+                        "within_budget": mean_feasible(
+                            post, task.draft.budget_usdc_units, settings.router_budget_tolerance
+                        ),
                     }
                 )
             metric = "theta_mean" if not task.retry_tolerant else "density"
-            candidates.sort(key=lambda c: (not c["eligible"], -c[metric]))
+            candidates.sort(key=lambda c: (not c["eligible"], not c["within_budget"], -c[metric]))
             task_views.append(
                 {
                     "index": task.draft.index,
@@ -185,24 +211,31 @@ async def plan_events(
     async with pool.connection() as conn:
         await _owned_plan(conn, plan_uuid, principal)
     return StreamingResponse(
-        _stream(pool, broadcaster, plan_uuid, request, settings.sse_poll_s),
+        _stream(pool, broadcaster, plan_uuid, request, settings),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 async def _stream(
-    pool: Pool, broadcaster: PlanBroadcaster, plan_uuid: UUID, request: Request, poll_s: float
+    pool: Pool, broadcaster: PlanBroadcaster, plan_uuid: UUID, request: Request, settings: Settings
 ) -> AsyncIterator[str]:
     """Steps posted to `/v0/internal/progress` are relayed as soon as they arrive; `plan.state`,
-    `task.state`, `verdict` and `money` are polled from the database at most every `poll_s` and only sent
-    when something changed since the last poll. The first poll always sends: a client that just
-    connected gets the full current state, not only what changes after it.
+    `task.state`, `needs_requester`, `verdict` and `money` are polled from the database at most every
+    `settings.sse_poll_s` and only sent when something changed since the last poll. The first poll always
+    sends: a client that just connected gets the full current state, not only what changes after it.
+
+    `needs_requester` carries the same list as plan detail's field of that name, as
+    `{"needs_requester": [...]}`, sent whole whenever it changes: an auto task's stuck state can change
+    with no `jobs` row changing at all (a retry dispatched, or a budget that no longer fits after a
+    posterior moved), so it cannot ride along on `task.state`.
     """
+    poll_s = settings.sse_poll_s
     key = str(plan_uuid)
     queue = broadcaster.subscribe(key)
     last_state: str | None = None
     last_tasks: dict[int, tuple[str, bool | None]] = {}
+    last_stuck: list[dict[str, Any]] | None = None
     sent_money: set[int] = set()
     try:
         while True:
@@ -222,6 +255,7 @@ async def _stream(
                     return
                 attempts = await runs.attempts(conn, plan_uuid)
                 ledger = await money.list_for_plan(conn, plan_uuid)
+                stuck = _needs_requester_view(await outcomes.stuck_reasons(conn, plan, settings))
 
             if plan.state != last_state:
                 yield sse("plan.state", {"state": plan.state})
@@ -231,6 +265,9 @@ async def _stream(
                 if last_tasks.get(a.index) != current:
                     yield sse("task.state", runs.attempt_view(a))
                     last_tasks[a.index] = current
+            if stuck != last_stuck:
+                yield sse("needs_requester", {"needs_requester": stuck})
+                last_stuck = stuck
             for m in ledger:
                 # Track ledger row ids, not a time cursor: a row from a transaction that started earlier
                 # but committed after the last poll has an older timestamp (and possibly a lower id)

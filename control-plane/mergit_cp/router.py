@@ -22,10 +22,17 @@ what matters), the feasible arm with the highest sampled *density* `theta_tilde 
 `retry_tolerant=False` (failure is expensive or irreversible), cost no longer matters once an arm is
 feasible at all -- the feasible arm with the highest sampled `theta_tilde` wins. `explore=False` skips the
 random draw entirely and picks by the same objective computed on the posterior *means* instead.
+
+`mean_feasible` and `feasible_probability` answer the same budget question about one arm *without*
+drawing: whether its posterior mean cost fits (the only thing `explore=False` and `greedy` ever look at),
+and how likely a single Thompson sample of its cost is to fit (what an `explore=True` draw depends on).
+`routing.py` uses them to tell an index that is only waiting for capacity apart from one no draw will
+realistically ever route.
 """
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -60,6 +67,73 @@ class Draw:
     greedy: str | None
     exploratory: bool
     samples: list[ArmSample]
+
+
+def budget_limit(budget_micros: int, tolerance: float) -> float:
+    """The most a cost may be and still count as feasible for `budget_micros`: the one budget rule `draw`,
+    `mean_feasible` and `feasible_probability` all share."""
+    return budget_micros * (1 + tolerance)
+
+
+def mean_feasible(posterior: Posterior, budget_micros: int, tolerance: float) -> bool:
+    """Whether the arm's posterior *mean* cost fits the budget -- exactly the test `draw` applies to every
+    arm when computing `greedy` (and so to `chosen` too, when `explore=False`)."""
+    return posterior.cost_mean_micros <= budget_limit(budget_micros, tolerance)
+
+
+def _upper_regularized_gamma(a: float, x: float) -> float:
+    """Q(a, x) = Gamma(a, x) / Gamma(a), the upper regularized incomplete gamma function, for a > 0.
+
+    The standard pair of evaluations (Numerical Recipes 6.2): the power series for P = 1 - Q when
+    x < a + 1, where it converges fast, and the modified-Lentz continued fraction for Q itself otherwise.
+    Both run to double precision; the result is clamped into [0, 1] against rounding."""
+    if x <= 0:
+        return 1.0
+    log_prefactor = -x + a * math.log(x) - math.lgamma(a)
+    if x < a + 1:
+        term = 1.0 / a
+        total = term
+        n = a
+        for _ in range(10_000):
+            n += 1
+            term *= x / n
+            total += term
+            if abs(term) < abs(total) * 1e-16:
+                break
+        return min(1.0, max(0.0, 1.0 - total * math.exp(log_prefactor)))
+    tiny = 1e-300
+    b = x + 1 - a
+    c = 1 / tiny
+    d = 1 / b
+    h = d
+    for i in range(1, 10_000):
+        an = -i * (i - a)
+        b += 2
+        d = an * d + b
+        if abs(d) < tiny:
+            d = tiny
+        c = b + an / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1) < 1e-16:
+            break
+    return min(1.0, max(0.0, math.exp(log_prefactor) * h))
+
+
+def feasible_probability(posterior: Posterior, budget_micros: int, tolerance: float) -> float:
+    """The probability that one Thompson draw of this arm's cost fits the budget: P(c_tilde <= limit).
+
+    `c_tilde = 1 / r_tilde` with `r_tilde ~ Gamma(shape=kappa, rate=tau)` (see this module's docstring), so
+    `c_tilde <= limit` is `r_tilde >= 1 / limit`, whose probability is the upper regularized incomplete
+    gamma function `Q(kappa, tau / limit)`. Closed form for the cold prior (`kappa = 1`): `exp(-tau / limit)`.
+    """
+    limit = budget_limit(budget_micros, tolerance)
+    if limit <= 0:
+        return 0.0
+    return _upper_regularized_gamma(posterior.kappa, posterior.tau / limit)
 
 
 def _sample_arm(arm: Arm, explore: bool, rng: random.Random) -> ArmSample:
@@ -110,9 +184,9 @@ def draw(arms: Sequence[Arm], budget_micros: int, mode: Mode, tolerance: float, 
     every arm is recorded with its own `feasible` flag regardless of whether it's `chosen` or `greedy`.
     """
     sampled = [_sample_arm(arm, mode.explore, rng) for arm in arms]
-    budget_limit = budget_micros * (1 + tolerance)
+    limit = budget_limit(budget_micros, tolerance)
     samples = [
-        ArmSample(s.agent_id, s.theta, s.cost_micros, s.density, feasible=s.cost_micros <= budget_limit)
+        ArmSample(s.agent_id, s.theta, s.cost_micros, s.density, feasible=s.cost_micros <= limit)
         for s in sampled
     ]
 
@@ -120,7 +194,7 @@ def draw(arms: Sequence[Arm], budget_micros: int, mode: Mode, tolerance: float, 
     # `_sample_arm(explore=False, ...)` never touches `rng`, so this costs no extra draws against `rng`'s
     # state -- the test suite's seeded-reproducibility tests depend on that.
     mean_feasible = [
-        ArmSample(m.agent_id, m.theta, m.cost_micros, m.density, feasible=m.cost_micros <= budget_limit)
+        ArmSample(m.agent_id, m.theta, m.cost_micros, m.density, feasible=m.cost_micros <= limit)
         for m in means
     ]
     greedy = _best(mean_feasible, mode.retry_tolerant)

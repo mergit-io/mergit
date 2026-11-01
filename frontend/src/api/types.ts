@@ -68,7 +68,23 @@ export type Attempt = {
 /** A gateway event about this plan's money or verdicts, as the gateway sent it. */
 export type MoneyEvent = { type: string; at: string; payload: Record<string, unknown> };
 
-export type PlanDetail = Plan & { attempts: Attempt[]; money_events: MoneyEvent[] };
+/**
+ * Why a task will not run again on its own. "attempts_exhausted": it used every attempt the service allows.
+ * "agents_exhausted": every agent it may run with has tried it (the requester's picks, or for an "auto" task
+ * the whole roster). "over_budget": an "auto" task with no untried agent that can fit its budget, possibly
+ * before a single attempt.
+ */
+export type NeedsRequesterReason = "attempts_exhausted" | "agents_exhausted" | "over_budget";
+
+/** One task the control plane will not dispatch again on its own (`outcomes.stuck_reasons`). */
+export type NeedsRequester = { index: number; reason: NeedsRequesterReason };
+
+export type PlanDetail = Plan & {
+  attempts: Attempt[];
+  money_events: MoneyEvent[];
+  /** The server's own answer to "is this task stuck", sent whole and kept current over the stream. */
+  needs_requester: NeedsRequester[];
+};
 
 export type PlanSummary = Pick<
   Plan,
@@ -106,7 +122,10 @@ export type Candidate = {
   outcomes: number;
   costs: number;
   eligible: boolean;
+  /** Why it is left out of the draw, e.g. "over budget for this task"; null when eligible. */
   reason: string | null;
+  /** Its mean cost fits the task's budget. False: only an exploratory draw can pick it. */
+  within_budget: boolean;
 };
 
 export type TaskCandidates = {

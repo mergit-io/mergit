@@ -32,6 +32,7 @@ const detail: PlanDetail = {
   tasks: [],
   attempts: [attempt],
   money_events: [],
+  needs_requester: [],
 };
 
 const loaded: PlanStreamState = planReducer(initialPlanStream, { type: "loaded", detail });
@@ -49,6 +50,21 @@ describe("planReducer", () => {
     const next = apply(apply(loaded, { name: "task.state", data: passed }), { name: "task.state", data: retry });
     expect(next.detail?.attempts).toEqual([passed, retry]);
     expect(apply(loaded, { name: "task.state", data: attempt })).toBe(loaded);
+  });
+
+  it("replaces the needs-requester list whole, and keeps the same state when it did not change", () => {
+    const stuck = apply(loaded, {
+      name: "needs_requester",
+      data: { needs_requester: [{ index: 0, reason: "over_budget" }] },
+    });
+    expect(stuck.detail?.needs_requester).toEqual([{ index: 0, reason: "over_budget" }]);
+    expect(
+      apply(stuck, { name: "needs_requester", data: { needs_requester: [{ index: 0, reason: "over_budget" }] } }),
+    ).toBe(stuck);
+    // The server sends the whole list, so a task that is no longer stuck drops out of it.
+    expect(apply(stuck, { name: "needs_requester", data: { needs_requester: [] } }).detail?.needs_requester).toEqual(
+      [],
+    );
   });
 
   it("adds a money or verdict event once, however often the stream repeats it", () => {

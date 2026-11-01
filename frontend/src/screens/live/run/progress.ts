@@ -1,20 +1,29 @@
-import type { Attempt, MoneyEvent, PlanTask } from "../../../api/types";
+import type { Attempt, MoneyEvent, NeedsRequester, NeedsRequesterReason, PlanTask } from "../../../api/types";
 
 /**
- * What each task of a running plan is doing, derived from its attempts and the requester's agent picks,
- * the same rule the control plane applies (plan task O6): a failed or inconclusive attempt is retried with
- * the next agent the requester picked; once every pick has been tried, the task waits on the requester.
- * The API does not store that last state, so the screen derives it the way the server does.
+ * What each task of a running plan is doing, derived from its attempts.
+ *
+ * A "pick" task follows the rule the control plane applies to the requester's own list (plan task O6): a
+ * failed or inconclusive attempt is retried with the next agent the requester picked; once every pick has
+ * been tried, the task waits on the requester. That rule only needs the list, so the screen derives it.
+ *
+ * An "auto" task has no list. Whether a failed attempt is retried depends on the roster, the reputation
+ * posteriors and the budget, which only the server knows, so the screen never decides an "auto" task is
+ * stuck itself: it asks `needsRequester`, the plan detail's own list (final review M1). Until the server
+ * says so, a failed "auto" attempt reads as being retried.
  */
 export type TaskProgress =
-  /** Not dispatched yet: waiting on a dependency, or on its escrow. */
+  /** Not dispatched yet: waiting on a dependency, or on its escrow (and, for "auto", on an agent to route to). */
   | { kind: "waiting" }
   | { kind: "running"; attempt: Attempt }
   | { kind: "passed"; attempt: Attempt }
-  /** The last attempt did not pass and the next pick is being dispatched. */
-  | { kind: "retrying"; failed: Attempt; nextAgent: string }
-  /** Every agent the requester picked has been tried: only the requester can move this task on. */
-  | { kind: "stuck"; failed: Attempt };
+  /** The last attempt did not pass and a retry is coming: the requester's next pick, or (null) Mergit's. */
+  | { kind: "retrying"; failed: Attempt; nextAgent: string | null }
+  /**
+   * Only the requester can move this task on. For a "pick" task, every agent they picked has been tried.
+   * For an "auto" task, `reason` is the server's, and `failed` is null if no attempt was ever made.
+   */
+  | { kind: "stuck"; failed: Attempt | null; reason?: NeedsRequesterReason };
 
 export type AttemptOutcome = "in progress" | "passed" | "failed" | "inconclusive";
 
@@ -28,7 +37,21 @@ export function attemptOutcome(attempt: Attempt): AttemptOutcome {
   return attempt.phi_holds === false ? "failed" : "inconclusive";
 }
 
-export function taskProgress(task: PlanTask, attempts: Attempt[]): TaskProgress {
+function autoProgress(task: PlanTask, attempts: Attempt[], needsRequester: NeedsRequester[]): TaskProgress {
+  const mine = attemptsOf(task.index, attempts);
+  const passed = mine.find((a) => a.phi_holds === true);
+  if (passed) return { kind: "passed", attempt: passed };
+  const latest = mine.at(-1);
+  if (latest && attemptOutcome(latest) === "in progress") return { kind: "running", attempt: latest };
+  const stuck = needsRequester.find((n) => n.index === task.index);
+  if (stuck) return { kind: "stuck", failed: latest ?? null, reason: stuck.reason };
+  if (!latest) return { kind: "waiting" };
+  return { kind: "retrying", failed: latest, nextAgent: null };
+}
+
+/** `needsRequester` is the plan detail's list; only an "auto" task reads it (see `TaskProgress`). */
+export function taskProgress(task: PlanTask, attempts: Attempt[], needsRequester: NeedsRequester[]): TaskProgress {
+  if (task.routing === "auto") return autoProgress(task, attempts, needsRequester);
   const mine = attemptsOf(task.index, attempts);
   const passed = mine.find((a) => a.phi_holds === true);
   if (passed) return { kind: "passed", attempt: passed };
@@ -41,8 +64,8 @@ export function taskProgress(task: PlanTask, attempts: Attempt[]): TaskProgress 
   return nextAgent === undefined ? { kind: "stuck", failed: latest } : { kind: "retrying", failed: latest, nextAgent };
 }
 
-export function stuckTasks(tasks: PlanTask[], attempts: Attempt[]): PlanTask[] {
-  return tasks.filter((t) => taskProgress(t, attempts).kind === "stuck");
+export function stuckTasks(tasks: PlanTask[], attempts: Attempt[], needsRequester: NeedsRequester[]): PlanTask[] {
+  return tasks.filter((t) => taskProgress(t, attempts, needsRequester).kind === "stuck");
 }
 
 export type Verdict = "pass" | "fail" | "invalid";

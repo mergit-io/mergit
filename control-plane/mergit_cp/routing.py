@@ -38,7 +38,14 @@ When `greedy` is also `None` (Task 4's `draw()` only ever sets `greedy` when som
 them, into `samples` (fix round 1, Finding 3): `reputation_posteriors` mutates in place over time, so by the
 time anyone wants to replay an old draw, the *live* posteriors have already moved on past what was actually
 sampled from. Without the posterior parameters captured at draw time, a `routing_draws` row cannot
-reconstruct the `Arm`s `router.draw()` was actually called with, and so cannot genuinely replay itself.
+reconstruct the `Arm`s `router.draw()` was actually called with, and so cannot genuinely replay itself. The
+budget tolerance the draw used is stored alongside for the same reason (final review m6): it is a setting,
+and a setting can change.
+
+**Over budget is structural, not transient (final review C1).** An agent no draw will realistically route
+for a task's budget is excluded from that task's draws (`over_budget`), and an auto index with no untried
+agent that can fit its budget is told apart from one merely waiting for capacity (`budget_infeasible`), so
+it is reported as needing the requester instead of being retried by the capacity sweep forever.
 """
 
 from __future__ import annotations
@@ -55,9 +62,18 @@ from psycopg.types.json import Jsonb
 from .agents import Agent, load_agents
 from .config import Settings
 from .dispatch import DISPATCH_DEADLINE_S
-from .plans import StoredPlan
-from .reputation import in_probation, posterior
-from .router import Arm, Draw, Mode, draw
+from .plans import StoredPlan, StoredTask
+from .reputation import Posterior, in_probation, posterior
+from .router import Arm, Draw, Mode, draw, feasible_probability, mean_feasible
+
+ALREADY_TRIED = "already tried on this task"
+OVER_BUDGET = "over budget for this task"
+IN_PROBATION = "operator in probation"
+AT_CAP = "operator at concurrency cap"
+"""The reasons `candidates` gives for leaving an agent out of a draw. The first two are structural for the
+index: nothing puts an agent back once it has been tried here, and an agent stays over budget until its cost
+posterior moves, which only new evidence from other tasks can do. The last two are transient and clear on
+their own."""
 
 _roster_cache: dict[tuple[str, str], list[Agent]] = {}
 
@@ -118,6 +134,76 @@ WHERE rd.exploratory = true
 """
 
 
+def _task(plan: StoredPlan, index: int) -> StoredTask:
+    task = next((t for t in plan.tasks if t.draft.index == index), None)
+    if task is None:
+        raise ValueError(f"plan {plan.plan_uuid} has no task at index {index}")
+    return task
+
+
+def over_budget(post: Posterior, budget_micros: int, settings: Settings) -> bool:
+    """True when not even a Thompson draw will realistically pick this agent for this budget: the chance
+    that one sample of its cost fits (`router.feasible_probability`) is below
+    `settings.router_min_feasible_probability`. Mode-independent: such an agent's mean cost is over budget
+    too, so `explore=False` would never pick it either. (If the mean fits, `tau / limit <= kappa`, and the
+    chance is at least `Q(kappa, kappa)`, about 0.37 for `kappa = 1` and rising toward 0.5 -- every posterior
+    here has `kappa >= 1`, and the setting is capped at 0.25.) `candidates` leaves it out of every draw."""
+    p = feasible_probability(post, budget_micros, settings.router_budget_tolerance)
+    return p < settings.router_min_feasible_probability
+
+
+def routable(post: Posterior, budget_micros: int, explore: bool, settings: Settings) -> bool:
+    """Whether `route` could ever dispatch this agent for this budget under this mode, if it were otherwise
+    eligible. With `explore`, any agent not `over_budget`: a draw may sample its cost under budget. Without
+    it, only an agent whose posterior mean cost fits, since `chosen == greedy` and `greedy` only ever looks
+    at means (`router.mean_feasible`)."""
+    if explore:
+        return not over_budget(post, budget_micros, settings)
+    return mean_feasible(post, budget_micros, settings.router_budget_tolerance)
+
+
+async def _tried(conn: AsyncConnection[TupleRow], plan: StoredPlan, index: int) -> set[str]:
+    cur = await conn.execute(
+        'SELECT DISTINCT agent_id FROM task_dispatches WHERE plan_uuid = %s AND "index" = %s',
+        (plan.plan_uuid, index),
+    )
+    return {row[0] for row in await cur.fetchall()}
+
+
+async def budget_infeasible(
+    conn: AsyncConnection[TupleRow], plan: StoredPlan, index: int, settings: Settings
+) -> bool:
+    """The structural reason `route` returns `None` (final review C1), told apart from the transient one.
+
+    True when no roster agent that has not already been tried on this index is `routable` for the task's
+    budget under the task's own `explore` setting -- whatever its probation or concurrency-cap state right
+    now, since those clear on their own and a budget-fitting agent behind them is still worth waiting for.
+    `route` can then never dispatch this index (`candidates` leaves every `over_budget` agent out of the
+    draw, and with exploring off `greedy`, hence `chosen`, is `None` when no mean cost fits), and the
+    capacity sweep would retry it forever. `outcomes.stuck_indexes` reports it as needing the requester,
+    and the dispatch paths skip it without taking `route`'s advisory lock, the same way they treat
+    `roster_exhausted`.
+
+    It reads only posteriors and `task_dispatches`, so it is not permanent in the strict sense: new cost
+    evidence for one of the untried agents from some other task can make it routable again, and the next
+    sweep then dispatches it. Always `False` for a `'pick'` task, and for an empty roster (mirroring
+    `roster_exhausted`)."""
+    task = _task(plan, index)
+    if task.routing != "auto":
+        return False
+    agents = roster(settings)
+    if not agents:
+        return False
+    tried = await _tried(conn, plan, index)
+    for a in agents:
+        if a.agent_id in tried:
+            continue
+        post = await posterior(conn, a.agent_id, plan.category, settings)
+        if routable(post, task.draft.budget_usdc_units, task.explore, settings):
+            return False
+    return True
+
+
 async def candidates(
     conn: AsyncConnection[TupleRow], plan: StoredPlan, index: int, settings: Settings
 ) -> tuple[list[Arm], dict[str, str]]:
@@ -125,19 +211,17 @@ async def candidates(
     agent to a human-readable reason it was excluded.
 
     Exclusion is checked in priority order, first match wins, so an agent is never double-reported:
-    already dispatched on this index (any attempt, any agent) > its operator in probation > its operator
-    at the concurrency cap.
+    already dispatched on this index (any attempt, any agent) > over budget for this task (`over_budget`)
+    > its operator in probation > its operator at the concurrency cap. The two structural reasons come
+    first, so a transient reason on an agent always means it would be drawable once that reason clears.
     """
     agents = roster(settings)
     if not agents:
         return [], {}
     agent_ids = [a.agent_id for a in agents]
+    budget_micros = _task(plan, index).draft.budget_usdc_units
 
-    cur = await conn.execute(
-        'SELECT DISTINCT agent_id FROM task_dispatches WHERE plan_uuid = %s AND "index" = %s',
-        (plan.plan_uuid, index),
-    )
-    already_tried = {row[0] for row in await cur.fetchall()}
+    already_tried = await _tried(conn, plan, index)
 
     cur = await conn.execute(
         _UNRESOLVED_BY_AGENT, {"agent_ids": agent_ids, "deadline_s": DISPATCH_DEADLINE_S}
@@ -157,13 +241,17 @@ async def candidates(
     ineligible: dict[str, str] = {}
     for a in agents:
         if a.agent_id in already_tried:
-            ineligible[a.agent_id] = "already tried on this task"
+            ineligible[a.agent_id] = ALREADY_TRIED
+            continue
+        post = await posterior(conn, a.agent_id, plan.category, settings)
+        if over_budget(post, budget_micros, settings):
+            ineligible[a.agent_id] = OVER_BUDGET
         elif probation_by_operator[a.operator]:
-            ineligible[a.agent_id] = "operator in probation"
+            ineligible[a.agent_id] = IN_PROBATION
         elif unresolved_by_operator.get(a.operator, 0) >= settings.router_operator_concurrency_cap:
-            ineligible[a.agent_id] = "operator at concurrency cap"
+            ineligible[a.agent_id] = AT_CAP
         else:
-            arms.append(Arm(a.agent_id, await posterior(conn, a.agent_id, plan.category, settings)))
+            arms.append(Arm(a.agent_id, post))
     return arms, ineligible
 
 
@@ -219,12 +307,23 @@ class PendingDraw:
     ineligible: dict[str, str]
     arms: list[Arm]
     original_chosen: str | None
+    tolerance: float
+    """`settings.router_budget_tolerance` as `draw()` was actually called with it, stored by `record_draw`
+    so a replay does not depend on the setting never changing (final review m6)."""
 
 
 async def route(
     conn: AsyncConnection[TupleRow], plan: StoredPlan, index: int, attempt: int, settings: Settings
 ) -> PendingDraw | None:
     """Draw an agent for `(plan.plan_uuid, index)`, or `None` when nothing is eligible or feasible.
+
+    **Two reasons for `None` (final review C1).** Transient: every agent that could fit the budget is
+    momentarily excluded (its operator in probation or at the concurrency cap), or an `explore=True` draw
+    simply sampled nothing feasible this time -- the capacity sweep retries it. Structural: no untried
+    agent can fit the budget under this task's mode at all (`budget_infeasible`), so no later retry will
+    ever do better. `None` itself does not say which; callers that need to know ask `budget_infeasible`,
+    which classifies from the same rules this function applies (`candidates`' `over_budget` exclusion and
+    `draw`'s mean-cost `greedy`), so the two can never disagree about an index.
 
     **Locking contract (fix round 1, Finding 2).** This takes
     `pg_advisory_xact_lock(hashtext('mergit.routing'))` as its very first statement, the same pattern
@@ -279,7 +378,8 @@ async def route(
     seed_value = secrets.randbits(63)
     seed = str(seed_value)
     rng = random.Random(seed_value)  # noqa: S311 -- Thompson sampling, not a cryptographic use
-    result = draw(arms, budget_usdc_units, mode, settings.router_budget_tolerance, rng)
+    tolerance = settings.router_budget_tolerance
+    result = draw(arms, budget_usdc_units, mode, tolerance, rng)
     if result.chosen is None:
         return None
 
@@ -311,6 +411,7 @@ async def route(
         ineligible=ineligible,
         arms=arms,
         original_chosen=original_chosen,
+        tolerance=tolerance,
     )
 
 
@@ -321,9 +422,11 @@ async def record_draw(conn: AsyncConnection[TupleRow], task_id: str, pending: Pe
 
     `samples` stores, per arm, both the sampled values (`theta`/`cost_micros`/`density`/`feasible`) and the
     posterior parameters (`alpha`/`beta`/`kappa`/`tau`) they were sampled from, plus `original_chosen` (the
-    pre-redirect exploratory pick, `None` when no redirect happened) -- enough, together with the stored
-    `seed`, for `router.draw()` to replay this exact draw from the row alone, independent of whatever
-    `reputation_posteriors` has since moved on to (fix round 1, Finding 3).
+    pre-redirect exploratory pick, `None` when no redirect happened) and `budget_tolerance` (the
+    `router_budget_tolerance` the draw's feasibility filter used; final review m6) -- enough, together with
+    the stored `seed`, `budget_micros` and mode, for `router.draw()` to replay this exact draw from the row
+    alone, independent of whatever `reputation_posteriors` or the settings have since moved on to (fix
+    round 1, Finding 3).
     """
     if pending.draw.chosen is None:
         raise ValueError("record_draw called with a PendingDraw whose chosen agent is None")
@@ -340,6 +443,7 @@ async def record_draw(conn: AsyncConnection[TupleRow], task_id: str, pending: Pe
             for s in pending.draw.samples
         ],
         "original_chosen": pending.original_chosen,
+        "budget_tolerance": pending.tolerance,
     }
     await conn.execute(
         "INSERT INTO routing_draws (task_id, seed, explore, retry_tolerant, budget_micros, samples,"
