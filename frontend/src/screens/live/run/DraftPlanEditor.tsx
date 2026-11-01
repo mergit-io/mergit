@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
+import { useCandidates } from "../../../api/useCandidates";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
 import { formatUsdc } from "../../../chain/funding";
@@ -45,6 +46,7 @@ export function DraftPlanEditor({
   // A free-trial account has no wallet: its plans can only be paid from credits, and the API refuses anything else.
   const trial = isTrialSession(account, session?.address);
   const [forms, setForms] = useState<TaskForm[]>(() => toForms(plan));
+  const { byIndex: candidates, error: candidatesError } = useCandidates(plan.plan_uuid);
   const [chosen, setFunding] = useState<FundingOption>("Wallet");
   const funding: FundingOption = trial ? "Free credits" : chosen;
   const { busy, problems, setProblems, submit } = useSubmit();
@@ -84,7 +86,14 @@ export function DraftPlanEditor({
     <section className="lr-draft">
       <div className="col g16 min0">
         {forms.map((form) => (
-          <TaskDraftCard key={form.index} form={form} agents={agents ?? []} onChange={update} />
+          <TaskDraftCard
+            key={form.index}
+            form={form}
+            agents={agents ?? []}
+            candidates={candidates?.get(form.index)?.candidates}
+            candidatesError={form.routing === "auto" ? candidatesError : undefined}
+            onChange={update}
+          />
         ))}
       </div>
       <aside className="card pad24 col g16 lr-approve" aria-label="Approve the plan">

@@ -3,6 +3,7 @@ import { paths } from "../../../app/paths";
 import { agentName } from "../../../api/useAgents";
 import type { AgentInfo, Attempt, MoneyEvent, PlanTask, StepEvent } from "../../../api/types";
 import { formatUsdc } from "../../../chain/funding";
+import { Badge } from "../../../components/Badge";
 import { OutcomeBadge, ProgressBadge, VerdictBadge } from "./badges";
 import { phiCommand } from "./format";
 import { attemptOutcome, attemptsOf, taskProgress, verdictFor, type TaskProgress, type Verdict } from "./progress";
@@ -88,7 +89,10 @@ export function TaskDetail({
                   <span className="strong small">
                     Attempt {a.attempt} · {agentName(agents, a.agent_id)}
                   </span>
-                  <OutcomeBadge outcome={attemptOutcome(a)} />
+                  <div className="row g8">
+                    {a.routing?.exploratory && <Badge status="Neutral" label="Exploratory pick" />}
+                    <OutcomeBadge outcome={attemptOutcome(a)} />
+                  </div>
                 </div>
                 <AttemptMeta
                   steps={stepCount(a.task_id)}

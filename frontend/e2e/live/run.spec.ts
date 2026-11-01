@@ -3,7 +3,17 @@ import { toFunctionSelector } from "viem";
 import { LIVE_ENV } from "../../playwright.config";
 import { seedSession } from "../fixtures";
 import { installWallet, ME, mockBackend } from "./fake";
-import { approvedPlan, attempt, draftPlan, mockPlanApi, PHI, PLAN_ID, taskId, type ApiCall } from "./plans";
+import {
+  approvedPlan,
+  attempt,
+  draftPlan,
+  mockPlanApi,
+  PHI,
+  PLAN_ID,
+  taskCandidates,
+  taskId,
+  type ApiCall,
+} from "./plans";
 
 /** Live run screens (plan task O8): draft, review, approve, fund, and watch a run, against a faked API. */
 
@@ -81,9 +91,40 @@ test("the requester edits a check, picks an agent per task and approves", async 
   expect((patch[0]?.body as { tasks: Array<{ phi: unknown }> }).tasks[0]?.phi).toEqual(edited);
   expect(only(calls, "POST", "/approve")[0]?.body).toEqual({
     agents: { "0": ["2", "1"], "1": ["1"] },
+    routing: {},
     funding: "wallet",
   });
   expect(calls.indexOf(patch[0] as ApiCall)).toBeLessThan(calls.indexOf(only(calls, "POST", "/approve")[0] as ApiCall));
+});
+
+test("lets Mergit route a task, ranks its candidates, and sends auto plus the explore choice", async ({ page }) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, {
+    plans: [draftPlan()],
+    candidates: [taskCandidates(0), taskCandidates(1)],
+  });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  const first = page.getByRole("group", { name: "Task 1" });
+  await first.getByRole("radio", { name: "Let Mergit route" }).click();
+
+  // The ranked candidates show up: the eligible one with its reputation and cost, the other with why not.
+  await expect(first.getByText("coder-a · claude-sonnet-5")).toBeVisible();
+  await expect(first.getByText("72%")).toBeVisible();
+  await expect(first.getByText("$0.15 expected")).toBeVisible();
+  await expect(first.getByText("over budget for this task")).toBeVisible();
+
+  await first.getByRole("switch", { name: "Task 1: explore new agents" }).click();
+  await page.getByRole("group", { name: "Task 2" }).getByLabel("Task 2: runs it").selectOption("1");
+
+  await page.getByRole("button", { name: "Approve plan" }).click();
+  await expect(page.getByRole("heading", { name: "Fund 1.50 USDC" })).toBeVisible();
+
+  expect(only(calls, "POST", "/approve")[0]?.body).toEqual({
+    agents: { "0": "auto", "1": ["1"] },
+    routing: { "0": { explore: false, retry_tolerant: true } },
+    funding: "wallet",
+  });
 });
 
 test("approving without an agent for every task says which task needs one", async ({ page }) => {
@@ -190,6 +231,19 @@ test("the run view streams steps live and shows the verdict and the receipt", as
   const second = page.getByRole("complementary", { name: "Task 2 details" });
   await expect(second).toContainText("2 steps seen live");
   await expect(second.getByRole("link", { name: "Receipt" })).toHaveAttribute("href", `/app/proofs/${taskId(1, 1)}`);
+});
+
+test("an auto-routed exploratory draw is labelled, not shown as if it were the greedy pick", async ({ page }) => {
+  await mockBackend(page);
+  const plan = approvedPlan({
+    state: "running",
+    attempts: [attempt(0, 1, { agent_id: "1", routing: { exploratory: true, seed: "0xabc", greedy_agent: "2" } })],
+  });
+  await mockPlanApi(page, { plans: [plan] });
+  await page.goto(`/app/runs/${plan.plan_uuid}`);
+
+  const panel = page.getByRole("complementary", { name: "Task 1 details" });
+  await expect(panel.getByText("Exploratory pick")).toBeVisible();
 });
 
 test("a failed check is retried by the next agent the requester picked", async ({ page }) => {

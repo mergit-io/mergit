@@ -22,6 +22,12 @@ export type PlanTask = {
   depends_on: number[];
   /** The requester's picks: the first runs, the rest are retries in order. Null on a draft. */
   agents: string[] | null;
+  /** "pick": the requester's `agents` runs it. "auto": the control plane routes it by reputation. */
+  routing: "pick" | "auto";
+  /** For an "auto" task: whether the router may explore an under-observed agent instead of the greedy pick. */
+  explore: boolean;
+  /** For an "auto" task: whether a retriable failure still counts as a usable (if poor) outcome. */
+  retry_tolerant: boolean;
 };
 
 export type Plan = {
@@ -55,6 +61,8 @@ export type Attempt = {
   receipt_root: Hex | null;
   notes: string | null;
   finished_at: string | null;
+  /** Null for a "pick"-routed task, or an "auto" task whose draw hasn't landed yet. */
+  routing: { exploratory: boolean; seed: string; greedy_agent: string | null } | null;
 };
 
 /** A gateway event about this plan's money or verdicts, as the gateway sent it. */
@@ -67,7 +75,49 @@ export type PlanSummary = Pick<
   "plan_uuid" | "plan_id" | "state" | "goal" | "category" | "budget_usdc_units" | "created_at"
 >;
 
-export type AgentInfo = { agent_id: string; name: string; model: string };
+/** An agent's recorded performance in one category: the posterior mean and how many observations back it. */
+export type AgentReputation = {
+  category: string;
+  theta_mean: number;
+  cost_mean_micros: number;
+  density: number;
+  outcomes: number;
+  costs: number;
+};
+
+export type AgentInfo = {
+  agent_id: string;
+  name: string;
+  model: string;
+  provider: string;
+  reputation: AgentReputation[];
+};
+
+/** One agent's eligibility and reputation for one task, as the router ranks it. */
+export type Candidate = {
+  agent_id: string;
+  name: string;
+  model: string;
+  provider: string;
+  operator: string;
+  theta_mean: number;
+  cost_mean_micros: number;
+  density: number;
+  outcomes: number;
+  costs: number;
+  eligible: boolean;
+  reason: string | null;
+};
+
+export type TaskCandidates = {
+  index: number;
+  routing: "pick" | "auto";
+  explore: boolean;
+  retry_tolerant: boolean;
+  candidates: Candidate[];
+};
+
+export type CandidatesResponse = { tasks: TaskCandidates[] };
 
 export type StepCost = {
   model: string | null;
@@ -92,8 +142,10 @@ export type NewPlanRequest = {
 export type TaskEdit = Pick<PlanTask, "title" | "instructions" | "phi" | "budget_usdc_units" | "depends_on">;
 
 export type ApproveRequest = {
-  /** Per task index, as a string key: the agent ids the requester allows, in order. */
-  agents: Record<string, string[]>;
+  /** Per task index, as a string key: the agent ids the requester allows, in order, or "auto" to route it. */
+  agents: Record<string, string[] | "auto">;
+  /** Only meaningful for an index marked "auto" in `agents`; omit or leave empty otherwise. */
+  routing?: Record<string, { explore: boolean; retry_tolerant: boolean }>;
   funding: Funding;
 };
 

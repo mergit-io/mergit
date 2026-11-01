@@ -21,6 +21,9 @@ export type FakeTask = {
   budget_usdc_units: string;
   depends_on: number[];
   agents: string[] | null;
+  routing: "pick" | "auto";
+  explore: boolean;
+  retry_tolerant: boolean;
 };
 
 export type FakeAttempt = {
@@ -33,6 +36,7 @@ export type FakeAttempt = {
   receipt_root: Hex | null;
   notes: string | null;
   finished_at: string | null;
+  routing: { exploratory: boolean; seed: string; greedy_agent: string | null } | null;
 };
 
 export type FakePlan = {
@@ -58,8 +62,22 @@ export type FakePlan = {
 export type FakeEvent = { event: string; data: unknown };
 
 export const AGENTS = [
-  { agent_id: "1", name: "coder-a", model: "claude-sonnet-5" },
-  { agent_id: "2", name: "coder-b", model: "claude-opus-5-5" },
+  {
+    agent_id: "1",
+    name: "coder-a",
+    model: "claude-sonnet-5",
+    provider: "openrouter",
+    reputation: [
+      { category: "test-repair", theta_mean: 0.72, cost_mean_micros: 150_000, density: 4.8e-6, outcomes: 12, costs: 12 },
+    ],
+  },
+  {
+    agent_id: "2",
+    name: "coder-b",
+    model: "claude-opus-5-5",
+    provider: "openrouter",
+    reputation: [],
+  },
 ];
 
 export const PHI = {
@@ -102,6 +120,9 @@ export function draftPlan(over: Partial<FakePlan> = {}): FakePlan {
         budget_usdc_units: "500000",
         depends_on: [],
         agents: null,
+        routing: "pick",
+        explore: true,
+        retry_tolerant: true,
       },
       {
         index: 1,
@@ -112,6 +133,9 @@ export function draftPlan(over: Partial<FakePlan> = {}): FakePlan {
         budget_usdc_units: "1000000",
         depends_on: [0],
         agents: null,
+        routing: "pick",
+        explore: true,
+        retry_tolerant: true,
       },
     ],
     attempts: [],
@@ -144,7 +168,70 @@ export function attempt(index: number, n: number, over: Partial<FakeAttempt> = {
     receipt_root: null,
     notes: null,
     finished_at: null,
+    routing: null,
     ...over,
+  };
+}
+
+export type FakeCandidate = {
+  agent_id: string;
+  name: string;
+  model: string;
+  provider: string;
+  operator: string;
+  theta_mean: number;
+  cost_mean_micros: number;
+  density: number;
+  outcomes: number;
+  costs: number;
+  eligible: boolean;
+  reason: string | null;
+};
+
+/** What `GET /v0/plans/{uuid}/candidates` answers for one "auto"-routable task, ranked eligible-first. */
+export function taskCandidates(index: number, over: Partial<FakeCandidate>[] = []): {
+  index: number;
+  routing: "pick" | "auto";
+  explore: boolean;
+  retry_tolerant: boolean;
+  candidates: FakeCandidate[];
+} {
+  const base: FakeCandidate[] = [
+    {
+      agent_id: "1",
+      name: "coder-a",
+      model: "claude-sonnet-5",
+      provider: "openrouter",
+      operator: `0x${"1".repeat(40)}`,
+      theta_mean: 0.72,
+      cost_mean_micros: 150_000,
+      density: 4.8e-6,
+      outcomes: 12,
+      costs: 12,
+      eligible: true,
+      reason: null,
+    },
+    {
+      agent_id: "2",
+      name: "coder-b",
+      model: "claude-opus-5-5",
+      provider: "openrouter",
+      operator: `0x${"2".repeat(40)}`,
+      theta_mean: 0.5,
+      cost_mean_micros: 300_000,
+      density: 0,
+      outcomes: 0,
+      costs: 0,
+      eligible: false,
+      reason: "over budget for this task",
+    },
+  ];
+  return {
+    index,
+    routing: "auto",
+    explore: true,
+    retry_tolerant: true,
+    candidates: over.length > 0 ? over.map((o, i) => ({ ...base[i], ...o }) as FakeCandidate) : base,
   };
 }
 
@@ -166,6 +253,8 @@ export async function mockPlanApi(
     events?: FakeEvent[];
     /** The pull-request step. `after` is what the worker reports on each poll once the request is queued. */
     pr?: { after: Array<"running" | "done" | "error"> };
+    /** What `GET /candidates` answers for every plan; defaults to one ranked list per task. */
+    candidates?: ReturnType<typeof taskCandidates>[];
   } = {},
 ) {
   let prState: "none" | "queued" | "running" | "done" | "error" = "none";
@@ -204,6 +293,9 @@ export async function mockPlanApi(
     const plan = plans.get(uuid);
     if (!plan) return json(route, { detail: "no such plan" }, 404);
 
+    if (method === "GET" && action === "candidates") {
+      return json(route, { tasks: opts.candidates ?? plan.tasks.map((t) => taskCandidates(t.index)) });
+    }
     if (action === "events") {
       return route.fulfill({
         status: 200,
@@ -213,18 +305,41 @@ export async function mockPlanApi(
     }
     if (method === "GET" && !action) return json(route, plan);
     if (method === "PATCH" && !action) {
-      const { tasks } = body as { tasks: Array<Omit<FakeTask, "index" | "phi_hash" | "agents">> };
-      plan.tasks = tasks.map((t, index) => ({ ...t, index, phi_hash: null, agents: null }));
+      // The edit body only carries what TaskEdit sends; routing stays whatever it already was.
+      const { tasks } = body as {
+        tasks: Array<Pick<FakeTask, "title" | "instructions" | "phi" | "budget_usdc_units" | "depends_on">>;
+      };
+      plan.tasks = tasks.map((t, index) => ({
+        ...t,
+        index,
+        phi_hash: null,
+        agents: null,
+        routing: plan.tasks[index]?.routing ?? "pick",
+        explore: plan.tasks[index]?.explore ?? true,
+        retry_tolerant: plan.tasks[index]?.retry_tolerant ?? true,
+      }));
       return json(route, plan);
     }
     if (method === "POST" && action === "approve") {
-      const { agents, funding } = body as { agents: Record<string, string[]>; funding: "wallet" | "credits" };
+      const { agents, routing, funding } = body as {
+        agents: Record<string, string[] | "auto">;
+        routing?: Record<string, { explore: boolean; retry_tolerant: boolean }>;
+        funding: "wallet" | "credits";
+      };
       const total = plan.tasks.reduce((sum, t) => sum + BigInt(t.budget_usdc_units), 0n).toString();
-      plan.tasks = plan.tasks.map((t) => ({
-        ...t,
-        agents: agents[String(t.index)] ?? null,
-        phi_hash: `0x${"cc".repeat(32)}`,
-      }));
+      plan.tasks = plan.tasks.map((t) => {
+        const pick = agents[String(t.index)] ?? null;
+        const auto = pick === "auto";
+        const routed = routing?.[String(t.index)];
+        return {
+          ...t,
+          agents: auto ? null : pick,
+          routing: auto ? "auto" : "pick",
+          explore: routed?.explore ?? t.explore,
+          retry_tolerant: routed?.retry_tolerant ?? t.retry_tolerant,
+          phi_hash: `0x${"cc".repeat(32)}`,
+        };
+      });
       Object.assign(plan, { state: "approved", funding, total_budget_usdc_units: total });
       return json(route, { plan_id: plan.plan_id, total_budget_usdc_units: total });
     }

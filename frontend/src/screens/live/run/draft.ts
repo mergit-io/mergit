@@ -15,6 +15,12 @@ export type TaskForm = {
   budget: string;
   dependsOn: number[];
   agents: string[];
+  /** "pick": `agents` runs it, chosen by the requester. "auto": the control plane routes it. */
+  routing: "pick" | "auto";
+  /** For "auto": whether the router may explore an under-observed agent instead of the greedy pick. */
+  explore: boolean;
+  /** For "auto": whether a retriable failure still counts as a usable outcome. No UI toggle yet; stays true. */
+  retryTolerant: boolean;
 };
 
 export function toForms(plan: Plan): TaskForm[] {
@@ -26,6 +32,9 @@ export function toForms(plan: Plan): TaskForm[] {
     budget: usdcText(BigInt(t.budget_usdc_units)),
     dependsOn: t.depends_on,
     agents: t.agents ?? [],
+    routing: t.routing,
+    explore: t.explore,
+    retryTolerant: t.retry_tolerant,
   }));
 }
 
@@ -54,9 +63,11 @@ export function editProblems(forms: TaskForm[]): string[] {
 
 /** What would stop the approval on top of that: every task needs an agent, none picked twice, and no
  * more than MAX_PICKS, so a form the editor itself can't produce isn't only caught server-side after
- * the requester has already clicked Approve. */
+ * the requester has already clicked Approve. None of this applies to a task routed "auto": the control
+ * plane picks its agents, not the requester. */
 export function pickProblems(forms: TaskForm[]): string[] {
   return forms.flatMap((f) => {
+    if (f.routing === "auto") return [];
     if (f.agents.length === 0) return [`${taskLabel(f)}: pick an agent to run it.`];
     if (f.agents.length > MAX_PICKS) return [`${taskLabel(f)}: pick at most ${String(MAX_PICKS)} agents.`];
     return new Set(f.agents).size === f.agents.length ? [] : [`${taskLabel(f)}: an agent is picked twice.`];
@@ -88,7 +99,18 @@ export function hasEdits(plan: Plan, forms: TaskForm[]): boolean {
 }
 
 export function toApproval(forms: TaskForm[], funding: Funding): ApproveRequest {
-  return { agents: Object.fromEntries(forms.map((f) => [String(f.index), f.agents])), funding };
+  const agents: Record<string, string[] | "auto"> = {};
+  const routing: Record<string, { explore: boolean; retry_tolerant: boolean }> = {};
+  for (const f of forms) {
+    const key = String(f.index);
+    if (f.routing === "auto") {
+      agents[key] = "auto";
+      routing[key] = { explore: f.explore, retry_tolerant: f.retryTolerant };
+    } else {
+      agents[key] = f.agents;
+    }
+  }
+  return { agents, routing, funding };
 }
 
 export function totalBudget(forms: TaskForm[]): bigint {

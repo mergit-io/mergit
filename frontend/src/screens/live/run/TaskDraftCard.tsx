@@ -1,5 +1,5 @@
-import type { AgentInfo } from "../../../api/types";
-import { AgentPicks } from "./AgentPicks";
+import type { AgentInfo, Candidate } from "../../../api/types";
+import { AgentPicks, type RoutingChoice } from "./AgentPicks";
 import type { TaskForm } from "./draft";
 import { TextAreaField, TextField } from "./fields";
 
@@ -7,10 +7,15 @@ import { TextAreaField, TextField } from "./fields";
 export function TaskDraftCard({
   form,
   agents,
+  candidates,
+  candidatesError,
   onChange,
 }: {
   form: TaskForm;
   agents: AgentInfo[];
+  /** This task's ranked candidates, once `/candidates` has answered. Undefined while it's still loading. */
+  candidates: Candidate[] | undefined;
+  candidatesError?: string;
   onChange: (form: TaskForm) => void;
 }) {
   const name = `Task ${String(form.index + 1)}`;
@@ -38,7 +43,18 @@ export function TaskDraftCard({
       </span>
       <div className="lr-task-foot">
         <TextField label="Budget (USDC)" value={form.budget} onChange={set("budget")} inputMode="decimal" />
-        <AgentPicks task={name} agents={agents} picks={form.agents} onChange={set("agents")} />
+        <AgentPicks
+          task={name}
+          agents={agents}
+          picks={form.agents}
+          onPicksChange={set("agents")}
+          routing={{ routing: form.routing, explore: form.explore, retryTolerant: form.retryTolerant }}
+          onRoutingChange={(r: RoutingChoice) => {
+            onChange({ ...form, routing: r.routing, explore: r.explore, retryTolerant: r.retryTolerant });
+          }}
+          candidates={candidates}
+          candidatesError={candidatesError}
+        />
       </div>
     </fieldset>
   );

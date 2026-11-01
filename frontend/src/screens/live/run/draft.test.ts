@@ -28,6 +28,9 @@ const plan: Plan = {
       budget_usdc_units: "333333",
       depends_on: [],
       agents: null,
+      routing: "pick",
+      explore: true,
+      retry_tolerant: true,
     },
     {
       index: 1,
@@ -38,6 +41,9 @@ const plan: Plan = {
       budget_usdc_units: "1000000",
       depends_on: [0],
       agents: null,
+      routing: "pick",
+      explore: true,
+      retry_tolerant: true,
     },
   ],
 };
@@ -81,7 +87,44 @@ describe("draft forms", () => {
   it("builds the approval with every index as a string key, picks in order", () => {
     const forms = toForms(plan).map((f) => ({ ...f, agents: f.index === 0 ? ["2", "1"] : ["1"] }));
     expect([...editProblems(forms), ...pickProblems(forms)]).toEqual([]);
-    expect(toApproval(forms, "credits")).toEqual({ agents: { "0": ["2", "1"], "1": ["1"] }, funding: "credits" });
+    expect(toApproval(forms, "credits")).toEqual({
+      agents: { "0": ["2", "1"], "1": ["1"] },
+      routing: {},
+      funding: "credits",
+    });
     expect(totalBudget(forms)).toBe(1_333_333n);
+  });
+
+  it("routes a task automatically instead of sending a pick list", () => {
+    const forms = toForms(plan).map((f) =>
+      f.index === 0 ? { ...f, routing: "auto" as const } : { ...f, agents: ["1"] },
+    );
+    expect(pickProblems(forms)).toEqual([]);
+    expect(toApproval(forms, "wallet")).toEqual({
+      agents: { "0": "auto", "1": ["1"] },
+      routing: { "0": { explore: true, retry_tolerant: true } },
+      funding: "wallet",
+    });
+  });
+
+  it("sends the requester's explore choice for an auto-routed task", () => {
+    const forms = toForms(plan).map((f) =>
+      f.index === 0 ? { ...f, routing: "auto" as const, explore: false } : { ...f, agents: ["1"] },
+    );
+    expect(toApproval(forms, "wallet").routing).toEqual({ "0": { explore: false, retry_tolerant: true } });
+  });
+
+  it("never sends a pick-routed task's own index in `routing`", () => {
+    const forms = toForms(plan).map((f) =>
+      f.index === 0 ? { ...f, routing: "auto" as const } : { ...f, routing: "pick" as const, agents: ["1"] },
+    );
+    const approval = toApproval(forms, "wallet");
+    expect(Object.keys(approval.routing ?? {})).toEqual(["0"]);
+    expect(approval.routing?.["1"]).toBeUndefined();
+  });
+
+  it("an auto-routed task is exempt from the agent-picking checks", () => {
+    const forms = toForms(plan).map((f) => ({ ...f, routing: "auto" as const, agents: [] }));
+    expect(pickProblems(forms)).toEqual([]);
   });
 });

@@ -5,6 +5,7 @@ import type {
   AgentInfo,
   ApproveRequest,
   ApproveResponse,
+  CandidatesResponse,
   NewPlanRequest,
   Plan,
   PlanDetail,
@@ -101,6 +102,10 @@ export const listPlans = () => request<PlanSummary[]>("GET", "/v0/plans");
 export const getPlan = (planUuid: string) => request<PlanDetail>("GET", planPath(planUuid));
 
 export const listAgents = () => request<AgentInfo[]>("GET", "/v0/agents");
+
+/** Ranked, eligibility-checked agents per task, for the "Let Mergit route" picker. */
+export const getCandidates = (planUuid: string) =>
+  request<CandidatesResponse>("GET", `${planPath(planUuid)}/candidates`);
 
 /** Server-Sent Events for one plan. Open with `withCredentials: true`, or the session cookie is not sent. */
 export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid)}/events`;

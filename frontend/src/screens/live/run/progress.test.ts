@@ -11,6 +11,9 @@ const task = (agents: string[] | null = ["1", "2"]): PlanTask => ({
   budget_usdc_units: "500000",
   depends_on: [],
   agents,
+  routing: "pick",
+  explore: true,
+  retry_tolerant: true,
 });
 
 const attempt = (n: number, over: Partial<Attempt> = {}): Attempt => ({
@@ -23,6 +26,7 @@ const attempt = (n: number, over: Partial<Attempt> = {}): Attempt => ({
   receipt_root: null,
   notes: null,
   finished_at: null,
+  routing: null,
   ...over,
 });
 

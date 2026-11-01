@@ -12,6 +12,7 @@ const attempt: Attempt = {
   receipt_root: null,
   notes: null,
   finished_at: null,
+  routing: null,
 };
 
 const detail: PlanDetail = {
