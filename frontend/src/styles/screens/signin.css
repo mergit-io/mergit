@@ -20,7 +20,7 @@
   font-weight: 600;
   letter-spacing: -0.035em;
 }
-/* The picture has a white background, so it sits on a white card in both themes. 494px is its native width. */
+/* The picture has a white background, so it sits on a white card in both themes. Its viewBox is 560 wide. */
 .si-art {
   display: block;
   overflow: visible;
@@ -140,14 +140,14 @@
 .si-art-mono {
   font-family: "DM Mono", monospace;
   font-size: 9.5px;
-  fill: #6b7385;
+  fill: #4b5263;
 }
 .si-art-pill,
 .si-art-label {
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.08em;
-  fill: #6b7385;
+  fill: #4b5263;
 }
 .si-art-ok {
   font-size: 10.5px;
@@ -182,23 +182,10 @@
 }
 .si-art-topcoin {
   animation-name: si-hold;
-  animation-delay: 10.9s;
+  animation-delay: -1.1s; /* in step from the first loop: visible 0 to 2.4 s, then again from 10.9 s */
 }
 .si-art-bob {
   animation: si-bob 4s ease-in-out infinite;
-}
-.si-art-fly {
-  opacity: 0;
-  offset-rotate: 0deg;
-  animation: si-fly 12s ease-in-out infinite;
-}
-.si-art-in {
-  offset-path: path("M150 176C200 10 380 10 474 106");
-  animation-delay: 0.4s;
-}
-.si-art-out {
-  offset-path: path("M474 150C440 230 390 290 356 312");
-  animation-delay: 10s;
 }
 @keyframes si-flow {
   to {
@@ -249,19 +236,10 @@
     transform: translateY(-8px);
   }
 }
-@keyframes si-fly {
-  0% {
-    opacity: 1;
-    offset-distance: 0%;
-  }
-  18% {
-    opacity: 1;
-    offset-distance: 100%;
-  }
-  19%,
-  100% {
-    opacity: 0;
-    offset-distance: 100%;
+/* Below this width the text would scale under about 7px: show the picture without its labels. */
+@media (max-width: 520px) {
+  .si-art text {
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
+import { prefersReducedMotion } from "../lib/motion";
 
 /**
  * The sign-in illustration: one 12 s story on a loop. The person taps their phone, a coin goes into escrow on
@@ -51,42 +52,68 @@ const AGENTS: { x: number; y: number; color: string; wash: string; label: string
     },
   ];
 
-/** The Ethereum logo: five facets in the logo's own greys, drawn in its 256 x 417 box and centred on 0,0. */
-function Eth({ height }: { height: number }) {
+/** The USDC mark: a white ring and a dollar sign, drawn as paths so the labels' text rule (hidden on phones) never removes it. */
+function Usdc({ r }: { r: number }) {
   return (
-    <g transform={`scale(${String(height / 417)}) translate(-128 -208.5)`}>
-      <path d="M127.961 0l-2.795 9.5v275.668l2.795 2.79 127.962-75.638z" fill="#343434" />
-      <path d="M127.962 0L0 212.32l127.962 75.639V154.158z" fill="#8C8C8C" />
-      <path d="M127.961 312.187l-1.575 1.92v98.199l1.575 4.601L256 236.587z" fill="#3C3C3B" />
-      <path d="M127.962 416.905v-104.72L0 236.585z" fill="#8C8C8C" />
-      <path d="M127.961 287.958l127.96-75.637-127.96-58.162z" fill="#141414" />
-      <path d="M0 212.32l127.96 75.638v-133.8z" fill="#393939" />
+    <g transform={`scale(${String(r / 24)})`} fill="none" stroke="#fff" strokeLinecap="round" strokeLinejoin="round">
+      <circle r="17" strokeWidth="1.6" opacity="0.9" />
+      <path d="M-5.5 -6C-5.5 -11 5.5 -11 5.5 -5C5.5 0 -5.5 -1 -5.5 5C-5.5 11 5.5 11 5.5 6" strokeWidth="2.6" />
+      <path d="M0 -13V13" strokeWidth="2.2" />
     </g>
   );
 }
 
-function Coin({ r }: { r: number }) {
+function Coin({ r, coinFill }: { r: number; coinFill: string }) {
   return (
     <>
-      <circle r={r} fill="url(#si-gold)" />
-      <circle r={r - 3.5} fill="none" stroke="#e59a00" strokeWidth="1.4" opacity="0.8" />
-      <Eth height={r * 1.15} />
+      <circle r={r} fill={`url(#${coinFill})`} />
+      <circle r={r - 3.5} fill="none" stroke="#fff" strokeWidth="0" opacity="0" />
+      <Usdc r={r} />
     </>
   );
 }
 
+/** One coin on a path: visible for the first 18% of the 12 s loop from `begin`, hidden the rest. */
+function FlyingCoin({ coinFill, path, begin }: { coinFill: string; path: string; begin: string }) {
+  return (
+    <g opacity="0">
+      <Coin r={12} coinFill={coinFill} />
+      <animateMotion
+        path={path}
+        dur="12s"
+        begin={begin}
+        repeatCount="indefinite"
+        keyPoints="0;1;1"
+        keyTimes="0;0.18;1"
+        calcMode="linear"
+      />
+      <animate
+        attributeName="opacity"
+        values="1;1;0;0"
+        keyTimes="0;0.18;0.19;1"
+        dur="12s"
+        begin={begin}
+        repeatCount="indefinite"
+      />
+    </g>
+  );
+}
+
 export function SignInArt() {
+  // Unique per instance, so two of these on a page never share (and collide on) one gradient.
+  const coinFill = `si-coinFill-${useId().replace(/:/g, "")}`;
+  const still = prefersReducedMotion();
   return (
     <svg
       className="si-art"
       viewBox="0 0 560 360"
       role="img"
-      aria-label="A person pays into escrow from a phone, four agents (planner, coder, tester, reviewer) do the work, and a verified receipt appears"
+      aria-label="Illustration: a payment goes into escrow, four agents do the task in turn, and a verified receipt appears"
     >
       <defs>
-        <linearGradient id="si-gold" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#ffd34d" />
-          <stop offset="1" stopColor="#f6a800" />
+        <linearGradient id={coinFill} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#4c9bf0" />
+          <stop offset="1" stopColor="#2775ca" />
         </linearGradient>
       </defs>
 
@@ -105,18 +132,18 @@ export function SignInArt() {
         <rect width="148" height="320" rx="26" fill="#eef3ff" stroke="#2a3ea3" strokeWidth="6" />
         <rect x="48" y="9" width="52" height="9" rx="4.5" fill="#2a3ea3" />
         <g transform="translate(74 82)">
-          <Coin r={34} />
+          <Coin r={34} coinFill={coinFill} />
         </g>
         <g transform="translate(74 140)">
-          <rect x="-34" y="-10" width="68" height="20" rx="10" fill="#fff" stroke="#c9d6f5" />
+          <rect x="-48" y="-11" width="96" height="22" rx="11" fill="#fff" stroke="#c9d6f5" />
           <path
             d="M-18 -2v-2.5a4 4 0 0 1 8 0V-2M-20 -2h12v8h-12z"
             fill="none"
             stroke="#2a3ea3"
             strokeWidth="1.6"
-            transform="translate(4 0)"
+            transform="translate(-16 0)"
           />
-          <text x="2" y="4" className="si-art-pill">
+          <text x="-18" y="4" className="si-art-pill">
             ESCROW
           </text>
         </g>
@@ -133,14 +160,14 @@ export function SignInArt() {
               strokeLinejoin="round"
             />
             <text x="42" y="22" className="si-art-title">
-              PR #134
+              Your task
             </text>
             <text x="42" y="36" className="si-art-mono">
-              fix auth flow
+              plan approved
             </text>
             <rect x="14" y="52" width="92" height="16" rx="8" fill="#eef3ff" />
             <text x="60" y="63.5" className="si-art-mono" textAnchor="middle">
-              0x30af…1c77
+              0x…
             </text>
           </g>
         </g>
@@ -184,29 +211,29 @@ export function SignInArt() {
       <g transform="translate(352 334)">
         {[0, 1, 2, 3].map((i) => (
           <g key={i} transform={`translate(0 ${String(-i * 6)})`}>
-            <ellipse rx="24" ry="7" cy="5" fill="#d58a00" />
-            <ellipse rx="24" ry="7" fill="url(#si-gold)" stroke="#e59a00" strokeWidth="1" />
+            <ellipse rx="24" ry="7" cy="5" fill="#1d5fa8" />
+            <ellipse rx="24" ry="7" fill={`url(#${coinFill})`} stroke="#1d5fa8" strokeWidth="1" />
           </g>
         ))}
         <g transform="translate(0 -24)">
           <g className="si-art-topcoin">
-            <ellipse rx="24" ry="7" fill="url(#si-gold)" stroke="#e59a00" strokeWidth="1" />
+            <ellipse rx="24" ry="7" fill={`url(#${coinFill})`} stroke="#1d5fa8" strokeWidth="1" />
           </g>
         </g>
       </g>
       <g transform="translate(52 40)">
         <g className="si-art-bob">
-          <Coin r={22} />
+          <Coin r={22} coinFill={coinFill} />
         </g>
       </g>
 
-      {/* the transaction: a coin goes in, a coin comes out */}
-      <g className="si-art-fly si-art-in">
-        <Coin r={12} />
-      </g>
-      <g className="si-art-fly si-art-out">
-        <Coin r={12} />
-      </g>
+      {/* the transaction: a coin goes in, a coin comes out. SMIL, not CSS motion paths, which are uneven on SVG. */}
+      {!still && (
+        <>
+          <FlyingCoin coinFill={coinFill} path="M150 176C200 10 380 10 474 106" begin="0.4s" />
+          <FlyingCoin coinFill={coinFill} path="M474 150C440 230 390 290 356 312" begin="10s" />
+        </>
+      )}
     </svg>
   );
 }
