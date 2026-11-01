@@ -112,6 +112,10 @@ services:
       CHAIN_EVENTS_TOKEN: local-chain-events-token
       WORKER_TOKEN: local-worker-progress-token
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY before starting the planner}
+      # Optional: the api service itself doesn't need it to serve normal traffic, only `python -m
+      # mergit_cp.llm_check` does (control-plane/README.md), run by hand inside this container to check
+      # every provider in use, including an agent's openrouter one.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
 
   worker:
     build: { context: .., dockerfile: control-plane/worker.Dockerfile }

@@ -222,6 +222,23 @@ def test_planner_reports_an_outage_as_unavailable_so_the_api_answers_502():
 
 
 @respx.mock
+def test_planner_error_object_in_200_is_llm_unavailable():
+    """Mirrors the worker's `test_error_object_in_200_is_llm_error`: some OpenAI-compatible providers
+    (OpenRouter among them) answer a routing failure with HTTP 200 and an `error` object in the body instead
+    of a non-200 status; that must still surface as `LLMUnavailable`, with the provider's own message and
+    never the key."""
+    respx.post(URL).respond(200, json={"error": {"message": "No endpoints found", "code": 404}})
+    with pytest.raises(cp_llm.LLMUnavailable) as caught:
+        run(
+            cp_llm.OpenAIChatLLM("secret-key-123", base_url=BASE_URL, sleep=lambda _s: None).complete(
+                [{"role": "user", "content": "x"}], None, "m"
+            )
+        )
+    assert "No endpoints found" in str(caught.value)
+    assert "secret-key-123" not in str(caught.value)
+
+
+@respx.mock
 def test_planner_reports_a_truncated_answer_as_an_error_that_still_carries_its_usage():
     respx.post(URL).respond(
         200,
@@ -268,3 +285,14 @@ def test_the_planner_accepts_a_gateway_token_without_warning(caplog: pytest.LogC
     with caplog.at_level("WARNING", logger="mergit_cp.llm"):
         assert isinstance(cp_llm.build_planner_llm(_ANTHROPIC, "anthropic", environ=env), cp_llm.AnthropicLLM)
     assert "no model key" not in caplog.text
+
+
+def test_an_unknown_planner_provider_is_a_clear_config_error_not_a_bare_key_error():
+    """A misspelled `PLANNER_PROVIDER` on a real deployment must fail start-up with a message naming the
+    bad value and the valid choices, not a bare `KeyError`."""
+    from mergit_worker.config import ConfigError
+
+    with pytest.raises(ConfigError) as caught:
+        cp_llm.build_planner_llm(_ANTHROPIC, "antropic", environ={"ANTHROPIC_API_KEY": "a"})
+    assert "antropic" in str(caught.value)
+    assert "anthropic" in str(caught.value)

@@ -84,6 +84,38 @@ deploy/server/update.sh app        # only the frontend: web or app
 Render deployed on every push. The server does not by itself, so `.github/workflows/deploy.yml` runs `update.sh` over SSH
 on every push to `main` (and by hand from the Actions tab, where you can pick `services`, `web` or `app`).
 
+### ⚠️ Upgrading an existing deployment past per-agent providers (`PLANNER_PROVIDER`)
+
+**Do this manually before (or as soon as possible after) the commit that adds `Settings.planner_provider`
+reaches `main`, or the `api` container will restart-loop.** `PLANNER_PROVIDER` has no default, and
+`deploy/make-controlplane-env.sh` refuses to touch `deploy/secrets/api.env` or `worker.env` once they exist
+(`[ -e secrets/api.env ] ... || exit 1`), so a server set up before this change keeps old files that `api`
+can no longer start from. `update.sh` only rebuilds and recreates containers — it does not check that `api`
+actually comes back up — so this can ship as a "successful" deploy that is actually down.
+
+On the server, one time:
+
+```bash
+cd ~/mergit/mergit
+grep -q '^PLANNER_PROVIDER=' deploy/secrets/api.env || echo 'PLANNER_PROVIDER=anthropic' >> deploy/secrets/api.env
+grep -qE '^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)=' deploy/secrets/api.env \
+  || echo 'api.env has no Anthropic credential: add ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL) before recreating api' >&2
+grep -qE '^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)=' deploy/secrets/worker.env \
+  || echo 'worker.env has no Anthropic credential: add it before recreating worker' >&2
+```
+
+`anthropic` is the right value, and an Anthropic credential the right thing to check for, because the hosted
+deployment's only agent, `mergit-coder-0` (`control-plane/agents.toml`), is `provider = "anthropic"` — the
+planner and that agent are the only things this server runs today. If either `grep` above prints a warning,
+add the missing credential to that file by hand before continuing; without one, `api` still starts but every
+planning request answers `502`, or the worker refuses to start, depending on which file was short the key.
+
+Then let the next `update.sh` run (automatic or by hand) pick up the edited files, or force it immediately:
+
+```bash
+deploy/server/update.sh services
+```
+
 ### Automatic deploys: one-time setup
 
 1. On your machine, make a key used for nothing else: `ssh-keygen -t ed25519 -N '' -f deploy_key -C github-deploy`.
@@ -179,15 +211,23 @@ $C build keyrelay
 $C run --rm keyrelay check --config /etc/keyrelay/keyrelay.toml      # valid / dead / limited per key, by index
 TOKEN=$(cat deploy/secrets/keyrelay/proxy-token.txt)
 sed -i "s|^GROQ_API_KEY=.*|GROQ_API_KEY=$TOKEN|" deploy/secrets/api.env deploy/secrets/worker.env
-grep -q '^GROQ_BASE_URL=' deploy/secrets/api.env    || echo 'GROQ_BASE_URL=http://keyrelay:8787/v1' >> deploy/secrets/api.env
-grep -q '^GROQ_BASE_URL=' deploy/secrets/worker.env || echo 'GROQ_BASE_URL=http://keyrelay:8787/v1' >> deploy/secrets/worker.env
-$C up -d --force-recreate keyrelay api worker
+```
+
+A provider's endpoint is no longer an env var read at container start: each provider's `base_url` lives in
+`control-plane/agents.toml`'s `[providers.<name>]` table (control-plane/README.md, "Model provider"), baked into
+the `api` and `worker` images at build time. To route Groq traffic through the rotator, set `[providers.groq]`'s
+`base_url` to `http://keyrelay:8787/v1` in `agents.toml` and commit it — an edit made only on the server would be
+reverted by the next deploy, since `update.sh` mirrors `origin/main` — then rebuild and recreate:
+
+```bash
+$C up -d --force-recreate --build keyrelay api worker
 $C exec keyrelay keyrelay status --config /etc/keyrelay/keyrelay.toml   # which keys are ok / cooling / dead
 $C logs --tail 20 keyrelay                                              # indexes only, never a key
 ```
 
 If keyrelay is down, planning fails with a 502 and the API logs `planner model unavailable: ...`. To go back, restore
-a real `GROQ_API_KEY` in `api.env` and `worker.env`, remove `GROQ_BASE_URL`, and recreate `api` and `worker`.
+a real `GROQ_API_KEY` in `api.env` and `worker.env`, set `[providers.groq]`'s `base_url` in `agents.toml` back to
+Groq's own endpoint (`https://api.groq.com/openai/v1`), commit, and rebuild and recreate `api` and `worker`.
 
 ## Free credits and redeem codes
 

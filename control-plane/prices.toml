@@ -37,7 +37,8 @@ output_per_mtok = 5.00
 cache_read_per_mtok = 0.10
 cache_write_per_mtok = 1.25
 
-# Groq, the fallback provider when there is no Anthropic key (mergit_worker/providers.py). Checked against
+# Groq, one more `[providers.*]` option in agents.toml (mergit_worker/providers.py), not a fallback: each
+# agent and the planner name their own provider explicitly. Checked against
 # https://console.groq.com/docs/models (list prices) and https://console.groq.com/docs/prompt-caching (cached input is
 # "50% less" than normal input, and caching has no extra fee, so cache_write equals input) on 2026-10-30.
 # The llama models Groq lists as "contact sales" have no public price and are deliberately absent: the meter refuses an

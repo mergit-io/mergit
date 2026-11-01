@@ -4,11 +4,13 @@ by a deployed agent in ``agents.toml``.
 
     python -m mergit_cp.llm_check        (run inside the api container, or with the same env)
 
-For each distinct provider, makes two tiny calls (a plain answer, then one that must call a tool, because
-the agents work by tool calls) against one representative model: the planner's own model for the planner's
-provider, the first deployed agent's model found for an agent provider. Prints the provider, the endpoint,
-the model, whether each call worked and its token counts; never a key or a token. Exit status 0 only if
-every provider's checks worked.
+For each distinct (provider, model) pair actually in use, makes two tiny calls (a plain answer, then one
+that must call a tool, because the agents work by tool calls): the planner's own provider and model, plus
+every deployed agent's provider and model. Two agents sharing a provider but naming different models (the
+shipped `claude-worker` and `second-worker`, both `openrouter` but one `anthropic/claude-sonnet-5` and the
+other `deepseek/deepseek-v4-flash`) each get their own check; two agents naming the identical pair are
+checked once, not twice. Prints the provider, the endpoint, the model, whether each call worked and its
+token counts; never a key or a token. Exit status 0 only if every check worked.
 """
 
 import asyncio
@@ -42,33 +44,31 @@ def _endpoint(spec: ProviderSpec) -> str:
     return urlsplit(os.environ.get("ANTHROPIC_BASE_URL", "")).hostname or "api.anthropic.com"
 
 
-def _agent_model_by_provider(agents_file: Path, agents_config: Path) -> dict[str, str]:
-    """The first deployed agent's model found for each provider it names, read the same way
+def _agent_pairs_in_use(agents_file: Path, agents_config: Path) -> set[tuple[str, str]]:
+    """Every distinct (provider, model) pair actually used by a deployed agent, read the same way
     `mergit_worker.agents.validate_agents_have_keys` reads the deploy."""
     try:
         registry: list[dict[str, Any]] = json.loads(agents_file.read_text())["agents"]
         models: dict[str, Any] = tomllib.loads(agents_config.read_text())["agents"]
     except (OSError, KeyError, ValueError) as exc:
         raise ConfigError(f"cannot read agent configuration: {exc}") from exc
-    by_provider: dict[str, str] = {}
+    pairs: set[tuple[str, str]] = set()
     for entry in registry:
         cfg: dict[str, Any] | None = models.get(str(entry.get("name")))
         provider = cfg.get("provider") if cfg else None
         model = cfg.get("model") if cfg else None
         if provider and model:  # a missing provider/model here is load_agent_spec's own clear error to raise
-            by_provider.setdefault(str(provider), str(model))
-    return by_provider
+            pairs.add((str(provider), str(model)))
+    return pairs
 
 
-def _providers_in_use(settings: Settings) -> dict[str, str]:
-    """Every provider actually in use, mapped to one representative model: the planner's provider first
-    (so its own model wins if an agent also happens to share it), then each agent provider not already
-    covered."""
-    in_use = {settings.planner_provider: settings.planner_model}
-    agent_models = _agent_model_by_provider(Path(settings.agents_file), Path(settings.agents_config))
-    for name, model in agent_models.items():
-        in_use.setdefault(name, model)
-    return in_use
+def _providers_in_use(settings: Settings) -> set[tuple[str, str]]:
+    """Every distinct (provider, model) pair actually in use: the planner's own, plus every deployed
+    agent's. Two agents sharing a provider but naming different models each keep their own pair; two naming
+    the identical pair collapse to one (it's a `set`)."""
+    pairs = {(settings.planner_provider, settings.planner_model)}
+    pairs |= _agent_pairs_in_use(Path(settings.agents_file), Path(settings.agents_config))
+    return pairs
 
 
 async def _check_one(providers: dict[str, ProviderSpec], name: str, model: str) -> bool:
@@ -111,7 +111,7 @@ async def _check_one(providers: dict[str, ProviderSpec], name: str, model: str) 
 async def check(settings: Settings) -> bool:
     providers = load_providers(Path(settings.agents_config))
     ok = True
-    for name, model in _providers_in_use(settings).items():
+    for name, model in sorted(_providers_in_use(settings)):
         ok = await _check_one(providers, name, model) and ok
     return ok
 

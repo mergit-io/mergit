@@ -96,7 +96,6 @@ class AnthropicLLM:
         )
 
 
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _ATTEMPTS = 3
 

@@ -90,6 +90,16 @@ def test_unknown_kind_is_refused(tmp_path: Path):
         load_providers(config)
 
 
+def test_a_malformed_provider_entry_is_a_clear_config_error_not_a_bare_attribute_error(tmp_path: Path):
+    """`openrouter = "not-a-table"` under `[providers]` is valid TOML but not a provider table; this must
+    raise `ConfigError` naming the malformed provider, not a raw `AttributeError` from calling `.get` on a
+    plain string."""
+    config = tmp_path / "agents.toml"
+    config.write_text('[providers]\nopenrouter = "not-a-table"\n')
+    with pytest.raises(ConfigError, match="openrouter"):
+        load_providers(config)
+
+
 def _agent_files(tmp_path: Path) -> tuple[Path, Path]:
     chain = tmp_path / "agents.json"
     chain.write_text(

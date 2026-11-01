@@ -124,11 +124,12 @@ def test_it_fails_and_says_why_when_the_provider_refuses(
     assert "HTTP 401" in capsys.readouterr().out
 
 
-def test_checks_each_provider_once(
+def test_distinct_models_on_the_same_provider_each_get_checked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    """Two agents on the same provider produce one check line for it, plus one more for the planner's own
-    (different) provider: three agents' worth of configuration, two distinct providers checked."""
+    """Both shipped agents are on `openrouter` but name different models (`claude-sonnet-5` via OpenRouter and
+    `deepseek-v4-flash`): each distinct (provider, model) pair actually in use gets its own check line, not
+    just the first one found for the provider."""
     agents_files = _write_agents(
         tmp_path,
         {
@@ -152,8 +153,44 @@ def test_checks_each_provider_once(
     monkeypatch.setattr(llm_check, "build_planner_llm", fake_build)
 
     assert asyncio.run(llm_check.check(settings)) is True
+    assert sorted(calls) == ["anthropic", "openrouter", "openrouter"]
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("provider=")]
+    assert len(lines) == 3
+    assert any(line.startswith("provider=anthropic") for line in lines)
+    assert any("provider=openrouter" in line and "model=model-a" in line for line in lines)
+    assert any("provider=openrouter" in line and "model=model-b" in line for line in lines)
+
+
+def test_same_provider_and_model_is_checked_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """Two agents on the same provider naming the SAME model produce only one check line: no redundant call
+    for an identical (provider, model) pair."""
+    agents_files = _write_agents(
+        tmp_path,
+        {
+            "anthropic": {"kind": "anthropic"},
+            "openrouter": {
+                "kind": "openai_chat",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            },
+        },
+        [_agent("coder-a", "openrouter", "model-a"), _agent("coder-b", "openrouter", "model-a")],
+    )
+    settings = _settings(agents_files, "anthropic")
+
+    calls: list[str] = []
+
+    def fake_build(providers: Any, name: str, *a: Any, **k: Any) -> Fake:
+        calls.append(name)
+        return Fake()
+
+    monkeypatch.setattr(llm_check, "build_planner_llm", fake_build)
+
+    assert asyncio.run(llm_check.check(settings)) is True
     assert sorted(calls) == ["anthropic", "openrouter"]
     lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("provider=")]
     assert len(lines) == 2
     assert any(line.startswith("provider=anthropic") for line in lines)
-    assert any(line.startswith("provider=openrouter") for line in lines)
+    assert any("provider=openrouter" in line and "model=model-a" in line for line in lines)

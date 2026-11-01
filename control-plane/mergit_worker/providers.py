@@ -14,7 +14,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .config import ConfigError
 
@@ -36,6 +36,9 @@ def load_providers(agents_config: Path) -> dict[str, ProviderSpec]:
     tables: dict[str, Any] = tomllib.loads(agents_config.read_text()).get("providers", {})
     providers: dict[str, ProviderSpec] = {}
     for name, table in tables.items():
+        if not isinstance(table, dict):
+            raise ConfigError(f"provider {name!r} must be a [providers.{name}] table, got {table!r}")
+        table = cast("dict[str, Any]", table)
         kind = table.get("kind")
         if kind not in _KINDS:
             raise ConfigError(f"provider {name!r} has kind {kind!r}, must be one of {', '.join(_KINDS)}")

@@ -188,8 +188,9 @@ instance the worker happened to reach. Fine for one instance (`O10` as currently
 instance would need Postgres `LISTEN`/`NOTIFY` or a shared queue, which is out of scope here.
 
 **Configuration** (`mergit_cp/config.py`). Required: `DATABASE_URL`, `APP_DOMAIN`, `SESSION_SECRET` (32+
-characters), `GATEWAY_URL`, `STORE_URL`, `AGENTS_FILE`, `PLANNER_MODEL`, `EVENTS_TOKEN`, `CHAIN_EVENTS_TOKEN`,
-`WORKER_TOKEN`, plus the model provider key. Defaults: `CHAIN_ID` (84532), `PLANS_PER_HOUR` (10),
+characters), `GATEWAY_URL`, `STORE_URL`, `AGENTS_FILE`, `PLANNER_MODEL`, `PLANNER_PROVIDER`, `EVENTS_TOKEN`,
+`CHAIN_EVENTS_TOKEN`, `WORKER_TOKEN`, plus whichever model key `PLANNER_PROVIDER` needs. Defaults: `CHAIN_ID`
+(84532), `PLANS_PER_HOUR` (10),
 `PLANNER_MAX_TASKS` (8), `MAX_ATTEMPTS` (3), `REPO_HOSTS` (github.com), `CORS_ORIGINS`, `SSE_POLL_S` (1),
 `OUTCOME_POLL_S` (1).
 `WORKER_TOKEN` is this deployment's own choice, like `CHAIN_EVENTS_TOKEN`: spec/events-v0.md does not name a
@@ -261,7 +262,9 @@ depends on it. `NullProgressReporter` (the default) sends nothing, for a worker 
 
 Typed, from the environment (`mergit_worker/config.py`). Required: `DATABASE_URL`, `GATEWAY_URL`, `STORE_URL`,
 `EVENTS_TOKEN`, `STORE_WRITE_TOKEN`, `RECEIPT_REGISTRY`, `AGENTS_FILE`, and `MERGIT_AGENT_KEY_<id>` per agent,
-plus the model provider key (`ANTHROPIC_API_KEY`). Everything else has a default, including `CHAIN_ID`
+plus whichever model key(s) its deployed agents' providers need (`ModelClients.build` only builds a client
+for a provider a *deployed* agent actually names, so e.g. `ANTHROPIC_API_KEY` is not required when every
+deployed agent is `openai_chat`). Everything else has a default, including `CHAIN_ID`
 (84532), `SANDBOX_IMAGE`, `SANDBOX_RUNTIME`, `SANDBOX_MEMORY` (2g), `SANDBOX_NANO_CPUS` (2 CPUs),
 `MAX_STEPS` (60), `MAX_OUTPUT_BYTES` (1 MiB), `COMMAND_TIMEOUT_S`, `JOB_DEADLINE_S`, `MODEL_MAX_TOKENS`
 (16000; Opus 5.5's thinking tokens count against it, so this is also a per-call ceiling the harness clamps

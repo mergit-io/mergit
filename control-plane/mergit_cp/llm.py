@@ -19,6 +19,7 @@ import httpx
 from anthropic import APIError, AsyncAnthropic, omit
 from anthropic.types import Message, MessageParam, ToolParam
 
+from mergit_worker.config import ConfigError
 from mergit_worker.llm import retry_wait
 from mergit_worker.openai_chat import BadReply, parse_reply, to_openai_messages, to_openai_tools
 from mergit_worker.providers import ProviderSpec, provider_key
@@ -168,9 +169,18 @@ class OpenAIChatLLM:
                 continue
             if response.status_code == 200:
                 try:
-                    return cast("dict[str, Any]", response.json())
+                    data = cast("dict[str, Any]", response.json())
                 except ValueError as exc:
                     raise LLMUnavailable("the answer is not JSON") from exc
+                # Some OpenAI-compatible providers (OpenRouter among them) answer a routing failure with
+                # HTTP 200 and an `error` object in the body instead of a non-200 status; mirrors the
+                # worker's own check in `mergit_worker.llm.OpenAIChatLLM._post`.
+                error = data.get("error")
+                if isinstance(error, dict):
+                    raise LLMUnavailable(str(cast("dict[str, Any]", error).get("message")))
+                if error:
+                    raise LLMUnavailable(str(error))
+                return data
             if response.status_code not in _RETRY_STATUSES or attempt == _ATTEMPTS:
                 raise LLMUnavailable(f"HTTP {response.status_code}: {response.text[:200]}")
             await self._wait(retry_wait(response, attempt))
@@ -221,6 +231,9 @@ class _UnavailableLLM:
     """Stands in for a provider with no key configured, so start-up never fails for it: a planning request
     then fails clearly with `LLMUnavailable`, which the API turns into a 502."""
 
+    def __init__(self, name: str) -> None:
+        self._name = name
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -230,7 +243,9 @@ class _UnavailableLLM:
         system: str | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> LLMResult:
-        raise LLMUnavailable("no model key is configured for the planner's provider")
+        # Named generically, not assumed to always be the planner's own: `build_planner_llm` is also called
+        # by `mergit_cp.llm_check` to resolve an agent's provider, not only `Settings.planner_provider`.
+        raise LLMUnavailable(f"no model key is configured for provider {self._name!r}")
 
 
 def build_planner_llm(
@@ -246,14 +261,20 @@ def build_planner_llm(
     work; a planning request then fails with 502. (The worker, which can do nothing without a model, refuses
     to start.)"""
     env = os.environ if environ is None else environ
-    spec = providers[name]
+    try:
+        spec = providers[name]
+    except KeyError:
+        raise ConfigError(
+            f"provider {name!r} has no [providers.{name}] table; valid providers are "
+            f"{', '.join(sorted(providers.keys())) or '(none configured)'}"
+        ) from None
     key = provider_key(spec, env)
     if not key:
         env_var = spec.api_key_env or "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
         log.warning(
             "no model key set for provider %r (%s): planning requests will fail until one is", name, env_var
         )
-        return _UnavailableLLM()
+        return _UnavailableLLM(name)
     if spec.kind == "anthropic":
         # With its own `api_key_env`, this provider's key may not be the SDK's own env-var default (another
         # `[providers.*]` table could be anthropic too, with a different key); pass it explicitly so the
