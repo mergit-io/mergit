@@ -69,6 +69,11 @@ def _sample_arm(arm: Arm, explore: bool, rng: random.Random) -> ArmSample:
     is consistent with one computed directly from the posterior means."""
     if explore:
         theta = rng.betavariate(arm.posterior.alpha, arm.posterior.beta)
+        # `Posterior.__post_init__` requires kappa > 0, but nothing stops 0 < kappa < 1 (unreachable through
+        # base_prior/with_cost/pooled_prior today, all of which only ever grow kappa from 1, but not
+        # structurally prevented by Posterior itself). A sampled rate_tilde of exactly 0 here would make
+        # this division a ZeroDivisionError -- ruled out in practice (gammavariate's support is (0, inf)
+        # for any shape > 0), but flagged rather than silently assumed.
         rate_tilde = rng.gammavariate(arm.posterior.kappa, 1 / arm.posterior.tau)
         cost_micros = 1 / rate_tilde
     else:
@@ -97,11 +102,12 @@ def draw(arms: Sequence[Arm], budget_micros: int, mode: Mode, tolerance: float, 
     of `mode.explore` -- it is the deterministic baseline `exploratory` is measured against, and with
     `explore=False` it is also what gets chosen (`chosen == greedy` always, `exploratory` always False).
 
-    When no arm is feasible, `chosen` is None. `greedy` in that case is still computed, but over *all* arms
-    ignoring feasibility (rather than also None) -- a caller building an eligibility UI (a later task) wants
-    to know which agent *would* be picked on posterior means alone even when nothing currently fits the
-    budget, to explain *why* nothing was chosen rather than report a second, redundant "nothing" signal.
-    With zero arms at all, `greedy` is None (there is nothing to be the fallback pick).
+    `greedy` is `None` whenever no arm is feasible by its posterior *mean* cost -- same budget rule as
+    `chosen`, never a fallback that ignores the budget. This matters beyond `draw()` itself: a later task's
+    retry/cap logic falls back to `greedy` when an index's exploration cap is hit, and dispatching an
+    over-budget arm there would be a real budget violation, not a presentation nicety. Anyone who wants to
+    explain *why* nothing was chosen (an eligibility UI) already has everything needed in `samples`, where
+    every arm is recorded with its own `feasible` flag regardless of whether it's `chosen` or `greedy`.
     """
     sampled = [_sample_arm(arm, mode.explore, rng) for arm in arms]
     budget_limit = budget_micros * (1 + tolerance)
@@ -118,11 +124,6 @@ def draw(arms: Sequence[Arm], budget_micros: int, mode: Mode, tolerance: float, 
         for m in means
     ]
     greedy = _best(mean_feasible, mode.retry_tolerant)
-    if greedy is None and means:
-        # Nothing was feasible by posterior mean either: fall back to the best pick over all arms,
-        # feasibility ignored entirely, per this function's own docstring.
-        all_feasible = [ArmSample(m.agent_id, m.theta, m.cost_micros, m.density, True) for m in means]
-        greedy = _best(all_feasible, mode.retry_tolerant)
 
     chosen = greedy if not mode.explore else _best(samples, mode.retry_tolerant)
     exploratory = chosen is not None and chosen != greedy
