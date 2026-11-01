@@ -109,6 +109,17 @@ class Settings(BaseSettings):
     reputation_poll_s: float = Field(default=1.0, gt=0)
     """How often money_events and jobs are checked for new reputation observations, the same convention
     as `outcome_poll_s`/`event_poll_s`/`sse_poll_s`."""
+    router_operator_concurrency_cap: int = Field(default=5, ge=1)
+    """How many unresolved dispatches one operator's agents may carry at once before every one of that
+    operator's agents is ineligible for a new auto-routed task (paper 7.5 ii). Our parameterisation, not
+    the paper's."""
+    router_explore_cap_per_operator: int = Field(default=2, ge=0)
+    """How many unresolved exploratory draws one operator may hold at once before a further exploratory
+    pick for that operator is redirected to the deterministic greedy choice instead (paper 7.5). Our
+    parameterisation, not the paper's."""
+    router_budget_tolerance: float = Field(default=0.1, ge=0)
+    """How far over a task's budget a sampled cost may still count as feasible, as a fraction of the
+    budget (paper 9.4's Thompson draw). Our parameterisation, not the paper's."""
 
     @model_validator(mode="before")
     @classmethod
