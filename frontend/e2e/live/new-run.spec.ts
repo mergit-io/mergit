@@ -120,3 +120,33 @@ test("a starting point fills the goal and picks its kind of work", async ({ page
   await expect(page.getByLabel("Goal")).toHaveValue(/regression test covers it/);
   await expect(page.getByRole("radio", { name: "Fix a bug" })).toBeChecked();
 });
+
+test("a repository typed and not picked starts on its own default branch, until a branch is chosen", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { created: draftPlan() });
+  await fakeGitHub(page);
+  await page.goto("/app/runs/new");
+  await page.getByRole("combobox", { name: "Repository" }).fill("someone/else");
+  const branch = page.getByRole("combobox", { name: "Branch" });
+  await expect(branch).toHaveValue("develop");
+  await page.getByLabel("Goal").fill("The build passes on develop");
+  await page.getByRole("button", { name: "Draft the plan" }).click();
+  await expect(page).toHaveURL(new RegExp(`/app/runs/${draftPlan().plan_uuid}$`));
+  expect(calls.find((c) => c.method === "POST" && c.path === "/v0/plans")?.body).toMatchObject({
+    repo_url: "https://github.com/someone/else",
+    ref: "develop",
+  });
+});
+
+test("a starting point's blanks must be filled in before the planner is called", async ({ page }) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page);
+  await page.goto("/app/runs/new");
+  await page.getByRole("button", { name: /Make a failing test pass/ }).click();
+  await page.getByRole("combobox", { name: "Repository" }).fill("acme/widgets");
+  await page.getByRole("button", { name: "Draft the plan" }).click();
+  await expect(page.getByRole("alert")).toContainText("Replace the <…> parts of the goal");
+  expect(calls.filter((c) => c.method === "POST" && c.path === "/v0/plans")).toEqual([]);
+});

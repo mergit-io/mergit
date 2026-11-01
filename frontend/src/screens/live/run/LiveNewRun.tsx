@@ -2,7 +2,7 @@ import { useEffect, useState, type SyntheticEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { createPlan } from "../../../api/client";
-import { getRepo, parseRepo, repoUrl, type Repo } from "../../../api/github";
+import { parseRepo, repoUrl } from "../../../api/github";
 import { useAgents } from "../../../api/useAgents";
 import { fetchProviders, oauthStartUrl } from "../../../auth/accountApi";
 import { useAuth } from "../../../auth/context";
@@ -63,6 +63,9 @@ const STARTERS: { kind: string; title: string; goal: string }[] = [
   },
 ];
 
+/** The <…> blanks in the starting points, which must be filled in before a plan is drafted. */
+const PLACEHOLDERS = STARTERS.flatMap((st) => st.goal.match(/<[^<>]+>/g) ?? []);
+
 /** How a run goes, as the run page will show it. */
 const STEPS: { icon: IconName; label: string }[] = [
   { icon: "sparkle", label: "Mergit drafts tasks, each with a check" },
@@ -81,6 +84,8 @@ const INITIAL: Fields = { goal: "", repo: "", ref: "main", budget: "5", category
 function fieldProblems(f: Fields): string[] {
   const problems: string[] = [];
   if (!f.goal.trim()) problems.push("Describe the goal.");
+  else if (PLACEHOLDERS.some((ph) => f.goal.includes(ph)))
+    problems.push("Replace the <…> parts of the goal with your own words.");
   if (!f.repo.trim()) problems.push("Choose a repository, or type its owner/name or https URL.");
   if (!f.ref.trim()) problems.push("Give the branch, tag or commit to start from.");
   const budget = parseUsdc(f.budget);
@@ -102,7 +107,6 @@ export function LiveNewRun() {
   const { busy, problems, setProblems, submit } = useSubmit();
   const [githubOn, setGithubOn] = useState(false);
   const [browse, setBrowse] = useState<string | null>(null);
-  const [lookup, setLookup] = useState<string>();
   const { agents } = useAgents();
   const { credits } = useCredits(session !== null);
 
@@ -120,7 +124,10 @@ export function LiveNewRun() {
   const owner = browse ?? githubLogin;
   const { repos, error: reposError, loading: reposLoading } = useRepoList(owner);
   const chosen = parseRepo(fields.repo);
-  const { branches, error: branchesError, loading: branchesLoading } = useBranches(chosen);
+  const { branches, defaultBranch, error: branchesError, loading: branchesLoading } = useBranches(chosen);
+  // A repository typed rather than picked starts on its own default branch, until a branch is chosen by hand.
+  const [refTouched, setRefTouched] = useState(false);
+  const ref = refTouched ? fields.ref : (defaultBranch ?? fields.ref);
   const kind = KINDS.find((k) => k.value === fields.category) ?? KINDS[0];
 
   const set = (key: keyof Fields) => (value: string) => {
@@ -158,28 +165,16 @@ export function LiveNewRun() {
   }
 
   const pickRepo = (o: ComboOption) => {
-    setLookup(undefined);
     if (o.id.startsWith("owner:")) {
-      const login = o.id.slice("owner:".length);
-      setBrowse(login);
+      setBrowse(o.id.slice("owner:".length));
       set("repo")("");
       return;
     }
+    // A new repository starts on its default branch (a listed one's is known; a typed one's is read with its branches).
     const full = o.id.slice(o.id.indexOf(":") + 1);
-    const found: Repo | undefined = repos?.find((r) => r.fullName === full);
+    const found = repos?.find((r) => r.fullName === full);
+    setRefTouched(false);
     setFields((f) => ({ ...f, repo: full, ref: found?.defaultBranch ?? f.ref }));
-    if (!found) {
-      const p = parseRepo(full);
-      if (p)
-        getRepo(p.owner, p.name).then(
-          (r) => {
-            setFields((f) => (f.repo === full ? { ...f, ref: r.defaultBranch } : f));
-          },
-          (e: unknown) => {
-            setLookup(e instanceof Error ? e.message : String(e));
-          },
-        );
-    }
   };
 
   const reposNote = reposLoading
@@ -192,20 +187,24 @@ export function LiveNewRun() {
           ? "Type owner/name or paste a GitHub URL. Type just an owner to list their public repositories."
           : undefined;
 
-  const branchQuery = fields.ref.trim().toLowerCase();
+  const branchQuery = ref.trim().toLowerCase();
   const branchOptions: ComboOption[] = (branches ?? [])
-    .filter((b) => !branchQuery || b.toLowerCase().includes(branchQuery) || branches?.includes(fields.ref))
+    .filter((b) => !branchQuery || b.toLowerCase().includes(branchQuery) || branches?.includes(ref))
     .slice(0, LIST_LIMIT)
     .map((b) => ({ id: b, label: b }));
+  const notABranch = branches && ref.trim() && !branches.includes(ref.trim()) && !/^[0-9a-f]{7,40}$/i.test(ref.trim());
   const branchNote = !chosen
     ? "Choose a repository to list its branches. A tag or commit also works."
     : branchesLoading
       ? "Loading branches…"
-      : branchesError;
+      : (branchesError ??
+        (notABranch
+          ? `${ref.trim()} is not a branch of ${chosen.owner}/${chosen.name}. A tag also works.`
+          : undefined));
 
   const onSubmit = (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const local = fieldProblems(fields);
+    const local = fieldProblems({ ...fields, ref });
     if (local.length > 0) {
       setProblems(local);
       return;
@@ -214,7 +213,7 @@ export function LiveNewRun() {
       const plan = await createPlan({
         goal: fields.goal.trim(),
         repo_url: toRepoUrl(fields.repo),
-        ref: fields.ref.trim(),
+        ref: ref.trim(),
         budget_usdc_units: (parseUsdc(fields.budget) ?? 0n).toString(),
         category: fields.category,
       });
@@ -269,7 +268,7 @@ export function LiveNewRun() {
             className="nr-repo"
             value={fields.repo}
             onChange={(v) => {
-              setLookup(undefined);
+              setRefTouched(false);
               set("repo")(v);
             }}
             onPick={pickRepo}
@@ -281,9 +280,13 @@ export function LiveNewRun() {
             label="Branch"
             icon="branch"
             className="nr-branch"
-            value={fields.ref}
-            onChange={set("ref")}
+            value={ref}
+            onChange={(v) => {
+              setRefTouched(true);
+              set("ref")(v);
+            }}
             onPick={(o) => {
+              setRefTouched(true);
               set("ref")(o.id);
             }}
             options={branchOptions}
@@ -312,8 +315,10 @@ export function LiveNewRun() {
         </div>
       </form>
 
-      {lookup && (
-        <p className="small ca nr-center">{lookup} A private repository still works if the agents can reach it.</p>
+      {chosen && branchesError && (
+        <p className="small ca nr-center">
+          {branchesError} A private repository still works if the agents can reach it.
+        </p>
       )}
       <Problems items={problems} />
 

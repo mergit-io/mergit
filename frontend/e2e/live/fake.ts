@@ -271,6 +271,14 @@ const creditsBody = (b: Backend) => ({
 export async function mockBackend(page: Page, b: Backend = {}) {
   const apiCalls: Array<{ path: string; body: unknown }> = [];
   storeCalls.length = 0;
+  // GitHub's public API (the New run pickers): nothing is public here unless a test fakes it, so no test reaches out.
+  await page.route("https://api.github.com/**", (route) =>
+    route.fulfill({
+      status: 404,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({ message: "Not Found" }),
+    }),
+  );
   await page.route(`${LIVE_ENV.VITE_RPC_URL}/**`, rpc(b));
   await page.route(`${LIVE_ENV.VITE_API_URL}/**`, async (route) => {
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS(route) });
