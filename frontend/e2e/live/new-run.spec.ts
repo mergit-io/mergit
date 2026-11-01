@@ -150,3 +150,23 @@ test("a starting point's blanks must be filled in before the planner is called",
   await expect(page.getByRole("alert")).toContainText("Replace the <…> parts of the goal");
   expect(calls.filter((c) => c.method === "POST" && c.path === "/v0/plans")).toEqual([]);
 });
+
+test("a free-trial account starts on a budget the free credits cover, and is told when it goes over", async ({
+  page,
+}) => {
+  await mockBackend(page, {
+    me: {
+      address: ME.toLowerCase(),
+      user_id: "u1",
+      identities: [{ provider: "github", label: "octo" }],
+      wallets: [],
+      trial_address: ME.toLowerCase(),
+      trial: { started_at: "2026-10-30T10:00:00+00:00" },
+    },
+  });
+  await page.goto("/app/runs/new");
+  await expect(page.getByLabel("Budget (USDC)")).toHaveValue("2");
+
+  await page.getByLabel("Budget (USDC)").fill("5");
+  await expect(page.getByText("Free credits cover up to 2.00 USDC per plan; this plan is 5.00 USDC")).toBeVisible();
+});

@@ -325,3 +325,123 @@ def test_a_wallet_plan_names_no_credit_account(settings: Settings, rclient: Test
     assert rclient.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=APPROVE).status_code == 200
     [event] = [e for e in outbox(settings) if e["type"] == "plan.approved"]
     assert "credit_account" not in event["payload"]
+
+
+# --- the gateway's limits are checked before a credits plan is approved ---------------------------------
+
+
+def credit_view(**over: Any) -> dict[str, Any]:
+    """The gateway's credits view for a fresh account (5 USDC, a 2 USDC cap per plan, 3 plans a day)."""
+    return {
+        "granted_usdc_units": "5000000",
+        "spent_usdc_units": "0",
+        "remaining_usdc_units": "5000000",
+        "plans_today": 0,
+        "plan_cap_usdc_units": "2000000",
+        "plans_per_day": 3,
+    } | over
+
+
+def approve_with_credits(client: TestClient, plan: dict[str, Any]) -> httpx.Response:
+    return client.post(
+        f"/v0/plans/{plan['plan_uuid']}/approve", json={"agents": APPROVE["agents"], "funding": "credits"}
+    )
+
+
+def states(settings: Settings) -> list[str]:
+    with psycopg.connect(settings.database_url) as conn:
+        return [r[0] for r in conn.execute("SELECT state FROM plans").fetchall()]
+
+
+@respx.mock
+def test_a_credits_plan_over_the_per_plan_cap_is_refused_and_stays_a_draft(
+    settings: Settings, rclient: TestClient
+) -> None:
+    sign_in(rclient)
+    uid = user_id(rclient)
+    plan = create(rclient)  # two tasks of 0.5 USDC
+    respx.get(f"http://gateway.invalid/v0/credits/account/{uid}").mock(
+        return_value=httpx.Response(200, json=credit_view(plan_cap_usdc_units="800000"))
+    )
+    r = approve_with_credits(rclient, plan)
+    assert r.status_code == 422
+    [problem] = r.json()["detail"]["problems"]
+    assert "0.8" in problem and "1" in problem  # says the cap and what this plan costs
+    assert states(settings) == ["draft"]
+    assert [e for e in outbox(settings) if e["type"] == "plan.approved"] == []
+
+
+@respx.mock
+def test_a_credits_plan_is_refused_once_the_days_free_plans_are_used(
+    settings: Settings, rclient: TestClient
+) -> None:
+    sign_in(rclient)
+    uid = user_id(rclient)
+    plan = create(rclient)
+    respx.get(f"http://gateway.invalid/v0/credits/account/{uid}").mock(
+        return_value=httpx.Response(200, json=credit_view(plans_today=3))
+    )
+    r = approve_with_credits(rclient, plan)
+    assert r.status_code == 422 and "3" in r.json()["detail"]["problems"][0]
+    assert states(settings) == ["draft"]
+
+
+@respx.mock
+def test_a_credits_plan_bigger_than_what_is_left_is_refused(settings: Settings, rclient: TestClient) -> None:
+    sign_in(rclient)
+    uid = user_id(rclient)
+    plan = create(rclient)
+    respx.get(f"http://gateway.invalid/v0/credits/account/{uid}").mock(
+        return_value=httpx.Response(200, json=credit_view(remaining_usdc_units="400000"))
+    )
+    r = approve_with_credits(rclient, plan)
+    assert r.status_code == 422 and "0.4" in r.json()["detail"]["problems"][0]
+    assert states(settings) == ["draft"]
+
+
+@respx.mock
+def test_a_credits_plan_that_fits_is_approved(settings: Settings, rclient: TestClient) -> None:
+    sign_in(rclient)
+    uid = user_id(rclient)
+    plan = create(rclient)
+    respx.get(f"http://gateway.invalid/v0/credits/account/{uid}").mock(
+        return_value=httpx.Response(200, json=credit_view())
+    )
+    assert approve_with_credits(rclient, plan).status_code == 200
+
+
+@respx.mock
+def test_a_wallet_plan_is_not_checked_against_the_free_credit_limits(
+    settings: Settings, rclient: TestClient
+) -> None:
+    sign_in(rclient)
+    route = respx.get(url__regex=r"http://gateway.invalid/.*").mock(
+        return_value=httpx.Response(200, json=credit_view(plan_cap_usdc_units="1"))
+    )
+    plan = create(rclient)
+    assert rclient.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=APPROVE).status_code == 200
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_an_unreachable_gateway_does_not_stop_approval(settings: Settings, rclient: TestClient) -> None:
+    """The gateway still enforces its own limits when it takes the event, so a failed look-ahead must not
+    block people; it only means they learn about the cap late."""
+    sign_in(rclient)
+    plan = create(rclient)
+    respx.get(url__regex=r"http://gateway.invalid/.*").mock(side_effect=httpx.ConnectError("down"))
+    assert approve_with_credits(rclient, plan).status_code == 200
+
+
+@respx.mock
+def test_an_older_gateway_view_without_limits_is_not_an_error(
+    settings: Settings, rclient: TestClient
+) -> None:
+    sign_in(rclient)
+    uid = user_id(rclient)
+    plan = create(rclient)
+    old = {k: v for k, v in credit_view().items() if k not in ("plan_cap_usdc_units", "plans_per_day")}
+    respx.get(f"http://gateway.invalid/v0/credits/account/{uid}").mock(
+        return_value=httpx.Response(200, json=old)
+    )
+    assert approve_with_credits(rclient, plan).status_code == 200

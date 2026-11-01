@@ -16,7 +16,7 @@ import mergit_receipt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from . import accounts, outcomes, plans
+from . import accounts, outcomes, plans, redeem, user_settings
 from .agents import Agent
 from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .events import enqueue
@@ -139,6 +139,14 @@ async def create_plan(
             raise HTTPException(status_code=429, detail="too many plans this hour; try again later")
         await conn.execute("INSERT INTO planning_attempts (requester) VALUES (%s)", (address,))
 
+    model = settings.planner_model
+    if principal.user_id is not None:
+        async with pool.connection() as conn:
+            chosen = (await user_settings.load(conn, principal.user_id)).planner_model
+        if (
+            chosen in settings.model_choices
+        ):  # a model the operator has since withdrawn falls back to the default
+            model = chosen
     budget = int(body.budget_usdc_units)
     try:
         draft = await plan_goal(
@@ -147,7 +155,7 @@ async def create_plan(
             budget,
             body.category,
             llm,
-            model=settings.planner_model,
+            model=model,
             costs=costs,
             max_tasks=settings.planner_max_tasks,
         )
@@ -170,7 +178,7 @@ async def create_plan(
             ref=body.ref,
             category=body.category,
             budget_usdc_units=budget,
-            planner_model=settings.planner_model,
+            planner_model=model,
             tasks=draft.tasks,
         )
         stored = await plans.load(conn, uuid.UUID(draft.plan_uuid))
@@ -207,6 +215,13 @@ async def approve_plan(
     agents: Annotated[list[Agent], Depends(get_agents)],
 ) -> dict[str, str]:
     known = {a.agent_id for a in agents}
+    # Read before the transaction opens, so a slow gateway holds no row lock. None: unreachable, and the
+    # gateway then enforces its limits alone, as it did before this look-ahead.
+    credit_view = (
+        await redeem.fetch_credits(settings, principal.user_id)
+        if body.funding == "credits" and principal.user_id is not None
+        else None
+    )
     async with pool.connection() as conn, conn.transaction():
         plan = await _owned_draft(conn, plan_uuid, principal)
         drafts = [t.draft for t in plan.tasks]
@@ -227,10 +242,25 @@ async def approve_plan(
             and body.funding != "credits"
         ):
             problems.append("a plan drafted on the free trial can only be funded from credits")
+        total = sum(t.budget_usdc_units for t in drafts)
+        if credit_view is not None:
+            problems.extend(redeem.credit_problems(credit_view, total))
+        if principal.user_id is not None:
+            prefs = await user_settings.load(conn, principal.user_id)
+            problems.extend(
+                await user_settings.cap_problems(
+                    conn, prefs, principal.owned, total, plan_uuid=plan.plan_uuid
+                )
+            )
         if problems:
             raise _problems(422, problems)
+        if (
+            body.funding == "credits"
+            and principal.user_id is not None
+            and await accounts.credits_forfeited(conn, settings, principal.user_id)
+        ):
+            raise HTTPException(status_code=403, detail="the free credits were already used by this person")
 
-        total = sum(t.budget_usdc_units for t in drafts)
         await plans.approve(
             conn,
             plan.plan_uuid,

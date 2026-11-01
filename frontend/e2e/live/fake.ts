@@ -17,7 +17,15 @@ export const RUNTIME_KEY = getAddress("0xf39fd6e51aad88f6f4ce6ab8827279cfffb9226
 export type Backend = {
   ethWei?: bigint;
   usdcUnits?: bigint;
-  credits?: { granted: string; spent: string; remaining: string; plans_today: number };
+  credits?: {
+    granted: string;
+    spent: string;
+    remaining: string;
+    plans_today: number;
+    /** The gateway's per-plan cap and plans per day; 2 USDC and 3 unless a test says otherwise. */
+    plan_cap?: string;
+    plans_per_day?: number;
+  };
   /**
    * Redeem codes the API accepts, by the code as typed: the amount in base units, or the status the API refuses
    * with (`retryAfter` is the Retry-After header of a 429). A redeemed code adds to `credits` and then answers 409.
@@ -40,6 +48,12 @@ export type Backend = {
    * no session (401). Unset, it answers with something that is not an account, so a remembered session is kept.
    */
   me?: Record<string, unknown> | null;
+  /** Run preferences and the models on offer, as `GET /v0/account/settings` answers; `PUT` replaces them. */
+  settings?: { preferences: Record<string, unknown>; planner_models: string[]; default_planner_model: string };
+  /** Devices signed in as this account. Default: just this one. */
+  sessions?: Array<{ created_at: string; expires_at: string; address: string; current: boolean }>;
+  /** Status the server answers any of the settings changes with instead of succeeding (409: last way in, plan running). */
+  settingsRefusal?: number;
   /** What `me` becomes once the emailed code has been accepted. */
   meAfterEmail?: Record<string, unknown>;
   /** On-chain commitment per task, as `commitmentOf` returns it. */
@@ -154,7 +168,7 @@ export const CORS = (route: Route) => ({
   "access-control-allow-credentials": "true",
   "access-control-allow-headers": "content-type",
   "access-control-expose-headers": "retry-after",
-  "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+  "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
 });
 
 export function json(route: Route, body: unknown, status = 200) {
@@ -265,6 +279,8 @@ const creditsBody = (b: Backend) => ({
   spent_usdc_units: b.credits?.spent ?? "0",
   remaining_usdc_units: b.credits?.remaining ?? "5000000",
   plans_today: b.credits?.plans_today ?? 0,
+  plan_cap_usdc_units: b.credits?.plan_cap ?? "2000000",
+  plans_per_day: b.credits?.plans_per_day ?? 3,
 });
 
 /** Intercepts every backend host. Returns the requests the API received, for assertions. */
@@ -322,6 +338,67 @@ export async function mockBackend(page: Page, b: Backend = {}) {
       };
       if (b.redeemCodes) b.redeemCodes[code] = { status: 409 };
       return json(route, { amount_usdc_units: rule });
+    }
+    if (
+      path.startsWith("/v0/account/") &&
+      !["/v0/account/trial", "/v0/account/credits", "/v0/account/redeem"].includes(path)
+    ) {
+      const method = route.request().method();
+      const sent = route.request().postDataJSON() as Record<string, unknown> | null;
+      if (method !== "GET" && b.settingsRefusal !== undefined)
+        return json(route, { detail: "refused" }, b.settingsRefusal);
+      if (path === "/v0/account/settings") {
+        const base = b.settings ?? {
+          preferences: {
+            planner_model: null,
+            routing_mode: "greedy",
+            max_attempts: 1,
+            default_funding: "credits",
+            per_plan_cap_usdc_units: null,
+            daily_cap_usdc_units: null,
+          },
+          planner_models: ["claude-opus-5", "claude-sonnet-5"],
+          default_planner_model: "claude-opus-5",
+        };
+        if (method === "PUT") b.settings = { ...base, preferences: { ...sent } };
+        return json(route, b.settings ?? base);
+      }
+      if (path === "/v0/account/profile") {
+        b.me = { ...b.me, name: sent?.["name"] };
+        return json(route, { name: sent?.["name"] });
+      }
+      if (path.startsWith("/v0/account/wallets/")) {
+        const address = path.split("/").pop() ?? "";
+        const wallets = ((b.me?.["wallets"] as string[] | undefined) ?? []).filter((w) => w !== address.toLowerCase());
+        b.me = { ...b.me, wallets };
+        return route.fulfill({ status: 204, headers: CORS(route) });
+      }
+      if (path.startsWith("/v0/account/identities/")) {
+        const provider = path.split("/").pop();
+        const identities = ((b.me?.["identities"] as Array<{ provider: string }> | undefined) ?? []).filter(
+          (i) => i.provider !== provider,
+        );
+        b.me = { ...b.me, identities };
+        return route.fulfill({ status: 204, headers: CORS(route) });
+      }
+      if (path === "/v0/account/sessions") {
+        const now = "2026-11-01T10:00:00+00:00";
+        const later = "2026-12-01T10:00:00+00:00";
+        return json(
+          route,
+          b.sessions ?? [{ created_at: now, expires_at: later, address: ME.toLowerCase(), current: true }],
+        );
+      }
+      if (path === "/v0/account/sessions/revoke-others") {
+        const revoked = (b.sessions ?? []).filter((x) => !x.current).length;
+        b.sessions = (b.sessions ?? []).filter((x) => x.current);
+        return json(route, { revoked });
+      }
+    }
+    if (path === "/v0/account" && route.request().method() === "DELETE") {
+      if (b.settingsRefusal !== undefined) return json(route, { detail: "refused" }, b.settingsRefusal);
+      b.me = null;
+      return route.fulfill({ status: 204, headers: CORS(route) });
     }
     if (path === "/v0/account/trial") {
       const started_at = "2026-10-30T10:00:00+00:00";

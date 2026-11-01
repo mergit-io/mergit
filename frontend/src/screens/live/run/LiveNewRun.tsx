@@ -5,8 +5,10 @@ import { createPlan } from "../../../api/client";
 import { parseRepo, repoUrl } from "../../../api/github";
 import { useAgents } from "../../../api/useAgents";
 import { fetchProviders, oauthStartUrl } from "../../../auth/accountApi";
+import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
-import { formatUsdc, parseUsdc } from "../../../chain/funding";
+import { creditBudget, creditProblem, MAX_BUDGET } from "../../../chain/creditLimits";
+import { formatUsdc, parseUsdc, usdcText } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon, type IconName } from "../../../components/Icon";
 import { Combo, type ComboOption } from "./Combo";
@@ -90,6 +92,7 @@ function fieldProblems(f: Fields): string[] {
   if (!f.ref.trim()) problems.push("Give the branch, tag or commit to start from.");
   const budget = parseUsdc(f.budget);
   if (budget === null || budget <= 0n) problems.push("The budget must be a positive USDC amount.");
+  else if (budget > MAX_BUDGET) problems.push(`The budget can be at most ${formatUsdc(MAX_BUDGET)} USDC for one plan.`);
   return problems;
 }
 
@@ -109,6 +112,15 @@ export function LiveNewRun() {
   const [browse, setBrowse] = useState<string | null>(null);
   const { agents } = useAgents();
   const { credits } = useCredits(session !== null);
+  // A free-trial account can only pay from credits, which cover a plan up to a cap: start there, and say so if
+  // the budget goes over, instead of letting the plan be drafted and then refused at approval.
+  const trial = isTrialSession(account, session?.address);
+  const [budgetTouched, setBudgetTouched] = useState(false);
+  const startBudget = trial ? creditBudget(credits) : null;
+  // Until the budget is edited by hand, it is the credit-covered amount once the credits are known.
+  const budget = !budgetTouched && startBudget !== null ? usdcText(startBudget) : fields.budget;
+  const budgetUnits = parseUsdc(budget);
+  const budgetNote = trial && budgetUnits !== null && budgetUnits > 0n ? creditProblem(credits, budgetUnits) : null;
 
   useEffect(() => {
     let live = true;
@@ -204,7 +216,8 @@ export function LiveNewRun() {
 
   const onSubmit = (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const local = fieldProblems({ ...fields, ref });
+    const local = fieldProblems({ ...fields, ref, budget });
+    if (budgetNote) local.push(budgetNote);
     if (local.length > 0) {
       setProblems(local);
       return;
@@ -214,7 +227,7 @@ export function LiveNewRun() {
         goal: fields.goal.trim(),
         repo_url: toRepoUrl(fields.repo),
         ref: ref.trim(),
-        budget_usdc_units: (parseUsdc(fields.budget) ?? 0n).toString(),
+        budget_usdc_units: (budgetUnits ?? 0n).toString(),
         category: fields.category,
       });
       await navigate(paths.run(plan.plan_uuid));
@@ -297,8 +310,10 @@ export function LiveNewRun() {
             <input
               aria-label="Budget (USDC)"
               inputMode="decimal"
-              value={fields.budget}
+              maxLength={12}
+              value={budget}
               onChange={(e) => {
+                setBudgetTouched(true);
                 set("budget")(e.target.value);
               }}
             />
@@ -318,6 +333,11 @@ export function LiveNewRun() {
       {chosen && branchesError && (
         <p className="small ca nr-center">
           {branchesError} A private repository still works if the agents can reach it.
+        </p>
+      )}
+      {budgetNote && problems.length === 0 && (
+        <p className="small ca nr-center" role="status">
+          {budgetNote}
         </p>
       )}
       <Problems items={problems} />

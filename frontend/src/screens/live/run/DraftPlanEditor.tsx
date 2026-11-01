@@ -3,6 +3,7 @@ import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
+import { creditProblem } from "../../../chain/creditLimits";
 import { formatUsdc } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon } from "../../../components/Icon";
@@ -50,6 +51,8 @@ export function DraftPlanEditor({
   const { busy, problems, setProblems, submit } = useSubmit();
   const edited = hasEdits(plan, forms);
   const total = totalBudget(forms);
+  // The API refuses an over-limit credits plan too; saying so here keeps the button from inviting a refusal.
+  const creditLimit = funding === "Free credits" ? creditProblem(credits, total) : null;
 
   const update = (next: TaskForm) => {
     setForms((list) => list.map((f) => (f.index === next.index ? next : f)));
@@ -112,9 +115,19 @@ export function DraftPlanEditor({
                 : `Free credits left: ${credits ? formatUsdc(credits.remaining) : "…"} USDC. Tasks paid with credits are always audited.`}
           </span>
         </div>
+        {creditLimit && (
+          <p className="small ca" role="alert">
+            {creditLimit}
+          </p>
+        )}
         <Problems items={problems} />
         <div className="col g8">
-          <button type="button" className="btn primary block" disabled={busy || !agents} onClick={approve}>
+          <button
+            type="button"
+            className="btn primary block"
+            disabled={busy || !agents || creditLimit !== null}
+            onClick={approve}
+          >
             <Icon name="check" size={16} />
             {busy ? "Working…" : "Approve plan"}
           </button>
