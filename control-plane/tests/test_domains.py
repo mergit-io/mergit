@@ -13,6 +13,7 @@ from collections.abc import Iterator
 import pytest
 from eth_account import Account
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from mergit_cp.app import create_app
 from mergit_cp.config import Settings
@@ -116,3 +117,24 @@ def test_the_extra_hostnames_come_from_a_comma_separated_setting(settings: Setti
 
 def test_a_blank_cookie_domain_means_none(settings: Settings) -> None:
     assert Settings.model_validate({**settings.model_dump(), "cookie_domain": ""}).cookie_domain is None
+
+
+def test_the_oauth_state_cookie_is_shared_so_a_login_started_on_one_host_finishes_on_the_other(
+    settings: Settings,
+) -> None:
+    both = settings.model_copy(
+        update={
+            "app_domain": MAIN,
+            "extra_domains": [OTHER],
+            "cookie_domain": "mergit.test",
+            "github_client_id": "gh-id",
+            "github_client_secret": SecretStr("gh-secret"),
+        }
+    )
+    with TestClient(
+        create_app(both, deliver_events=False), base_url=f"https://{OTHER}", follow_redirects=False
+    ) as c:
+        start = c.get("/v0/auth/github/start")
+        assert start.status_code == 302
+        # Without a domain this cookie belongs to OTHER alone, and the callback on MAIN never sees it.
+        assert "domain=mergit.test" in start.headers["set-cookie"].lower()
