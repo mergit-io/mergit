@@ -1,3 +1,4 @@
+import { apiBase } from "../chain/wallet";
 import { LIVE } from "../config/live";
 import type {
   AgentInfo,
@@ -60,10 +61,13 @@ async function toError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, message, problems);
 }
 
+/** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal. */
+const base = () => (LIVE.apiUrl ? apiBase() : "");
+
 async function request<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${LIVE.apiUrl}${path}`, {
+    response = await fetch(`${base()}${path}`, {
       method,
       credentials: "include",
       ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
@@ -98,7 +102,7 @@ export const getPlan = (planUuid: string) => request<PlanDetail>("GET", planPath
 export const listAgents = () => request<AgentInfo[]>("GET", "/v0/agents");
 
 /** Server-Sent Events for one plan. Open with `withCredentials: true`, or the session cookie is not sent. */
-export const planEventsUrl = (planUuid: string) => `${LIVE.apiUrl}${planPath(planUuid)}/events`;
+export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid)}/events`;
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
