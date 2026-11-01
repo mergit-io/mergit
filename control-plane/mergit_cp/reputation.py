@@ -19,6 +19,13 @@ class Posterior:
     kappa: float
     tau: float
 
+    def __post_init__(self) -> None:
+        if self.alpha <= 0 or self.beta <= 0 or self.kappa <= 0 or self.tau <= 0:
+            raise ValueError(
+                "Posterior fields must all be strictly positive, "
+                f"got alpha={self.alpha}, beta={self.beta}, kappa={self.kappa}, tau={self.tau}"
+            )
+
     @property
     def theta_mean(self) -> float:
         """Posterior mean success probability."""
@@ -31,7 +38,11 @@ class Posterior:
 
     @property
     def density(self) -> float:
-        """Expected success per micro-USD: the quantity Thompson sampling ranks agents by (paper 8.8)."""
+        """The expected validated successes per unit expected spend -- the *mean* of the distribution
+        Thompson sampling draws from, not the sampled value itself (paper 8.8). The router (a later task)
+        ranks agents by a sample drawn from each posterior, not by this mean: an agent with a wide,
+        uncertain posterior can have a low mean density but still get picked because its draw came out
+        high."""
         return self.theta_mean / self.cost_mean_micros
 
 
