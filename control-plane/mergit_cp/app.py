@@ -21,6 +21,7 @@ from .llm import LLM, build_planner_llm
 from .outcomes import OutcomeProcessor
 from .planner import PgCostSink
 from .pr_store import PgPrStore
+from .reputation import ReputationUpdater
 from .spec import require_schemas
 from .stream import PlanBroadcaster
 
@@ -34,7 +35,8 @@ def create_app(
     mailer: otp.Mailer | None = None,
 ) -> FastAPI:
     """``deliver_events=False`` leaves events in the outbox, and ``process_outcomes=False`` leaves
-    finished jobs unprocessed, for tests that want to inspect or drive that state directly."""
+    finished jobs unprocessed and reputation observations un-ingested, for tests that want to inspect or
+    drive that state directly."""
     settings = settings or Settings()  # pyright: ignore[reportCallIssue]
 
     @asynccontextmanager
@@ -69,11 +71,18 @@ def create_app(
         outcomes_task = (
             asyncio.create_task(processor.run(settings.outcome_poll_s, stop)) if process_outcomes else None
         )
+        operators = {agent.agent_id: agent.operator for agent in app.state.agents}
+        reputation_updater = ReputationUpdater(pool, settings, operators)
+        reputation_task = (
+            asyncio.create_task(reputation_updater.run(settings.reputation_poll_s, stop))
+            if process_outcomes
+            else None
+        )
         try:
             yield
         finally:
             stop.set()
-            for task in (sender, outcomes_task):
+            for task in (sender, outcomes_task, reputation_task):
                 if task is not None:
                     with suppress(asyncio.CancelledError):
                         await task
