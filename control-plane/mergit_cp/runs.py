@@ -86,6 +86,26 @@ async def attempts(conn: AsyncConnection[TupleRow], plan_uuid: UUID | str) -> li
     ]
 
 
+async def routing_draws_for_tasks(
+    conn: AsyncConnection[TupleRow], task_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """The `{exploratory, seed, greedy_agent}` draw detail for every task_id in `task_ids` that actually
+    went through `routing.route` (a `'pick'`-routed task, or an `'auto'` task whose draw hasn't landed yet,
+    has no row and is simply absent from the returned map). Keyed by `task_id`, which `jobs`,
+    `task_dispatches` and `routing_draws` all share as the one hex id minted at dispatch time."""
+    if not task_ids:
+        return {}
+    cur = conn.cursor(row_factory=dict_row)
+    await cur.execute(
+        "SELECT task_id, exploratory, seed, greedy_agent FROM routing_draws WHERE task_id = ANY(%s)",
+        (task_ids,),
+    )
+    return {
+        r["task_id"]: {"exploratory": r["exploratory"], "seed": r["seed"], "greedy_agent": r["greedy_agent"]}
+        for r in await cur.fetchall()
+    }
+
+
 def attempt_view(a: Attempt) -> dict[str, Any]:
     return {
         "task_id": a.task_id,

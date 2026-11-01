@@ -505,6 +505,49 @@ async def posterior(
     )
 
 
+async def observation_counts(
+    conn: AsyncConnection[TupleRow], agent_id: str, category: str
+) -> tuple[int, int]:
+    """The real `(outcomes, costs)` counts stored for exactly this `(agent_id, category)` pair -- `(0, 0)`
+    when no row exists yet. Unlike `posterior`, this never pools from the agent-level row or falls back to
+    `base_prior`: a pooled or prior posterior carries no real observations behind it, so there is nothing
+    honest to report for it beyond zero."""
+    cur = await conn.execute(
+        "SELECT outcomes, costs FROM reputation_posteriors WHERE agent_id = %s AND category = %s",
+        (agent_id, category),
+    )
+    row = await cur.fetchone()
+    return (row[0], row[1]) if row is not None else (0, 0)
+
+
+async def stored_posteriors(conn: AsyncConnection[TupleRow], agent_id: str) -> list[dict[str, Any]]:
+    """Every real `reputation_posteriors` row for `agent_id` (every category it has ever been scored on,
+    including the agent-level `'*'` row), in display shape (`category`, `theta_mean`, `cost_mean_micros`,
+    `density`, `outcomes`, `costs`). Reads only what is actually stored -- no pooling, no synthesized prior
+    row -- so an agent with no observations yet (e.g. one that has only ever run credits-funded plans,
+    which invariant 6 guarantees yield no observation at all) gets an empty list."""
+    cur = await conn.execute(
+        "SELECT category, alpha, beta, kappa, tau, outcomes, costs FROM reputation_posteriors"
+        " WHERE agent_id = %s ORDER BY category",
+        (agent_id,),
+    )
+    rows = await cur.fetchall()
+    views: list[dict[str, Any]] = []
+    for category, alpha, beta, kappa, tau, outcomes, costs in rows:
+        p = Posterior(alpha, beta, kappa, tau)
+        views.append(
+            {
+                "category": category,
+                "theta_mean": p.theta_mean,
+                "cost_mean_micros": p.cost_mean_micros,
+                "density": p.density,
+                "outcomes": outcomes,
+                "costs": costs,
+            }
+        )
+    return views
+
+
 async def rebuild(conn: AsyncConnection[TupleRow], settings: Settings) -> dict[tuple[str, str], Posterior]:
     """Replay the whole `reputation_observations` log in memory from scratch (ignoring `reputation_applied`
     and `reputation_posteriors` entirely) and return what every (agent_id, category) posterior would be.

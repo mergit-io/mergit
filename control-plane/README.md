@@ -17,8 +17,9 @@ start, under an advisory lock, so several instances can start together.
 | `POST /v0/plans/{plan_uuid}/abandon` | Requester gives up on this plan: moves it to `closed` and sends `plan.closed` (O6) |
 | `POST /v0/chain-events` | Everything the gateway reports back (spec/events-v0.md). Idempotent on `event_id`; requires `Authorization: Bearer CHAIN_EVENTS_TOKEN` |
 | `GET /v0/plans` | The signed-in requester's own plans, summary only |
-| `GET /v0/plans/{plan_uuid}` | The plan, its tasks, every attempt (`jobs`) and every money/verdict event concerning it. Requester-only (`403`/`404`) |
-| `GET /v0/agents` | `{agent_id, name, model}` for every deployed agent |
+| `GET /v0/plans/{plan_uuid}` | The plan, its tasks, every attempt (`jobs`, each with its routing draw if one was made) and every money/verdict event concerning it. Requester-only (`403`/`404`) |
+| `GET /v0/plans/{plan_uuid}/candidates` | Every roster agent's posterior for each task, ranked, eligible or not. Requester-only (`403`/`404`); see "Reputation and routing" below |
+| `GET /v0/agents` | `{agent_id, name, model, provider, reputation}` for every deployed agent |
 | `GET /v0/plans/{plan_uuid}/events` | Server-Sent Events: `plan.state`, `task.state`, `step.recorded`, `verdict`, `money`, as the plan runs |
 | `POST /v0/internal/progress` | The worker reports one step; requires `Authorization: Bearer WORKER_TOKEN` |
 
@@ -38,8 +39,11 @@ draft can change.
 | `outcomes.py` | O6: reacts to a finished job (`process_due`), `stuck_indexes` (`needs_requester`), `abandon` |
 | `events.py` | Transactional outbox to the gateway: retries, per-plan order, no double send across instances |
 | `spec.py` | The JSON Schemas in `spec/schemas`, used to check what this service sends and receives |
-| `runs.py`, `routes_runs.py` | The read API: a requester's plans, one plan's full detail, the agent roster |
+| `runs.py`, `routes_runs.py` | The read API: a requester's plans, one plan's full detail (with routing draws), ranked candidates, the agent roster (with reputation) |
 | `stream.py` | `PlanBroadcaster`: in-process pub/sub from `POST /v0/internal/progress` to the SSE handler |
+| `reputation.py` | The cost-adjusted Beta x Gamma posterior per (agent, category): `posterior` (the pooled/prior value a router ranks on), `ingest_due` (folds `money_events`/`jobs` into it), `observation_counts`/`stored_posteriors` (the real, unpooled stored rows, for display) |
+| `router.py` | `draw`: the pure Thompson-sampling policy over a set of `Arm`s |
+| `routing.py` | `candidates` (eligibility: already-tried, probation, operator concurrency cap), `route` (draws and records one dispatch's agent) |
 
 Events are written in the same transaction as the change they report, then delivered to
 `{GATEWAY_URL}/v0/events` with `Authorization: Bearer EVENTS_TOKEN` and `Idempotency-Key`. A 5xx or a network
@@ -203,6 +207,52 @@ without it, `GET /v0/plans/{plan_uuid}/events` sees no session and answers `401`
 
 **Database.** The control plane uses its own database, not the gateway's: both have tables named `plans`,
 `tasks` and `outbox`, and spec/events-v0.md says neither reads the other's.
+
+## Reputation and routing
+
+A cost-adjusted Beta x Gamma posterior per `(agent, category)` (paper 8.2-8.8) feeds a Thompson-sampling
+router (paper 7.5, 9.3-9.4) that, for an `'auto'`-routed task, draws which agent to dispatch instead of
+the requester picking one up front. All of this (`reputation.py`, `router.py`, `routing.py`) only ever
+reads `money_events` and `jobs` for a **wallet-funded** plan: a credits-funded plan yields no observation
+at all (invariant 6), so a free-trial or credits run never earns or spends reputation.
+
+- **The posterior.** `alpha`/`beta` (a Beta distribution) track success rate; `kappa`/`tau` (a Gamma
+  distribution) track mean cost in micro-USD. `theta_mean = alpha / (alpha + beta)`, `cost_mean_micros =
+  tau / kappa`, and `density = theta_mean / cost_mean_micros` — expected validated successes per
+  micro-USD spent, the quantity a `retry_tolerant` task's draw ranks by (an irretrievable failure instead
+  ranks by `theta_mean` alone: once an arm is feasible at all, a cheaper-but-riskier agent is no longer
+  worth preferring over a pricier-but-more-reliable one). A fresh agent starts at the uninformative
+  `Beta(1, 1)`, `Gamma(1, prior_cost)`; a category with its own evidence uses that row, otherwise it is
+  pooled from the agent's own cross-category row (or the base prior, if even that is fresh).
+- **The draw.** `routing.candidates` first narrows the roster to agents not already tried on this task
+  index, not in probation (a proven false receipt, paper 7.5 iii), and not past their operator's
+  concurrency cap; `router.draw` then samples a `theta_tilde`/`cost_tilde` per eligible agent and picks
+  the best feasible one (sampled, when `explore` is on; by posterior mean otherwise). `routing.route`
+  wraps this with an advisory lock, a cap-aware redirect to the deterministic "greedy" choice, and
+  `routing_draws`, one row per dispatch recording the seed, every arm's posterior parameters and sample,
+  and what was actually chosen versus what greedy would have picked — enough to replay a draw from the
+  row alone, independent of how far the live posteriors have since moved on.
+- **The read API** only presents this machinery; it never calls `route()` or changes anything.
+  `GET /v0/plans/{plan_uuid}/candidates` shows, per task, every roster agent's `theta_mean`,
+  `cost_mean_micros`, `density`, real `outcomes`/`costs` counts, and (for an ineligible one) the reason,
+  ranked the same way a draw would rank them. `GET /v0/plans/{plan_uuid}`'s `attempts` gain a `routing`
+  field (`{exploratory, seed, greedy_agent}`, or `null` for a `'pick'`-routed task or an `'auto'` one whose
+  draw hasn't landed yet). `GET /v0/agents`' `reputation` list is the agent's real, stored
+  `reputation_posteriors` rows only — never a pooled or synthesized one, so an agent with no observations
+  yet (new, or only ever run under credits) simply has an empty list.
+
+**Configuration** (`mergit_cp/config.py`). All of the following are *our own parameterisation choices, not
+the paper's* (each is documented that way on the `Settings` field itself): `REPUTATION_POOLING_WEIGHT`
+(0.25, how much an agent-level posterior counts when pooled into a fresh category),
+`REPUTATION_VALUE_REF_USDC_UNITS` (1_000_000, the budget size an outcome's weight is measured against),
+`ROUTER_PRIOR_COST_MICROS` (200_000, the mean cost seeded into a fresh Gamma posterior),
+`ROUTER_PROBATION_S` (604800, one week, how long a falsification keeps an operator's agents in
+probation), `ROUTER_OPERATOR_CONCURRENCY_CAP` (5, unresolved dispatches per operator before its agents go
+ineligible), `ROUTER_EXPLORE_CAP_PER_OPERATOR` (2, unresolved exploratory draws per operator before a
+further one redirects to greedy), `ROUTER_BUDGET_TOLERANCE` (0.1, how far over budget a sampled cost may
+still count feasible), and `REPUTATION_POLL_S` (1, how often new observations are folded in). `gamma`
+(0.95, the Beta/Gamma decay per update) is the one constant the paper itself fixes, so it is not
+configurable at all.
 
 ## The worker
 

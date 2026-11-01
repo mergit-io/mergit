@@ -9,22 +9,30 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import threading
 import time
 import uuid
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import mergit_receipt
+import psycopg
 import pytest
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
+from pydantic import SecretStr
 from siwe import SiweMessage
 
 from mergit_cp import money
+from mergit_cp.app import create_app
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool, open_pool
+from mergit_cp.reputation import ingest_due
 from tests.conftest import APP_DOMAIN
 
 pytestmark = pytest.mark.postgres
@@ -149,6 +157,132 @@ async def seed_chain_event(pool: Pool, event_type: str, payload: dict[str, Any])
         assert await money.record(conn, envelope)
 
 
+def _rand_hex_address() -> str:
+    return "0x" + (uuid.uuid4().hex + uuid.uuid4().hex)[:40]
+
+
+def _rand_agent_id() -> str:
+    """A fresh numeric agent_id (`mergit_cp.agents` requires `^(0|[1-9][0-9]*)$`)."""
+    return str(random.randint(10**12, 10**13 - 1))
+
+
+@dataclass(frozen=True)
+class TwoAgents:
+    """A second, independent two-agent roster -- for candidates tests, which need more than one agent to
+    show a ranking. Overrides conftest.py's single-agent `agents_files`/`settings`/`client`, so this gets
+    its own fixtures rather than reusing those, which other tests in this file depend on staying one agent
+    (`test_agents_lists_id_name_and_model`)."""
+
+    agent_a: str
+    agent_b: str
+    operator_a: str
+    operator_b: str
+
+
+@pytest.fixture
+def two_agents() -> TwoAgents:
+    return TwoAgents(_rand_agent_id(), _rand_agent_id(), _rand_hex_address(), _rand_hex_address())
+
+
+@pytest.fixture
+def two_agent_settings(database_url: str, tmp_path: Path, two_agents: TwoAgents) -> Settings:
+    chain = tmp_path / "agents-2.json"
+    chain.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "agent_id": two_agents.agent_a,
+                        "name": "agent-a",
+                        "operator": two_agents.operator_a,
+                        "runtime_key": _rand_hex_address(),
+                    },
+                    {
+                        "agent_id": two_agents.agent_b,
+                        "name": "agent-b",
+                        "operator": two_agents.operator_b,
+                        "runtime_key": _rand_hex_address(),
+                    },
+                ]
+            }
+        )
+    )
+    config = tmp_path / "agents-2.toml"
+    config.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.agent-a]\nprovider = "anthropic"\nmodel = "m-a"\nsystem_prompt = "s"\n'
+        '[agents.agent-b]\nprovider = "anthropic"\nmodel = "m-b"\nsystem_prompt = "s"\n'
+    )
+    return Settings(
+        database_url=database_url,
+        app_domain=APP_DOMAIN,
+        session_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
+        gateway_url="http://gateway.invalid",
+        store_url="http://store.invalid",
+        agents_file=str(chain),
+        agents_config=str(config),
+        cors_origins=["http://localhost:5173"],
+        planner_model="claude-opus-5",
+        planner_provider="anthropic",
+        events_token=SecretStr("test-events-token"),
+        chain_events_token=SecretStr("test-chain-events-token"),
+        worker_token=SecretStr("test-worker-token"),
+    )
+
+
+@pytest.fixture
+def two_agent_client(two_agent_settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(two_agent_settings), base_url="https://testserver") as c:
+        yield c
+    with psycopg.connect(two_agent_settings.database_url) as conn:
+        tables = conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'schema_migrations'"
+        ).fetchall()
+        if tables:
+            conn.execute("TRUNCATE " + ", ".join(t[0] for t in tables))
+
+
+async def seed_routable_plan(pool: Pool, *, requester: str, category: str = "cat") -> str:
+    """A plan with one task (index 0) and no dispatch at all, so every roster agent starts eligible."""
+    plan_uuid = str(uuid.uuid4())
+    plan_id = mergit_receipt.plan_id(plan_uuid)
+    task_phi = phi()
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO plans (plan_uuid, plan_id, requester, goal, repo_url, ref, category,"
+            " budget_usdc_units, state, funding, total_budget_usdc_units, planner_model, approved_at)"
+            " VALUES (%s, %s, %s, 'fix the refund', 'https://github.com/acme/widgets', 'main', %s,"
+            " 1000000, 'approved', 'wallet', 1000000, 'claude-opus-5', now())",
+            (plan_uuid, plan_id, requester, category),
+        )
+        await conn.execute(
+            'INSERT INTO tasks (plan_uuid, "index", title, instructions, phi, phi_hash, budget_usdc_units)'
+            " VALUES (%s, 0, 'task 0', 'do it', %s, %s, 500000)",
+            (plan_uuid, Jsonb(task_phi), mergit_receipt.phi_hash(json.dumps(task_phi))),
+        )
+    return plan_uuid
+
+
+async def seed_posterior(
+    pool: Pool,
+    *,
+    agent_id: str,
+    category: str,
+    alpha: float,
+    beta: float,
+    kappa: float,
+    tau: float,
+    outcomes: int = 0,
+    costs: int = 0,
+) -> None:
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO reputation_posteriors (agent_id, category, alpha, beta, kappa, tau, outcomes, costs)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (agent_id, category, alpha, beta, kappa, tau, outcomes, costs),
+        )
+
+
 def test_plans_list_only_shows_own_plans(client: TestClient, settings: Settings):
     address = sign_in(client)
     other = Account.create().address.lower()
@@ -253,7 +387,15 @@ def test_credits_denied_streams_as_a_money_event(client: TestClient, settings: S
 
 def test_agents_lists_id_name_and_model(client: TestClient):
     body = client.get("/v0/agents").json()
-    assert body == [{"agent_id": "1", "name": "coder-a", "model": "claude-sonnet-5"}]
+    assert body == [
+        {
+            "agent_id": "1",
+            "name": "coder-a",
+            "model": "claude-sonnet-5",
+            "provider": "anthropic",
+            "reputation": [],
+        }
+    ]
 
 
 def test_internal_progress_requires_worker_token(client: TestClient, settings: Settings):
@@ -452,3 +594,155 @@ def test_a_ledger_row_that_commits_late_is_still_streamed_once(client: TestClien
     sent = ledger_events()
     assert [e["id"] for e in sent][1] == -7
     assert len({e["id"] for e in sent}) == len(sent) == 2
+
+
+def test_candidates_ranked_by_density_and_requester_only(
+    two_agent_client: TestClient, two_agent_settings: Settings, two_agents: TwoAgents
+):
+    address = sign_in(two_agent_client)
+    plan_uuid = run(
+        two_agent_settings.database_url,
+        lambda pool: seed_routable_plan(pool, requester=address, category="cat-x"),
+    )
+    # agent_a: theta_mean 0.9, cost_mean 100_000 -> density 9e-6 (the higher density, should rank first).
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool,
+            agent_id=two_agents.agent_a,
+            category="cat-x",
+            alpha=90,
+            beta=10,
+            kappa=10,
+            tau=1_000_000,
+            outcomes=9,
+            costs=9,
+        ),
+    )
+    # agent_b: theta_mean 0.1, same cost_mean -> density 1e-6 (lower; should rank second).
+    run(
+        two_agent_settings.database_url,
+        lambda pool: seed_posterior(
+            pool,
+            agent_id=two_agents.agent_b,
+            category="cat-x",
+            alpha=10,
+            beta=90,
+            kappa=10,
+            tau=1_000_000,
+            outcomes=4,
+            costs=4,
+        ),
+    )
+
+    body = two_agent_client.get(f"/v0/plans/{plan_uuid}/candidates").json()
+    assert len(body["tasks"]) == 1
+    task0 = body["tasks"][0]
+    assert task0["index"] == 0
+    candidates = task0["candidates"]
+    assert [c["agent_id"] for c in candidates] == [two_agents.agent_a, two_agents.agent_b]
+    assert all(c["eligible"] and c["reason"] is None for c in candidates)
+    assert (candidates[0]["outcomes"], candidates[0]["costs"]) == (9, 9)
+    assert (candidates[1]["outcomes"], candidates[1]["costs"]) == (4, 4)
+    assert candidates[0]["density"] > candidates[1]["density"]
+    assert {c["agent_id"]: c["provider"] for c in candidates} == {
+        two_agents.agent_a: "anthropic",
+        two_agents.agent_b: "anthropic",
+    }
+
+    # requester-only: once a different account signs in on this client, the same plan is no longer theirs.
+    sign_in(two_agent_client)
+    assert two_agent_client.get(f"/v0/plans/{plan_uuid}/candidates").status_code == 403
+
+
+def test_candidates_show_ineligible_reason(client: TestClient, settings: Settings):
+    address = sign_in(client)
+    # seed_plan already dispatches agent "1" (the fixture's only agent) on every index, so it is
+    # "already tried on this task" and therefore the only candidate, and ineligible.
+    plan_uuid, _, _ = run(
+        settings.database_url, lambda pool: seed_plan(pool, requester=address, n_tasks=1)
+    )
+
+    body = client.get(f"/v0/plans/{plan_uuid}/candidates").json()
+    assert len(body["tasks"]) == 1
+    (candidate,) = body["tasks"][0]["candidates"]
+    assert candidate["agent_id"] == "1"
+    assert candidate["eligible"] is False
+    assert candidate["reason"] == "already tried on this task"
+    assert (candidate["outcomes"], candidate["costs"]) == (0, 0)
+
+
+def test_attempt_shows_exploratory_flag(client: TestClient, settings: Settings):
+    address = sign_in(client)
+    plan_uuid, _, task_ids = run(
+        settings.database_url, lambda pool: seed_plan(pool, requester=address, n_tasks=2)
+    )
+
+    async def seed_draw(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO routing_draws (task_id, seed, explore, retry_tolerant, budget_micros, samples,"
+                " ineligible, chosen_agent, greedy_agent, exploratory)"
+                " VALUES (%s, '42', true, true, 500000, %s, %s, '1', '1', true)",
+                (task_ids[0], Jsonb({"arms": [], "original_chosen": None}), Jsonb({})),
+            )
+
+    run(settings.database_url, seed_draw)
+
+    body = client.get(f"/v0/plans/{plan_uuid}").json()
+    drawn = next(a for a in body["attempts"] if a["task_id"] == task_ids[0])
+    assert drawn["routing"] == {"exploratory": True, "seed": "42", "greedy_agent": "1"}
+    undrawn = next(a for a in body["attempts"] if a["task_id"] == task_ids[1])
+    assert undrawn["routing"] is None
+
+
+def test_agents_list_has_no_reputation_from_credits_plans(client: TestClient, settings: Settings):
+    """Invariant 6: a credits-funded plan yields no reputation observation at all (`reputation.py`'s
+    `_OUTCOME_CANDIDATES`/`_COST_CANDIDATES` both filter `p.funding = 'wallet'`), so `GET /v0/agents` must
+    show an empty `reputation` list for an agent that has only ever run credits-funded plans, even after a
+    passed, sealed job and a reputation ingestion pass."""
+    address = sign_in(client)
+    agent_operator = "0x1111111111111111111111111111111111111111"  # conftest.py's agents_files fixture
+
+    async def seed(pool: Pool) -> None:
+        plan_uuid = str(uuid.uuid4())
+        plan_id = mergit_receipt.plan_id(plan_uuid)
+        task_id = mergit_receipt.task_id(plan_id, 0, 1)
+        task_phi = phi()
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO plans (plan_uuid, plan_id, requester, goal, repo_url, ref, category,"
+                " budget_usdc_units, state, funding, total_budget_usdc_units, planner_model, approved_at)"
+                " VALUES (%s, %s, %s, 'fix the refund', 'https://github.com/acme/widgets', 'main',"
+                " 'test-repair', 500000, 'running', 'credits', 500000, 'claude-opus-5', now())",
+                (plan_uuid, plan_id, address),
+            )
+            await conn.execute(
+                'INSERT INTO tasks (plan_uuid, "index", title, instructions, phi, phi_hash,'
+                " budget_usdc_units, agents) VALUES (%s, 0, 'task 0', 'do it', %s, %s, 500000, %s)",
+                (plan_uuid, Jsonb(task_phi), mergit_receipt.phi_hash(json.dumps(task_phi)), ["1"]),
+            )
+            await conn.execute(
+                'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id)'
+                " VALUES (%s, %s, 0, 1, '1')",
+                (task_id, plan_uuid),
+            )
+            await conn.execute(
+                'INSERT INTO jobs (task_id, plan_uuid, "index", attempt, agent_id, status, phi_holds,'
+                " receipt_root, cost_micros, finished_at)"
+                " VALUES (%s, %s, 0, 1, '1', 'done', true, %s, 50000, now())",
+                (task_id, plan_uuid, "0x" + "a" * 64),
+            )
+        await seed_chain_event(
+            pool, "verdict.recorded", {"task_id": task_id, "verdict": "pass", "tx": "0x" + "f" * 64}
+        )
+        async with pool.connection() as conn, conn.transaction():
+            inserted = await ingest_due(conn, settings, {"1": agent_operator}, 50)
+            assert inserted == 0  # the credits filter excludes both the outcome and the cost candidate
+
+    run(settings.database_url, seed)
+
+    body = client.get("/v0/agents").json()
+    (agent,) = [a for a in body if a["agent_id"] == "1"]
+    assert agent["provider"] == "anthropic"
+    assert agent["reputation"] == []

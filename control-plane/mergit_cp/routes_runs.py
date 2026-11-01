@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from . import money, plans, runs
+from . import money, plans, reputation, routing, runs
 from .agents import Agent
 from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .db import Pool
@@ -59,16 +59,86 @@ async def plan_detail(plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep) -
     async with pool.connection() as conn:
         plan = await _owned_plan(conn, plan_uuid, principal)
         attempts = await runs.attempts(conn, plan_uuid)
+        draws = await runs.routing_draws_for_tasks(conn, [a.task_id for a in attempts])
         ledger = await money.list_for_plan(conn, plan_uuid)
     view = plans.view(plan)
-    view["attempts"] = [runs.attempt_view(a) for a in attempts]
+    view["attempts"] = [{**runs.attempt_view(a), "routing": draws.get(a.task_id)} for a in attempts]
     view["money_events"] = [money.view(m) for m in ledger]
     return view
 
 
+@router.get("/{plan_uuid}/candidates")
+async def plan_candidates(
+    plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep, settings: SettingsDep
+) -> dict[str, Any]:
+    """A presentation of every roster agent's posterior for each of this plan's tasks -- eligible or not,
+    with a human-readable reason for the ones that aren't -- sorted the way a reader would expect to scan
+    them: eligible first, then by the same metric `routing.route`'s draw would actually rank on
+    (`density`, or `theta_mean` when `retry_tolerant` is false; see `Posterior.density`'s own docstring).
+    This never calls `route()` and never mutates anything -- it only reads `routing.candidates` and
+    `reputation.posterior`/`observation_counts`."""
+    async with pool.connection() as conn:
+        plan = await _owned_plan(conn, plan_uuid, principal)
+        agents_by_id = {a.agent_id: a for a in routing.roster(settings)}
+        task_views: list[dict[str, Any]] = []
+        for task in plan.tasks:
+            arms, ineligible = await routing.candidates(conn, plan, task.draft.index, settings)
+            posterior_by_agent = {arm.agent_id: arm.posterior for arm in arms}
+            for agent_id in ineligible:
+                posterior_by_agent[agent_id] = await reputation.posterior(
+                    conn, agent_id, plan.category, settings
+                )
+            candidates: list[dict[str, Any]] = []
+            for agent_id, post in posterior_by_agent.items():
+                agent = agents_by_id[agent_id]
+                outcomes, costs = await reputation.observation_counts(conn, agent_id, plan.category)
+                candidates.append(
+                    {
+                        "agent_id": agent.agent_id,
+                        "name": agent.name,
+                        "model": agent.model,
+                        "provider": agent.provider,
+                        "operator": agent.operator,
+                        "theta_mean": post.theta_mean,
+                        "cost_mean_micros": post.cost_mean_micros,
+                        "density": post.density,
+                        "outcomes": outcomes,
+                        "costs": costs,
+                        "eligible": agent_id not in ineligible,
+                        "reason": ineligible.get(agent_id),
+                    }
+                )
+            metric = "theta_mean" if not task.retry_tolerant else "density"
+            candidates.sort(key=lambda c: (not c["eligible"], -c[metric]))
+            task_views.append(
+                {
+                    "index": task.draft.index,
+                    "routing": task.routing,
+                    "explore": task.explore,
+                    "retry_tolerant": task.retry_tolerant,
+                    "candidates": candidates,
+                }
+            )
+    return {"tasks": task_views}
+
+
 @agents_router.get("")
-async def list_agents(agents: Annotated[list[Agent], Depends(get_agents)]) -> list[dict[str, str]]:
-    return [{"agent_id": a.agent_id, "name": a.name, "model": a.model} for a in agents]
+async def list_agents(
+    agents: Annotated[list[Agent], Depends(get_agents)], pool: PoolDep
+) -> list[dict[str, Any]]:
+    async with pool.connection() as conn:
+        views: list[dict[str, Any]] = []
+        for a in agents:
+            views.append(
+                {
+                    "agent_id": a.agent_id,
+                    "name": a.name,
+                    "model": a.model,
+                    "provider": a.provider,
+                    "reputation": await reputation.stored_posteriors(conn, a.agent_id),
+                }
+            )
+        return views
 
 
 class ProgressStep(BaseModel):
