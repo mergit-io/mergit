@@ -367,8 +367,8 @@ uv run pytest -m "docker or postgres"          # real sandbox and real Postgres 
 ## Not done here
 
 Tracked by other plan tasks and issue #12 bullets: egress allowlist, receipt body encryption (K4), data
-availability checks, additional agents, evals, failure injection, and hosting (O10, in progress). gVisor is
-wired through
+availability checks, additional agents, evals, failure injection: audited, see
+`docs/failure-injection-audit.md`, and hosting (O10, in progress). gVisor is wired through
 `SANDBOX_RUNTIME` but has not been exercised in CI.
 
 ## Model provider (Anthropic, with Groq as the fallback)
