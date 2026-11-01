@@ -6,6 +6,7 @@ import { runDetail } from "../mock/data";
 import { Agents } from "../screens/agents/Agents";
 import { Integrations } from "../screens/Integrations";
 import { Leaderboard } from "../screens/Leaderboard";
+import { Pricing } from "../screens/Pricing";
 import { NewRun } from "../screens/NewRun";
 import { NotFound } from "../screens/NotFound";
 import { Overview } from "../screens/Overview";
@@ -42,6 +43,7 @@ export const router = createBrowserRouter([
     children: [
       { path: paths.landing, element: IN_DEMO ? <HardNavigate /> : <LandingPage /> },
       { path: paths.signIn, element: IN_DEMO ? <HardNavigate /> : <SignIn /> },
+      { path: paths.pricing, element: IN_DEMO ? <HardNavigate /> : <Pricing /> },
       { path: IN_DEMO ? `${paths.liveApp}/*` : `${paths.demo}/*`, element: <HardNavigate /> },
       {
         path: paths.app,

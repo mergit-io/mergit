@@ -223,27 +223,86 @@ button.avatarme {
   color: var(--ink3);
 }
 
-/* Plan choice: Free and Pay as you go side by side, one column on a phone. */
+/* Plan cards, shared by the plan-choice dialog and the pricing page: three side by side, one column on a phone. */
 .connect-dialog.plan-dialog {
-  width: min(640px, 100vw - 32px);
+  width: min(940px, 100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
 }
 .plan-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
 }
 .plan-card {
+  position: relative;
+  transition:
+    transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1),
+    box-shadow 0.28s ease,
+    border-color 0.28s ease;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 18px;
+  padding: 22px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 24px;
   background: var(--surface);
+  box-shadow: var(--float-shadow);
 }
-.plan-card:first-child {
+.plan-card.plan-free {
   border-color: var(--border-strong);
+}
+.plan-card.is-soon {
   background: var(--soft);
+  box-shadow: none;
+}
+.plan-card:hover {
+  transform: translateY(-6px);
+  border-color: var(--border-strong);
+  box-shadow: 0 24px 48px -24px rgb(14 16 24 / 0.28);
+}
+.plan-card.is-soon:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 32px -22px rgb(14 16 24 / 0.2);
+}
+/* The one plan set apart: a gradient edge and a glow, not a bigger box. */
+.plan-card.is-featured {
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(135deg, var(--mint), var(--azure) 55%, #a794ff) border-box;
+  box-shadow: 0 28px 64px -28px color-mix(in srgb, var(--azure) 45%, transparent);
+}
+.plan-card.is-featured:hover {
+  box-shadow: 0 34px 72px -26px color-mix(in srgb, var(--azure) 60%, transparent);
+}
+.plan-ribbon {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--mint), var(--azure));
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.plan-soon {
+  background-image: linear-gradient(100deg, transparent 30%, rgb(255 255 255 / 0.55) 50%, transparent 70%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: plan-shimmer 3.2s ease-in-out infinite;
+}
+@keyframes plan-shimmer {
+  from {
+    background-position: 160% 0;
+  }
+  to {
+    background-position: -60% 0;
+  }
+}
+.plan-top {
+  align-items: center;
+  min-height: 26px;
 }
 .plan-tag {
   align-self: flex-start;
@@ -254,30 +313,46 @@ button.avatarme {
   font-size: 11.5px;
   font-weight: 500;
 }
-.plan-name {
-  font-size: 17px;
-  line-height: 22px;
+.plan-soon {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--amber-wash);
+  color: var(--amber);
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.plan-name {
+  font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+  font-size: 30px;
+  line-height: 34px;
+  font-weight: 400;
   letter-spacing: -0.01em;
+}
+.plan-blurb {
+  min-height: 40px;
 }
 .plan-price {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding: 6px 0 4px;
 }
 .plan-amount {
-  font-size: 22px;
-  line-height: 28px;
-  font-weight: 600;
+  font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+  font-size: 40px;
+  line-height: 44px;
+  font-weight: 400;
   letter-spacing: -0.02em;
 }
 .plan-list {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
   flex: 1;
-  margin: 4px 0 8px;
+  margin: 6px 0 10px;
 }
 .plan-list li {
   display: flex;
@@ -288,21 +363,73 @@ button.avatarme {
   flex: none;
   margin-top: 3px;
   color: var(--ink3);
+  transition:
+    color 0.25s ease,
+    transform 0.25s ease;
+}
+.plan-card:hover .plan-list svg {
+  color: var(--mint);
+  transform: translateX(2px);
+}
+.plan-card .btn {
+  position: relative;
+  overflow: hidden;
+}
+.plan-card .btn.primary::after,
+.pr-cta .btn.primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / 0.35) 50%, transparent 65%);
+  transform: translateX(-120%);
+  transition: transform 0.6s ease;
+}
+.plan-card .btn.primary:hover::after,
+.pr-cta .btn.primary:hover::after {
+  transform: translateX(120%);
+}
+.plan-card .btn:active {
+  transform: scale(0.985);
+}
+.plan-card .btn:focus-visible,
+.pr-cta .btn:focus-visible {
+  outline: 2px solid var(--azure);
+  outline-offset: 2px;
+}
+.plan-includes {
+  color: var(--ink);
+  font-weight: 500;
 }
 .plan-skip {
   align-self: center;
 }
-@media (max-width: 560px) {
+.plan-compare {
+  align-self: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-card,
+  .plan-card:hover,
+  .plan-list svg,
+  .plan-card:hover .plan-list svg {
+    transition: none;
+    transform: none;
+  }
+  .plan-soon {
+    animation: none;
+  }
+}
+@media (max-width: 860px) {
   .plan-grid {
     grid-template-columns: 1fr;
   }
   .connect-dialog.plan-dialog {
-    max-height: calc(100dvh - 32px);
-    overflow-y: auto;
     padding: 20px;
   }
   .plan-card {
-    padding: 14px;
+    padding: 18px;
+  }
+  .plan-blurb {
+    min-height: 0;
   }
 }
 
