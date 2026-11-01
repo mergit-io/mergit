@@ -20,23 +20,18 @@
   font-weight: 600;
   letter-spacing: -0.035em;
 }
-.si-lede {
-  font-size: 16px;
-  line-height: 26px;
-  max-width: 480px;
-}
-.si-float {
-  width: 420px;
-  max-width: 100%;
-  padding: 16px;
-  border-radius: 18px;
+/* The picture has a white background, so it sits on a white card in both themes. 494px is its native width. */
+.si-art {
+  display: block;
+  overflow: visible;
+  margin-top: 16px;
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  padding: 20px;
+  border-radius: 28px;
+  background: #ffffff;
   box-shadow: var(--float-shadow);
-  animation: float 6s ease-in-out infinite;
-}
-@keyframes float {
-  50% {
-    transform: translateY(-6px);
-  }
 }
 .si-form-wrap {
   position: relative;
@@ -79,9 +74,6 @@
 }
 .si-logo {
   flex: none;
-}
-.si-stats {
-  list-style: none;
 }
 /* Google's brand blue, the same in both themes. */
 .si-google {
@@ -126,4 +118,159 @@
 }
 .si-terms {
   text-align: center;
+}
+
+/* The sign-in illustration (SignInArt.tsx): one 12 s loop; every moving part is a window within it. */
+.si-art-link path {
+  fill: none;
+  stroke: #c9d6f5;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 3 7;
+  animation: si-flow 1.6s linear infinite;
+}
+.si-art text {
+  font-family: inherit;
+}
+.si-art-title {
+  font-size: 12px;
+  font-weight: 600;
+  fill: #0e1018;
+}
+.si-art-mono {
+  font-family: "DM Mono", monospace;
+  font-size: 9.5px;
+  fill: #6b7385;
+}
+.si-art-pill,
+.si-art-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  fill: #6b7385;
+}
+.si-art-ok {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  fill: #0e9f74;
+}
+.si-art-tap {
+  fill: none;
+  stroke: #1f6bff;
+  stroke-width: 2;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: si-tap 12s ease-out infinite 0.2s;
+}
+.si-art-on,
+.si-art-receipt,
+.si-art-settled,
+.si-art-topcoin {
+  opacity: 0;
+  animation: 12s ease-in-out infinite both;
+  animation-name: si-window;
+}
+.si-art-receipt {
+  animation-name: si-hold;
+  animation-delay: 8.6s;
+}
+.si-art-settled {
+  animation-name: si-hold;
+  animation-delay: 9.6s;
+}
+.si-art-topcoin {
+  animation-name: si-hold;
+  animation-delay: 10.9s;
+}
+.si-art-bob {
+  animation: si-bob 4s ease-in-out infinite;
+}
+.si-art-fly {
+  opacity: 0;
+  offset-rotate: 0deg;
+  animation: si-fly 12s ease-in-out infinite;
+}
+.si-art-in {
+  offset-path: path("M150 176C200 10 380 10 474 106");
+  animation-delay: 0.4s;
+}
+.si-art-out {
+  offset-path: path("M474 150C440 230 390 290 356 312");
+  animation-delay: 10s;
+}
+@keyframes si-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+@keyframes si-tap {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.6);
+  }
+  6%,
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+@keyframes si-window {
+  0% {
+    opacity: 0;
+  }
+  5%,
+  17% {
+    opacity: 1;
+  }
+  22%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes si-hold {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  4%,
+  26% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  30%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes si-bob {
+  50% {
+    transform: translateY(-8px);
+  }
+}
+@keyframes si-fly {
+  0% {
+    opacity: 1;
+    offset-distance: 0%;
+  }
+  18% {
+    opacity: 1;
+    offset-distance: 100%;
+  }
+  19%,
+  100% {
+    opacity: 0;
+    offset-distance: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .si-art * {
+    animation: none !important;
+  }
+  .si-art-receipt,
+  .si-art-settled,
+  .si-art-topcoin {
+    opacity: 1;
+  }
 }
