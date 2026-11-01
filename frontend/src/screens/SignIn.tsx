@@ -6,13 +6,11 @@ import { modeCopy, modeFromParams } from "../auth/authMode";
 import { signInErrorMessage } from "../auth/signInOptions";
 import { demoSession, type SignInMethod } from "../auth/session";
 import { DATA_MODE } from "../config/live";
-import { AgentAvatar } from "../components/AgentAvatar";
-import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { Icon } from "../components/Icon";
 import { MergitLogo } from "../components/MergitLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { signInPitch } from "../mock/data";
+import { SignInArt } from "./SignInArt";
 import "../styles/screens/signin.css";
 
 export function SignIn() {
@@ -24,7 +22,6 @@ export function SignIn() {
     signIn(demoSession(method));
     void navigate(paths.app);
   };
-  const { receipt } = signInPitch;
   const live = DATA_MODE === "live";
   const [params, setParams] = useSearchParams();
   const mode = modeFromParams(params);
@@ -43,50 +40,25 @@ export function SignIn() {
             <br />
             <span className="c2">Proof you can verify.</span>
           </h1>
-          <p className="c2 si-lede">
-            One sentence becomes a fix in GitHub, a ticket in Linear and a reply in the thread that asked. Every
-            finished task settles on chain.
-          </p>
-          {live ? (
-            <ul className="col g12 si-points">
-              <li className="row g12">
-                <Icon name="tick" size={16} stroke={2.4} />
-                <span>Every finished task leaves a receipt committed on Base Sepolia, which anyone can check.</span>
-              </li>
-              <li className="row g12">
-                <Icon name="tick" size={16} stroke={2.4} />
-                <span>Start free: trial credits pay for your first runs, with no wallet needed.</span>
-              </li>
-              <li className="row g12">
-                <Icon name="tick" size={16} stroke={2.4} />
-                <span>Connect a wallet when you want to pay with your own test USDC.</span>
-              </li>
-            </ul>
-          ) : (
-            <div className="card si-float">
-              <div className="row g12">
-                <AgentAvatar kind={receipt.agent} size={36} />
-                <div className="col grow">
-                  <span className="strong">{receipt.title}</span>
-                  <span className="mono-s c3">
-                    {receipt.tx}, block {receipt.block}
-                  </span>
-                </div>
-                <Badge status="Verified" label="Settled" />
-              </div>
-            </div>
-          )}
+          <SignInArt />
         </div>
         {live ? (
-          <span className="small c3">Sample numbers are not shown here: everything in the app is read live.</span>
-        ) : (
-          <ul className="row g24 small c2 si-stats">
-            {signInPitch.stats.map(([value, label]) => (
-              <li key={label}>
-                <b className="strong ink">{value}</b> {label}
-              </li>
-            ))}
+          <ul className="col g12 si-points">
+            <li className="row g12">
+              <Icon name="tick" size={16} stroke={2.4} />
+              <span>Every finished task leaves a receipt committed on Base Sepolia, which anyone can check.</span>
+            </li>
+            <li className="row g12">
+              <Icon name="tick" size={16} stroke={2.4} />
+              <span>Start free: trial credits pay for your first runs, with no wallet needed.</span>
+            </li>
+            <li className="row g12">
+              <Icon name="tick" size={16} stroke={2.4} />
+              <span>Connect a wallet when you want to pay with your own test USDC.</span>
+            </li>
           </ul>
+        ) : (
+          <span className="small c3">Every finished task leaves a receipt anyone can check.</span>
         )}
       </section>
 
