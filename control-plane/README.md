@@ -378,11 +378,12 @@ The planner and the agents call one model provider, chosen once at start-up from
 
 | Environment | Provider |
 | --- | --- |
-| `ANTHROPIC_API_KEY` set | Anthropic (the models in `agents.toml` and `PLANNER_MODEL`) |
+| `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` (with `ANTHROPIC_BASE_URL`, for a gateway such as Claude Lend) set | Anthropic (the models in `agents.toml` and `PLANNER_MODEL`) |
 | only `GROQ_API_KEY` set | Groq, through its OpenAI-compatible API; every agent and the planner run `GROQ_MODEL` (default `openai/gpt-oss-120b`) |
 | `LLM_PROVIDER=anthropic` or `groq` | forces one |
 
 The Claude model ids are swapped for the Groq model when an agent is loaded, before anything is priced, so a
 receipt names the model that really ran and prices it with the Groq entry in `prices.toml` (list prices from Groq's
-own pages). The worker refuses to start with no key; the API starts and a planning request answers `502`.
+own pages). Before a real run, check the credential: `python -m mergit_cp.llm_check` (inside the api
+container) makes one plain and one tool-calling request and prints the result, never the key. The worker refuses to start with no key; the API starts and a planning request answers `502`.
 There is no per-call fallback: a receipt belongs to one model, so a run never changes model halfway.

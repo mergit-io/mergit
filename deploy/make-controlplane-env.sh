@@ -22,10 +22,14 @@ done
 agent_key=$(set -a; . "$svc"; echo "${MERGIT_AGENT_KEY_1:-}")
 [ -n "$agent_key" ] || { echo "MERGIT_AGENT_KEY_1 not found in $svc" >&2; exit 1; }
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then read -rsp "ANTHROPIC_API_KEY (input hidden, Enter to skip): " ANTHROPIC_API_KEY; echo; fi
+if [ -z "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]; then read -rsp "ANTHROPIC_AUTH_TOKEN, for a gateway such as Claude Lend (input hidden, Enter to skip): " ANTHROPIC_AUTH_TOKEN; echo; fi
+if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_BASE_URL:-}" ]; then read -rp "ANTHROPIC_BASE_URL for that token: " ANTHROPIC_BASE_URL; fi
 if [ -z "${GROQ_API_KEY:-}" ]; then read -rsp "GROQ_API_KEY (input hidden, Enter to skip): " GROQ_API_KEY; echo; fi
-[ -n "${ANTHROPIC_API_KEY:-}${GROQ_API_KEY:-}" ] || { echo "a model key is required (planner and agents): ANTHROPIC_API_KEY or GROQ_API_KEY" >&2; exit 1; }
+[ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}${GROQ_API_KEY:-}" ] || { echo "a model key is required (planner and agents): ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY" >&2; exit 1; }
 model_keys() { # only the keys that were given, so the provider is chosen from what is actually there
   [ -z "${ANTHROPIC_API_KEY:-}" ] || echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
+  [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] || echo "ANTHROPIC_AUTH_TOKEN=$ANTHROPIC_AUTH_TOKEN"
+  [ -z "${ANTHROPIC_BASE_URL:-}" ] || echo "ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL"
   [ -z "${GROQ_API_KEY:-}" ] || echo "GROQ_API_KEY=$GROQ_API_KEY"
   [ -z "${GROQ_MODEL:-}" ] || echo "GROQ_MODEL=$GROQ_MODEL"
   [ -z "${LLM_PROVIDER:-}" ] || echo "LLM_PROVIDER=$LLM_PROVIDER"
