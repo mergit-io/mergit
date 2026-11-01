@@ -15,9 +15,10 @@ RUN npm ci && npm run build
 FROM scratch AS web-dist
 COPY --from=web-build /src/frontend/dist /
 
-# app.mergit.site: the same frontend on live data. Vite bakes these in at build time.
+# mergit.site and app.mergit.site: the frontend on live data. Vite bakes these in at build time.
 FROM base AS app-build
 ARG VITE_API_URL
+ARG VITE_AUTH_ORIGIN
 ARG VITE_GATEWAY_URL
 ARG VITE_STORE_URL
 ARG VITE_ESCROW
