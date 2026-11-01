@@ -73,7 +73,10 @@ def test_load_agent_spec_joins_chain_identity_with_model_config(tmp_path: Path):
     agents = tmp_path / "agents.json"
     agents.write_text(json.dumps({"agents": [{"agent_id": "1", "name": "w", "runtime_key": KEY_ADDRESS}]}))
     cfg = tmp_path / "agents.toml"
-    cfg.write_text('[agents.w]\nmodel = "m"\nsystem_prompt = "p"\n')
+    cfg.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.w]\nprovider = "anthropic"\nmodel = "m"\nsystem_prompt = "p"\n'
+    )
     spec = load_agent_spec("1", agents, cfg, {"MERGIT_AGENT_KEY_1": KEY})
     assert (spec.model, spec.system_prompt, spec.runtime_key_address) == ("m", "p", KEY_ADDRESS)
 
@@ -82,7 +85,10 @@ def test_load_agent_spec_errors(tmp_path: Path):
     agents = tmp_path / "agents.json"
     agents.write_text(json.dumps({"agents": [{"agent_id": "1", "name": "w", "runtime_key": "bad"}]}))
     cfg = tmp_path / "agents.toml"
-    cfg.write_text('[agents.w]\nmodel = "m"\nsystem_prompt = "p"\n')
+    cfg.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.w]\nprovider = "anthropic"\nmodel = "m"\nsystem_prompt = "p"\n'
+    )
     env = {"MERGIT_AGENT_KEY_1": KEY, "MERGIT_AGENT_KEY_2": KEY}
     with pytest.raises(ConfigError, match="runtime_key"):
         load_agent_spec("1", agents, cfg, env)

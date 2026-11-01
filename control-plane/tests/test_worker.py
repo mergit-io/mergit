@@ -51,7 +51,10 @@ def cfg(tmp_path: Path) -> WorkerConfig:
     agents = tmp_path / "agents.json"
     agents.write_text(json.dumps({"agents": [{"agent_id": "1", "name": "w", "runtime_key": KEY_ADDRESS}]}))
     toml = tmp_path / "agents.toml"
-    toml.write_text('[agents.w]\nmodel = "test-model"\nsystem_prompt = "p"\n')
+    toml.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.w]\nprovider = "anthropic"\nmodel = "test-model"\nsystem_prompt = "p"\n'
+    )
     return WorkerConfig(
         database_url="postgres://x",
         gateway_url="http://g",

@@ -14,7 +14,7 @@ import sys
 from typing import Any
 from urllib.parse import urlsplit
 
-from mergit_worker.providers import effective_model, llm_provider
+from mergit_worker.providers import llm_provider
 
 from .llm import LLMError, LLMUnavailable, build_llm
 
@@ -70,7 +70,7 @@ async def check(model: str) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    model = effective_model(args[0] if args else os.environ.get("PLANNER_MODEL", "claude-haiku-4-5"))
+    model = args[0] if args else os.environ.get("PLANNER_MODEL", "claude-haiku-4-5")
     return 0 if asyncio.run(check(model)) else 1
 
 

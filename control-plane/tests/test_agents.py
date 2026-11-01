@@ -3,6 +3,9 @@ from pathlib import Path
 import pytest
 
 from mergit_cp.agents import Agent, load_agents
+from mergit_worker.agents import load_agent_spec
+from mergit_worker.config import ConfigError
+from tests.support import KEY
 
 
 def test_load_agents_joins_chain_ids_with_model_config(agents_files: tuple[Path, Path]) -> None:
@@ -13,6 +16,7 @@ def test_load_agents_joins_chain_ids_with_model_config(agents_files: tuple[Path,
             name="coder-a",
             operator="0x1111111111111111111111111111111111111111",
             runtime_key="0x2222222222222222222222222222222222222222",
+            provider="anthropic",
             model="claude-sonnet-5",
             system_prompt="You fix failing tests.",
         )
@@ -21,9 +25,25 @@ def test_load_agents_joins_chain_ids_with_model_config(agents_files: tuple[Path,
 
 def test_agent_without_model_config_fails_loudly(agents_files: tuple[Path, Path]) -> None:
     chain, config = agents_files
-    config.write_text('[agents.someone-else]\nmodel = "m"\nsystem_prompt = "p"\n')
+    config.write_text('[agents.someone-else]\nprovider = "anthropic"\nmodel = "m"\nsystem_prompt = "p"\n')
     with pytest.raises(ValueError, match="coder-a"):
         load_agents(str(chain), str(config))
+
+
+def test_agent_naming_missing_provider_is_refused(agents_files: tuple[Path, Path]) -> None:
+    chain, config = agents_files
+    config.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.coder-a]\nprovider = "nope"\nmodel = "claude-sonnet-5"\nsystem_prompt = "p"\n'
+    )
+    with pytest.raises(ValueError, match="coder-a") as exc:
+        load_agents(str(chain), str(config))
+    assert "nope" in str(exc.value)
+
+    env = {"MERGIT_AGENT_KEY_1": KEY}
+    with pytest.raises(ConfigError, match="coder-a") as cexc:
+        load_agent_spec("1", chain, config, env)
+    assert "nope" in str(cexc.value)
 
 
 def test_rejects_non_decimal_agent_id(agents_files: tuple[Path, Path]) -> None:

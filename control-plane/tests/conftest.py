@@ -52,7 +52,9 @@ def agents_files(tmp_path: Path) -> tuple[Path, Path]:
     )
     config = tmp_path / "agents.toml"
     config.write_text(
-        '[agents.coder-a]\nmodel = "claude-sonnet-5"\nsystem_prompt = "You fix failing tests."\n'
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.coder-a]\nprovider = "anthropic"\nmodel = "claude-sonnet-5"\n'
+        'system_prompt = "You fix failing tests."\n'
     )
     return chain, config
 
