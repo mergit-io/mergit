@@ -51,13 +51,18 @@ class FinishedJob:
     holds: bool | None
 
 
-_CLAIM_FINISHED = """
+_CLAIM_ONE_DUE = """
 SELECT task_id, plan_uuid, "index", attempt, phi_holds FROM jobs
 WHERE status IN ('done', 'error') AND outcome_processed_at IS NULL
 ORDER BY finished_at
 FOR UPDATE SKIP LOCKED
-LIMIT %s
+LIMIT 1
 """
+"""Claims exactly ONE job (fix round 2), not up to ``limit`` -- see `process_due`'s docstring for why:
+claiming several jobs, possibly across several different plans, in one transaction is exactly what let a
+transaction end up holding one plan's row lock while also wanting `route`'s global advisory lock for
+*another* plan it had already claimed in the same breath, which is how the deadlock cycle formed even
+after fix round 1 gave `dispatch_waiting`'s sweep its own per-plan transactions."""
 
 _PROCESSED_INDEXES = """
 SELECT "index", bool_or(phi_holds = true) AS passed, max(attempt) AS last_attempt
@@ -76,12 +81,13 @@ SELECT NOT EXISTS (
 """
 
 
-async def _claim_finished(conn: AsyncConnection[TupleRow], limit: int) -> list[FinishedJob]:
-    cur = await conn.execute(_CLAIM_FINISHED, (limit,))
-    return [
-        FinishedJob(task_id=t, plan_uuid=str(p), index=i, attempt=a, holds=h)
-        for t, p, i, a, h in await cur.fetchall()
-    ]
+async def _claim_one_due(conn: AsyncConnection[TupleRow]) -> FinishedJob | None:
+    cur = await conn.execute(_CLAIM_ONE_DUE)
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    t, p, i, a, h = row
+    return FinishedJob(task_id=t, plan_uuid=str(p), index=i, attempt=a, holds=h)
 
 
 async def _mark_processed(conn: AsyncConnection[TupleRow], task_id: str) -> None:
@@ -157,22 +163,41 @@ async def process_one(conn: AsyncConnection[TupleRow], job: FinishedJob, setting
             )
 
 
-async def process_due(conn: AsyncConnection[TupleRow], settings: Settings, limit: int = 20) -> int:
-    """Process every job finished and not yet reacted to, up to ``limit``, in the caller's transaction.
-    Returns how many.
+async def process_due(pool: Pool, settings: Settings, limit: int = 20) -> int:
+    """Process up to ``limit`` finished-but-unreacted-to jobs, ONE JOB PER TRANSACTION, looping up to
+    ``limit`` times within this one call. Returns how many jobs were actually processed (fewer than
+    ``limit`` once nothing is left due -- ``SKIP LOCKED`` already makes partial progress across polls a
+    normal thing, never a correctness issue).
 
-    This deliberately does NOT also run `dispatch.dispatch_waiting`'s capacity sweep (fix round 1, Findings
-    3+4): that sweep can touch every live plan, and running it inside the SAME transaction as this
-    function's job-claiming loop meant one bad/poisoned plan rolled back the whole pass, and -- more
-    seriously -- risked a real deadlock between two concurrent `OutcomeProcessor` instances (one holding
-    `route`'s global advisory lock while waiting on another plan's row lock that a second instance holds
-    while itself waiting on that same advisory lock). `OutcomeProcessor.process_due` below calls
-    `dispatch_waiting` separately, AFTER this transaction has already committed, with its own connection and
-    its own per-plan transactions."""
-    jobs = await _claim_finished(conn, limit)
-    for job in jobs:
-        await process_one(conn, job, settings)
-    return len(jobs)
+    **Fix round 2.** This used to claim up to ``limit`` jobs -- across however many different plans --
+    in ONE shared transaction (``FOR UPDATE SKIP LOCKED LIMIT %s``), then process every one of them,
+    including any `routing.route` call (which takes `route`'s single, database-wide
+    ``pg_advisory_xact_lock('mergit.routing')`) for an auto-routing failure, all before that one
+    transaction ever committed. Fix round 1 gave `dispatch.dispatch_waiting`'s capacity sweep its own
+    per-plan transactions on the theory that no transaction would then hold two different plans' row locks
+    at once -- but this function's OWN job-claiming transaction was still exactly that: lock plan Q's row
+    (claiming its job), call `route()` for it (take the advisory lock), then -- still the same transaction
+    -- lock plan P's row too (claiming the next job), all without ever committing in between. A second
+    `OutcomeProcessor` instance whose sweep had already locked plan P (free a moment earlier) and was
+    itself waiting on the advisory lock this transaction held would then deadlock against this
+    transaction's attempt to lock P: AB-BA, and Postgres aborts one side -- rolling back every job that
+    transaction had already processed, not just the one that triggered the conflict.
+
+    Claiming and fully processing one job per transaction removes the precondition entirely: no
+    transaction in this function's path ever locks more than one plan's row before it might also want the
+    advisory lock, because it commits (releasing that one plan's row lock, and the advisory lock if it took
+    one) before even looking at the next job. There is nothing left for an AB-BA cycle to form against,
+    here or against `dispatch_waiting`'s per-plan transactions from fix round 1.
+    """
+    processed = 0
+    for _ in range(limit):
+        async with pool.connection() as conn, conn.transaction():
+            job = await _claim_one_due(conn)
+            if job is None:
+                break
+            await process_one(conn, job, settings)
+        processed += 1
+    return processed
 
 
 async def _auto_exhausted(
@@ -250,12 +275,10 @@ class OutcomeProcessor:
         self._settings = settings
 
     async def process_due(self, limit: int = 20) -> int:
-        """Claim and process due jobs in one transaction, then -- separately, once that has committed --
-        run `dispatch.dispatch_waiting`'s capacity sweep in its own per-plan transactions (fix round 1,
-        Findings 3+4; see `process_due`'s module-level docstring above for why these must not share a
-        transaction). Returns how many jobs were processed by the first part only."""
-        async with self._pool.connection() as conn, conn.transaction():
-            processed = await process_due(conn, self._settings, limit)
+        """Claim and process up to ``limit`` due jobs, one per transaction (fix round 2), then -- once every
+        one of those has committed -- run `dispatch.dispatch_waiting`'s capacity sweep, itself one
+        transaction per plan (fix round 1). Returns how many jobs were processed."""
+        processed = await process_due(self._pool, self._settings, limit)
         await dispatch.dispatch_waiting(self._pool, self._settings)
         return processed
 

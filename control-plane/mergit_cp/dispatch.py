@@ -240,6 +240,11 @@ async def dispatch_waiting(pool: Pool, settings: Settings) -> int:
     -- the same transition ``on_plan_funded`` makes the moment its own `dispatch_ready` call succeeds,
     needed here too since an all-auto, all-capacity-blocked plan can enter `funded` and sit there with
     nothing dispatched until a later sweep like this one is what actually gets it moving.
+
+    Each plan's transaction is wrapped in its own ``try``/``except`` (fix round 2, Minor): there is no
+    ``ORDER BY`` on the candidate listing, so a plan whose transaction keeps raising (a data problem specific
+    to it, say) would otherwise sit at the same position in `candidate_uuids` every pass and starve every
+    plan after it in that pass, forever, rather than just failing to make progress on the one bad plan.
     """
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT plan_uuid FROM plans WHERE state IN ('funded', 'running')")
@@ -247,18 +252,21 @@ async def dispatch_waiting(pool: Pool, settings: Settings) -> int:
 
     total = 0
     for plan_uuid in candidate_uuids:
-        async with pool.connection() as conn, conn.transaction():
-            if not await _lock_candidate_plan(conn, plan_uuid):
-                continue  # no longer funded/running, or another process already has it locked this pass
-            plan = await load(conn, plan_uuid)  # already locked by _lock_candidate_plan, in this same txn
-            if plan is None:
-                continue
-            was_funded = plan.state == "funded"
-            dispatched = list(await dispatch_ready(conn, plan, settings))
-            dispatched.extend(await _dispatch_owed_auto_retries(conn, plan, settings))
-            total += len(dispatched)
-            if dispatched and was_funded:
-                await mark_running(conn, plan.plan_uuid)
+        try:
+            async with pool.connection() as conn, conn.transaction():
+                if not await _lock_candidate_plan(conn, plan_uuid):
+                    continue  # no longer funded/running, or another process has it locked this pass
+                plan = await load(conn, plan_uuid)  # already locked by _lock_candidate_plan, same txn
+                if plan is None:
+                    continue
+                was_funded = plan.state == "funded"
+                dispatched = list(await dispatch_ready(conn, plan, settings))
+                dispatched.extend(await _dispatch_owed_auto_retries(conn, plan, settings))
+                total += len(dispatched)
+                if dispatched and was_funded:
+                    await mark_running(conn, plan.plan_uuid)
+        except Exception:
+            log.exception("dispatch_waiting: sweeping plan %s failed; skipping it this pass", plan_uuid)
     return total
 
 

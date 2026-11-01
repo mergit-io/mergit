@@ -115,8 +115,9 @@ def test_a_failed_job_is_handled_the_same_with_and_without_money_events(
         if with_events:
             for kind, payload in money_events(task_ids[0], plan_id):
                 await receive(pool, settings, kind, payload)
-        async with pool.connection() as conn, conn.transaction():
-            await outcomes.process_due(conn, settings, limit=1000)
+        # `process_due` now manages its own (one-per-job) transactions internally (fix round 2) -- it takes
+        # the pool directly, not an already-open connection/transaction.
+        await outcomes.process_due(pool, settings, limit=1000)
         after = await snapshot(pool, plan_uuid, plan_id)
         return len(after["dispatches"]), [r["type"] for r in after["outbox"]]
 

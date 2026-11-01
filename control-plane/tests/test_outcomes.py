@@ -205,10 +205,9 @@ def run(database_url: str, body: Any) -> Any:
 
 
 async def _process(pool: Pool, settings: Settings = SETTINGS) -> int:
-    """The real production wiring (`OutcomeProcessor.process_due`): claim-and-process jobs in one
-    transaction, then `dispatch.dispatch_waiting`'s capacity sweep in its own, separate per-plan
-    transactions (fix round 1, Findings 3+4) -- not the bare module-level `outcomes.process_due` alone,
-    which no longer runs the sweep itself."""
+    """The real production wiring (`OutcomeProcessor.process_due`): claim and process due jobs one per
+    transaction (fix round 2), then `dispatch.dispatch_waiting`'s capacity sweep in its own, separate
+    per-plan transactions (fix round 1)."""
     return await outcomes.OutcomeProcessor(pool, settings).process_due()
 
 
@@ -863,6 +862,74 @@ def test_waiting_index_is_not_stuck(database_url: str, tmp_path: Path) -> None:
         assert arms == []
         assert ineligible == {"901": "already tried on this task", "902": "operator at concurrency cap"}
         assert stuck == []  # "902" is still untried, and only 1 of 3 default attempts has been used
+
+    run(database_url, body)
+
+
+def test_process_due_commits_each_job_independently(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 2: `process_due` must process each due job in its own transaction, never bundle several
+    due jobs -- possibly across different plans -- into one shared, not-yet-committed transaction the way
+    it used to. That bundling is exactly what let a transaction end up holding one plan's row lock while
+    also wanting `route`'s global advisory lock for a DIFFERENT plan it had already claimed in the same
+    breath, the re-derived deadlock cycle fix round 2 closes.
+
+    This proves the structural property directly, no real concurrency or literal deadlock needed: with two
+    due jobs on two different plans, make the SECOND job's processing raise. If both jobs were still
+    sharing one transaction (the pre-fix-round-2 behavior), the whole thing would roll back and NEITHER
+    job's outcome would be committed. With one transaction per job, the FIRST job's transaction has already
+    committed by the time the second one raises -- so its outcome must be durably visible even though the
+    overall `process_due` call failed.
+    """
+    calls = 0
+    real_process_one = outcomes.process_one
+
+    async def flaky_process_one(conn: Any, job: Any, settings: Settings) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("boom")
+        await real_process_one(conn, job, settings)
+
+    monkeypatch.setattr(outcomes, "process_one", flaky_process_one)
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan_a = await _plan(conn, [task(0)], {0: ["1"]})
+            task_id_a = await outcomes.dispatch.dispatch_task(conn, plan_a, 0, 1, "1", SETTINGS)
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_a)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = false,"
+                " finished_at = now() - interval '2 seconds' WHERE task_id = %s",
+                (task_id_a,),
+            )
+            plan_b = await _plan(conn, [task(0)], {0: ["1"]})
+            task_id_b = await outcomes.dispatch.dispatch_task(conn, plan_b, 0, 1, "1", SETTINGS)
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_b)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = false,"
+                " finished_at = now() - interval '1 second' WHERE task_id = %s",
+                (task_id_b,),
+            )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await outcomes.process_due(pool, SETTINGS, limit=10)
+        assert calls == 2  # claimed and attempted both -- the second is what raised
+
+        async with pool.connection() as conn:
+            row_a = await (
+                await conn.execute(
+                    "SELECT outcome_processed_at IS NOT NULL FROM jobs WHERE task_id = %s", (task_id_a,)
+                )
+            ).fetchone()
+            row_b = await (
+                await conn.execute(
+                    "SELECT outcome_processed_at IS NOT NULL FROM jobs WHERE task_id = %s", (task_id_b,)
+                )
+            ).fetchone()
+        assert row_a == (True,)  # earliest-finished job: its own transaction already committed
+        assert row_b == (False,)  # second job: its transaction never committed -- the exception aborted it
 
     run(database_url, body)
 

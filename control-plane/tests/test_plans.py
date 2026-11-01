@@ -389,6 +389,22 @@ def test_approve_rejects_non_numeric_index_cleanly(app_client: TestClient, setti
     assert outbox(settings) == []
 
 
+def test_approve_rejects_non_numeric_routing_key_cleanly(app_client: TestClient, settings: Settings) -> None:
+    """Fix round 2: a non-numeric key in ``routing`` (not just in ``agents``) must also be a clean 422, not
+    a 500 -- covers the `sorted(extra_routing, key=int)` call this task's own code introduced, fixed
+    alongside Finding 5 by dropping ``key=int`` there too, but never previously exercised by a test."""
+    sign_in(app_client)
+    plan = create(app_client)
+    bad = {
+        "agents": {"0": ["1"], "1": ["1"]},
+        "routing": {"x": {"explore": False}},
+        "funding": "wallet",
+    }
+    response = app_client.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=bad)
+    assert response.status_code == 422, response.text
+    assert outbox(settings) == []
+
+
 def test_approve_requires_agent_for_every_task(app_client: TestClient, settings: Settings) -> None:
     sign_in(app_client)
     plan = create(app_client)
