@@ -245,3 +245,19 @@ deploy from the Actions tab ("Run workflow") or run `deploy/server/update.sh all
 
 The deploy workflow only counts an earlier run as "already deployed" when its `update.sh` step actually succeeded, and it
 starts after the `rust` workflow as well as `control-plane` and `frontend`.
+
+
+## One site on two hostnames
+
+`mergit.site` and `app.mergit.site` serve the same live site: one Caddy block, one build. The page calls the API on
+whichever hostname it was loaded from. Sign-in works from either, with three settings in `deploy/secrets/api.env`:
+
+```
+APP_DOMAIN=app.mergit.site        # GitHub and Google call back here (each allows one callback address)
+EXTRA_DOMAINS=mergit.site         # wallet sign-in is accepted from this hostname too
+COOKIE_DOMAIN=mergit.site         # the session cookie is shared, so signing in on one signs in on the other
+```
+
+Add the last two, then recreate the API (`docker compose ... up -d api`). Without them sign-in still works on
+`app.mergit.site` only, and wallet sign-in from `mergit.site` is refused as "wrong domain". The cookie is also sent to
+the other `*.mergit.site` hosts (gateway, store); they ignore it.

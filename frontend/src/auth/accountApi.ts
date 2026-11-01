@@ -1,4 +1,4 @@
-import { apiBase } from "../chain/wallet";
+import { apiBase, authBase } from "../chain/wallet";
 import { NoAccountError, type Intent } from "./intent";
 import type { Providers } from "./signInOptions";
 
@@ -16,7 +16,7 @@ export async function fetchProviders(): Promise<Providers | null> {
 
 /** Where the browser goes to sign in with GitHub or Google. A full-page navigation: the provider redirects back. */
 export const oauthStartUrl = (provider: "github" | "google", intent: Intent) =>
-  `${apiBase()}/v0/auth/${provider}/start?intent=${intent}`;
+  `${authBase()}/v0/auth/${provider}/start?intent=${intent}`;
 
 const post = (path: string, body?: unknown) =>
   fetch(`${apiBase()}${path}`, {

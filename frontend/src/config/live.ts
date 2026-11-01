@@ -19,6 +19,8 @@ const env = import.meta.env as Record<string, string | undefined>;
 
 export const LIVE = {
   apiUrl: env.VITE_API_URL ?? "",
+  /** The hostname GitHub and Google sign-in runs on (VITE_AUTH_ORIGIN); blank means the API's own. */
+  authOrigin: env.VITE_AUTH_ORIGIN ?? "",
   gatewayUrl: env.VITE_GATEWAY_URL ?? "",
   storeUrl: env.VITE_STORE_URL ?? "",
   rpcUrl: env.VITE_RPC_URL ?? "https://sepolia.base.org",
