@@ -11,8 +11,10 @@ compose() { docker compose "${profiles[@]}" -f deploy/compose.testnet.yaml -f de
 
 case "$what" in all|services|web|app) ;; *) echo "usage: $0 [all|services|web|app]" >&2; exit 2 ;; esac
 
-git pull --ff-only
-git -C ../mergit-contracts pull --ff-only   # deployments/base-sepolia.json lives there
+# Mirror origin (see sync-repo.sh for why this is not `git pull --ff-only`).
+. deploy/server/sync-repo.sh
+sync_repo .
+sync_repo ../mergit-contracts   # deployments/base-sepolia.json lives there
 
 case "$what" in
   all|services)

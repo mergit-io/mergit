@@ -214,3 +214,34 @@ unredeemed code unusable. A person redeems at **Wallet → Redeem code** (or "Ha
 
 Unlimited accounts are deliberately not a thing. Unlimited credit would spend real testnet USDC from the treasury
 without bound: give testers a large code instead.
+
+## One site, and the demo at /demo
+
+`mergit.site` is the whole site: the home page, the real app at `/app` (live Base Sepolia data), and the **demo at
+`/demo`** (sample data, no sign-in). `app.mergit.site` and `www.mergit.site` redirect to `mergit.site`, keeping the path,
+so every address shows the same thing. There is one build (`deploy/server/build-sites.sh`) and no separate demo site.
+
+The demo is the same bundle in another mode, decided once from the address the page was loaded at. It calls no API,
+gateway or chain, has its own browser storage (`mergit-demo-session`, never the real session), and every page carries a
+banner saying the data is sample data. Moving between the demo and the rest of the site is always a full page load.
+"View demo" on the home page is a plain link to `/demo`; "Get started" opens the real sign-in.
+
+## When a deploy fails with "Diverging branches can't be fast-forwarded"
+
+`update.sh` now mirrors `origin/main` (`sync-repo.sh`): it fetches and resets, so a rewritten history no longer stops a
+deploy. It refuses to run over uncommitted edits to tracked files, never touches untracked files (the secrets), and
+prints any local commit it drops (`git reflog` keeps them). A server that is **already** stuck still runs the old
+`update.sh`, which fails the same way, so it needs one manual fix first. On the server, one line at a time:
+
+```bash
+cd ~/mergit/mergit
+git fetch origin && git status -sb                 # "ahead N, behind M" means diverged
+git log --oneline origin/main..HEAD                # commits that exist only on the server: anything you need?
+git reset --hard origin/main                       # only if the answer is no; untracked files are not touched
+git -C ../mergit-contracts fetch origin && git -C ../mergit-contracts status -sb
+```
+If the contracts checkout also says diverged, `git -C ../mergit-contracts reset --hard origin/main`. Then re-run the
+deploy from the Actions tab ("Run workflow") or run `deploy/server/update.sh all` on the server.
+
+The deploy workflow only counts an earlier run as "already deployed" when its `update.sh` step actually succeeded, and it
+starts after the `rust` workflow as well as `control-plane` and `frontend`.
