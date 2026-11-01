@@ -208,6 +208,18 @@ def test_budget_too_small_for_one_token_stops_before_calling(sandbox, publisher,
     assert outcome.notes == ["cost_budget"]
 
 
+def test_budget_exhausted_with_no_completed_work_fails(sandbox, publisher, repo_url):
+    """The budget runs out before the agent is even called once, and no work was done, so the sandbox
+    is still in its unfixed starting state: Φ's predicate is unsatisfied and `holds` must say so, not
+    come back `None` or get skipped because the agent never got a turn."""
+    job = make_job(repo_url, budget_usdc_units=1)  # a fraction of a cent: cannot afford one output token
+    llm = _RecordingLLM([turn(("finish", {}))])
+    outcome = run_task(job, make_agent(), sandbox, llm, make_prices(), publisher, make_harness_config())
+    assert llm.calls == 0
+    assert outcome.notes == ["cost_budget"]
+    assert outcome.holds is False
+
+
 def test_step_budget_stops_the_loop(sandbox, publisher, repo_url):
     spin = [turn(("list_files", {})) for _ in range(5)]
     outcome, receipt, llm = run(sandbox, publisher, spin, repo_url, max_steps=3)
