@@ -15,7 +15,14 @@ const ROUTES: [string, string, string | null][] = [
 
 for (const theme of ["light", "dark"] as const) {
   test.describe(`${theme} theme`, () => {
-    test.use({ colorScheme: theme });
+    // The theme comes from a saved choice, never from the OS: a dark OS must still open light.
+    test.use({ colorScheme: "dark" });
+    test.beforeEach(async ({ page }) => {
+      if (theme === "dark")
+        await page.addInitScript(() => {
+          localStorage.setItem("mergit-theme", "dark");
+        });
+    });
 
     for (const [path, heading, tab] of ROUTES) {
       test(`${path} renders`, async ({ page }) => {
