@@ -220,7 +220,14 @@ class ModelClients:
                 env_var = spec.api_key_env or "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
                 raise ConfigError(f"{name} needs {env_var}")
             if spec.kind == "anthropic":
-                clients[name] = AnthropicLLM(timeout_s=timeout_s)
+                # With its own `api_key_env`, this provider's key may not be the SDK's own env-var default
+                # (another `[providers.*]` table could be anthropic too, with a different key); pass it
+                # explicitly so the right one is actually used, not just checked for presence above.
+                clients[name] = (
+                    AnthropicLLM(client=anthropic.Anthropic(api_key=key, timeout=timeout_s))
+                    if spec.api_key_env
+                    else AnthropicLLM(timeout_s=timeout_s)
+                )
             else:
                 if not spec.base_url:
                     raise ConfigError(f"provider {name!r} is openai_chat but has no base_url")

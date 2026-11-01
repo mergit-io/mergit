@@ -344,3 +344,36 @@ def test_missing_key_for_deployed_agent_refuses_start():
     with pytest.raises(ConfigError, match="OPENROUTER_API_KEY"):
         ModelClients.build(providers, {"openrouter"}, timeout_s=1.0, environ={})
     ModelClients.build(providers, set(), timeout_s=1.0, environ={})  # no agent needs it: does not raise
+
+
+def test_two_anthropic_providers_each_use_their_own_key():
+    """Two `[providers.*]` tables can both be `kind = "anthropic"` with different `api_key_env` values.
+    Start-up checks that each one's own key is present (`provider_key`); the client built for each must then
+    actually send that provider's key, not whichever of `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` the SDK
+    would pick for itself if neither were passed explicitly."""
+    providers = {
+        "claude-a": ProviderSpec(
+            name="claude-a", kind="anthropic", base_url=None, api_key_env="CLAUDE_A_KEY"
+        ),
+        "claude-b": ProviderSpec(
+            name="claude-b", kind="anthropic", base_url=None, api_key_env="CLAUDE_B_KEY"
+        ),
+    }
+    env = {"CLAUDE_A_KEY": "key-a", "CLAUDE_B_KEY": "key-b"}
+    models = ModelClients.build(providers, {"claude-a", "claude-b"}, timeout_s=1.0, environ=env)
+    assert models.for_provider("claude-a")._client.api_key == "key-a"  # type: ignore[attr-defined]
+    assert models.for_provider("claude-b")._client.api_key == "key-b"  # type: ignore[attr-defined]
+
+
+def test_the_default_anthropic_provider_still_lets_the_sdk_read_its_own_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A provider with no `api_key_env` (the common single-Anthropic-provider deploy) keeps today's
+    behavior: the SDK reads `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` itself, so a gateway token works
+    exactly as it always has."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sdk-default-key")
+    providers = {
+        "anthropic": ProviderSpec(name="anthropic", kind="anthropic", base_url=None, api_key_env=None)
+    }
+    models = ModelClients.build(providers, {"anthropic"}, timeout_s=1.0, environ={"ANTHROPIC_API_KEY": "x"})
+    assert models.for_provider("anthropic")._client.api_key == "sdk-default-key"  # type: ignore[attr-defined]

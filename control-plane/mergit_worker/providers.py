@@ -71,8 +71,9 @@ def has_anthropic_credential(env: Mapping[str, str]) -> bool:
 
 def llm_provider(environ: Mapping[str, str] | None = None) -> str:
     """`anthropic` or `groq`. With no key at all it answers `anthropic`: nothing changes for a deploy that has
-    a key or
-    for tests, and `require_provider` is where a missing key becomes an error."""
+    a key or for tests. The planner (`mergit_cp.llm.build_llm`) is the only caller left that turns a missing
+    key into an error; the worker checks each deployed agent's own provider instead
+    (`mergit_worker.llm.ModelClients.build`)."""
     env = os.environ if environ is None else environ
     choice = env.get("LLM_PROVIDER", "auto").strip().lower() or "auto"
     if choice not in _CHOICES:
@@ -82,21 +83,3 @@ def llm_provider(environ: Mapping[str, str] | None = None) -> str:
     if has_anthropic_credential(env):
         return "anthropic"
     return "groq" if env.get("GROQ_API_KEY") else "anthropic"
-
-
-def require_provider(environ: Mapping[str, str] | None = None) -> str:
-    """The provider, or a clear error when the key it needs is missing."""
-    env = os.environ if environ is None else environ
-    provider = llm_provider(env)
-    if provider == "groq":
-        key, present = "GROQ_API_KEY", bool(env.get("GROQ_API_KEY"))
-    else:
-        key, present = "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN", has_anthropic_credential(env)
-    if present:
-        return provider
-    if env.get("LLM_PROVIDER", "auto").strip().lower() in ("", "auto"):
-        raise ConfigError(
-            "set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY: "
-            "the planner and the agents need a model"
-        )
-    raise ConfigError(f"LLM_PROVIDER={provider} needs {key}")
