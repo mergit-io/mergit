@@ -205,8 +205,11 @@ def run(database_url: str, body: Any) -> Any:
 
 
 async def _process(pool: Pool, settings: Settings = SETTINGS) -> int:
-    async with pool.connection() as conn, conn.transaction():
-        return await outcomes.process_due(conn, settings)
+    """The real production wiring (`OutcomeProcessor.process_due`): claim-and-process jobs in one
+    transaction, then `dispatch.dispatch_waiting`'s capacity sweep in its own, separate per-plan
+    transactions (fix round 1, Findings 3+4) -- not the bare module-level `outcomes.process_due` alone,
+    which no longer runs the sweep itself."""
+    return await outcomes.OutcomeProcessor(pool, settings).process_due()
 
 
 async def _dispatch_and_escrow(
@@ -520,8 +523,11 @@ def test_auto_index_dispatches_routed_agent(database_url: str, tmp_path: Path) -
     run(database_url, body)
 
 
-def test_auto_index_waits_at_cap_then_dispatches(database_url: str, tmp_path: Path) -> None:
+def test_auto_index_waits_at_cap_then_dispatches(
+    database_url: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     settings = routed_settings(tmp_path, database_url, ["601"], router_operator_concurrency_cap=1)
+    caplog.set_level("INFO")
 
     async def body(pool: Pool) -> None:
         # A noise plan's unresolved dispatch to the only agent in the roster occupies the one concurrency
@@ -534,6 +540,9 @@ def test_auto_index_waits_at_cap_then_dispatches(database_url: str, tmp_path: Pa
             plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
             is_new = await chain_events.receive(conn, funded_event(plan), settings)
         assert is_new
+        # The spec is explicit that this is NOT an error: every ready index being auto-routed with its
+        # only candidate's operator at the concurrency cap is a legitimate, expected wait.
+        assert not any(r.levelname == "ERROR" for r in caplog.records)
 
         async with pool.connection() as conn:
             cur = await conn.execute(
@@ -546,13 +555,189 @@ def test_auto_index_waits_at_cap_then_dispatches(database_url: str, tmp_path: Pa
 
         await release(pool, noise_task_id, 1)  # frees the operator's only slot
 
-        async with pool.connection() as conn, conn.transaction():
-            dispatched = await dispatch.dispatch_waiting(conn, settings)
+        dispatched = await dispatch.dispatch_waiting(pool, settings)
         assert dispatched == 1
+        assert not any(r.levelname == "ERROR" for r in caplog.records)
 
         async with pool.connection() as conn:
             loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
         assert loaded is not None and loaded.state == "running"
+
+    run(database_url, body)
+
+
+def test_dispatch_waiting_dispatches_an_owed_auto_retry(database_url: str, tmp_path: Path) -> None:
+    """Distinct from `test_auto_index_waits_at_cap_then_dispatches` above, which blocks ATTEMPT 1 -- caught
+    by `dispatch_ready`'s own inline auto-routing branch. This blocks the RETRY (attempt 2) after attempt 1
+    has already failed and been processed: the index already has a `task_dispatches` row, so
+    `graph.ready_tasks` no longer considers it "ready" at all, and only `_dispatch_owed_auto_retries` --
+    never `dispatch_ready` -- can pick it back up. (Fix round 1: the reviewer flagged that no test exercised
+    this path directly, which is exactly how Finding 1's NULL-outcome bug slipped through.)"""
+    settings = routed_settings(tmp_path, database_url, ["1001", "1002"], router_operator_concurrency_cap=1)
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            await chain_events.receive(conn, funded_event(plan), settings)
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id, agent_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            task_id_1, agent_1 = await cur.fetchone()
+
+        # Fail attempt 1 (unsealed, so it stops counting toward the operator's cap once processed), then
+        # occupy the operator's only slot with unrelated noise BEFORE the retry is ever attempted.
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_1)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id_1,),
+            )
+        async with pool.connection() as conn, conn.transaction():
+            noise = await _plan(conn, [task(0)], {0: [agent_1]})
+            noise_task_id = await outcomes.dispatch.dispatch_task(conn, noise, 0, 1, agent_1, settings)
+
+        processed = await _process(pool, settings)
+        assert processed == 1
+
+        async with pool.connection() as conn:
+            n = await (
+                await conn.execute(
+                    'SELECT count(*) FROM task_dispatches WHERE plan_uuid = %s AND "index" = 0',
+                    (plan.plan_uuid,),
+                )
+            ).fetchone()
+        assert n is not None and n[0] == 1  # the retry is owed, not dispatched: the operator is still capped
+
+        await release(pool, noise_task_id, 1)
+
+        dispatched = await dispatch.dispatch_waiting(pool, settings)
+        assert dispatched == 1
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT attempt, agent_id FROM task_dispatches WHERE plan_uuid = %s ORDER BY attempt",
+                (plan.plan_uuid,),
+            )
+            rows = await cur.fetchall()
+        assert [r[0] for r in rows] == [1, 2]
+        assert rows[1][1] != agent_1  # the only other roster agent
+
+    run(database_url, body)
+
+
+def test_auto_retry_after_inconclusive_outcome_at_cap(database_url: str, tmp_path: Path) -> None:
+    """Fix round 1, Finding 1 (Critical): `phi_holds = NULL` ("inconclusive" -- `mergit_worker/jobs.py`'s
+    `fail()` standard error path, not just an explicit `false`) must be retried exactly like an explicit
+    failure. Before the fix, `_OWED_AUTO_RETRIES`'s `pj.passed = false` filter silently dropped an
+    all-NULL group from the result (`NULL = false` is SQL NULL, which a `WHERE` clause never matches), so
+    an auto index whose every attempt came back inconclusive was retried never and reported `needs_requester`
+    never either -- the plan just hung in `running` forever."""
+    settings = routed_settings(tmp_path, database_url, ["1101", "1102"], router_operator_concurrency_cap=1)
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            await chain_events.receive(conn, funded_event(plan), settings)
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id, agent_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            task_id_1, agent_1 = await cur.fetchone()
+
+        # phi_holds NULL: inconclusive, not an explicit failure -- the exact shape the bug mishandled.
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_1)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = NULL, finished_at = now() WHERE task_id = %s",
+                (task_id_1,),
+            )
+        async with pool.connection() as conn, conn.transaction():
+            noise = await _plan(conn, [task(0)], {0: [agent_1]})
+            noise_task_id = await outcomes.dispatch.dispatch_task(conn, noise, 0, 1, agent_1, settings)
+
+        first_pass_processed = await _process(pool, settings)
+        assert first_pass_processed == 1
+
+        async with pool.connection() as conn:
+            n = await (
+                await conn.execute(
+                    'SELECT count(*) FROM task_dispatches WHERE plan_uuid = %s AND "index" = 0',
+                    (plan.plan_uuid,),
+                )
+            ).fetchone()
+        assert n is not None and n[0] == 1  # owed, not dispatched yet -- the operator is still capped
+
+        async with pool.connection() as conn:
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+            assert loaded is not None
+            # Pre-fix, this NULL-outcome index would never show up here either: permanently invisible to
+            # both the retry sweep AND needs_requester reporting. Confirm it's correctly "not yet stuck"
+            # (attempts remain, and it's only waiting on capacity, not structurally exhausted).
+            stuck = await outcomes.stuck_indexes(conn, loaded, settings)
+        assert stuck == []
+
+        await release(pool, noise_task_id, 1)
+
+        second_pass_processed = await _process(pool, settings)  # a `process_due` pass, per the fix's ask
+        assert second_pass_processed == 0  # no freshly-finished job this pass -- the dispatch is the sweep's
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT attempt, agent_id FROM task_dispatches WHERE plan_uuid = %s ORDER BY attempt",
+                (plan.plan_uuid,),
+            )
+            rows = await cur.fetchall()
+        assert [r[0] for r in rows] == [1, 2]
+        assert rows[1][1] != agent_1
+
+    run(database_url, body)
+
+
+def test_in_flight_retry_does_not_count_toward_roster_exhaustion(database_url: str, tmp_path: Path) -> None:
+    """Fix round 1, Finding 2: an attempt beyond the latest *processed* one must never count toward roster
+    exhaustion merely because it has been dispatched -- it might still pass. With a 2-agent roster, attempt 1
+    (agent A) fails and is processed, which dispatches attempt 2 (agent B) automatically; while attempt 2 is
+    still in flight (no outcome yet), the index must NOT be reported stuck, even though both roster agents
+    now have a `task_dispatches` row."""
+    settings = routed_settings(tmp_path, database_url, ["1201", "1202"])
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: None}, routing={0: ("auto", False, True)})
+            await chain_events.receive(conn, funded_event(plan), settings)
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT task_id FROM task_dispatches WHERE plan_uuid = %s", (plan.plan_uuid,)
+            )
+            (task_id_1,) = await cur.fetchone()
+
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.dispatch.record_escrowed(conn, task_id_1)
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', phi_holds = false, finished_at = now() WHERE task_id = %s",
+                (task_id_1,),
+            )
+
+        processed = await _process(pool, settings)
+        assert processed == 1
+
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT attempt FROM task_dispatches WHERE plan_uuid = %s ORDER BY attempt",
+                (plan.plan_uuid,),
+            )
+            attempts = [r[0] for r in await cur.fetchall()]
+        assert attempts == [1, 2]  # the retry dispatched automatically -- still unresolved, in flight
+
+        async with pool.connection() as conn:
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+            assert loaded is not None
+            stuck = await outcomes.stuck_indexes(conn, loaded, settings)
+        assert stuck == []  # attempt 2 is in flight, not processed -- must not count toward exhaustion
 
     run(database_url, body)
 

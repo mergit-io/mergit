@@ -158,17 +158,20 @@ async def process_one(conn: AsyncConnection[TupleRow], job: FinishedJob, setting
 
 
 async def process_due(conn: AsyncConnection[TupleRow], settings: Settings, limit: int = 20) -> int:
-    """Process every job finished and not yet reacted to, up to ``limit``, then sweep every plan still
-    `funded`/`running` for anything an auto-routing task left waiting on capacity
-    (`dispatch.dispatch_waiting`) -- the only way a waiting auto task ever gets picked up again once nothing
-    else happens to fail or a new chain event doesn't arrive to trigger it. Both run in whatever transaction
-    the caller already opened (`OutcomeProcessor.process_due` wraps one around this whole call), the same
-    one-transaction discipline `route`'s advisory lock depends on. Returns how many jobs were processed
-    (not how many were (re)dispatched by the sweep)."""
+    """Process every job finished and not yet reacted to, up to ``limit``, in the caller's transaction.
+    Returns how many.
+
+    This deliberately does NOT also run `dispatch.dispatch_waiting`'s capacity sweep (fix round 1, Findings
+    3+4): that sweep can touch every live plan, and running it inside the SAME transaction as this
+    function's job-claiming loop meant one bad/poisoned plan rolled back the whole pass, and -- more
+    seriously -- risked a real deadlock between two concurrent `OutcomeProcessor` instances (one holding
+    `route`'s global advisory lock while waiting on another plan's row lock that a second instance holds
+    while itself waiting on that same advisory lock). `OutcomeProcessor.process_due` below calls
+    `dispatch_waiting` separately, AFTER this transaction has already committed, with its own connection and
+    its own per-plan transactions."""
     jobs = await _claim_finished(conn, limit)
     for job in jobs:
         await process_one(conn, job, settings)
-    await dispatch.dispatch_waiting(conn, settings)
     return len(jobs)
 
 
@@ -176,19 +179,16 @@ async def _auto_exhausted(
     conn: AsyncConnection[TupleRow], plan: StoredPlan, task: StoredTask, last_attempt: int, settings: Settings
 ) -> bool:
     """An auto-routing index is stuck only when it will structurally never be retried again: the attempt
-    cap is reached, or every agent in the roster has already been dispatched at some attempt for this index
-    (so `routing.candidates`' "already tried" exclusion rules out every one of them, forever -- unlike the
-    concurrency cap or probation, which are transient and must never make an index permanently
-    `needs_requester`)."""
+    cap is reached, or every agent in the roster has already been dispatched, at or before
+    ``last_attempt`` (the latest *processed* attempt -- fix round 1, Finding 2: an in-flight retry beyond
+    it must never count toward exhaustion, mirroring `_next_agent`'s own processed-attempt-only view), for
+    this index (so `routing.candidates`' "already tried" exclusion rules out every one of them, forever --
+    unlike the concurrency cap or probation, which are transient and must never make an index permanently
+    `needs_requester`). The roster-exhaustion half is `routing.roster_exhausted`, shared with
+    `dispatch.py`'s owed-retry sweep rather than duplicated here."""
     if last_attempt >= settings.max_attempts:
         return True
-    cur = await conn.execute(
-        'SELECT DISTINCT agent_id FROM task_dispatches WHERE plan_uuid = %s AND "index" = %s',
-        (plan.plan_uuid, task.draft.index),
-    )
-    tried = {row[0] for row in await cur.fetchall()}
-    roster_ids = {a.agent_id for a in routing.roster(settings)}
-    return bool(roster_ids) and roster_ids.issubset(tried)
+    return await routing.roster_exhausted(conn, plan, task.draft.index, last_attempt, settings)
 
 
 async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings) -> list[int]:
@@ -196,7 +196,14 @@ async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, setti
     for a ``'pick'``-routing task, the attempt cap or the requester's own agent list is exhausted (unchanged
     from before Task 6); for an ``'auto'``-routing task, see `_auto_exhausted`. ``needs_requester`` in plan
     task O6's own words, computed on demand from ``jobs``/``tasks.agents``/``task_dispatches`` rather than
-    stored, since it is exactly what ``dispatch_ready``/``dispatch_waiting`` already would not find ready."""
+    stored, since it is exactly what ``dispatch_ready``/``dispatch_waiting`` already would not find ready.
+
+    ``passed`` is read ``is not True`` rather than falsy-checked (fix round 1, Finding 1): a ``bool_or`` over
+    an all-``NULL`` (inconclusive) ``phi_holds`` group comes back SQL ``NULL``, which Python already treats
+    as falsy -- so this was never actually a live bug here the way it was in ``dispatch.py``'s SQL-side
+    ``= false`` filter, but is written explicitly the same way regardless, so every "not passed" check in
+    this auto-routing path reads identically and a future edit cannot reintroduce the SQL-side version of
+    the mistake by analogy."""
     cur = await conn.execute(_PROCESSED_INDEXES, (plan.plan_uuid,))
     by_index = {index: (passed, last_attempt) for index, passed, last_attempt in await cur.fetchall()}
     stuck: list[int] = []
@@ -205,7 +212,7 @@ async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, setti
         if state is None:
             continue  # never dispatched, or still in flight
         passed, last_attempt = state
-        if passed:
+        if passed is True:
             continue
         if task.routing == "auto":
             if await _auto_exhausted(conn, plan, task, int(last_attempt), settings):
@@ -243,8 +250,14 @@ class OutcomeProcessor:
         self._settings = settings
 
     async def process_due(self, limit: int = 20) -> int:
+        """Claim and process due jobs in one transaction, then -- separately, once that has committed --
+        run `dispatch.dispatch_waiting`'s capacity sweep in its own per-plan transactions (fix round 1,
+        Findings 3+4; see `process_due`'s module-level docstring above for why these must not share a
+        transaction). Returns how many jobs were processed by the first part only."""
         async with self._pool.connection() as conn, conn.transaction():
-            return await process_due(conn, self._settings, limit)
+            processed = await process_due(conn, self._settings, limit)
+        await dispatch.dispatch_waiting(self._pool, self._settings)
+        return processed
 
     async def run(self, poll_s: float, stop: asyncio.Event) -> None:
         while not stop.is_set():

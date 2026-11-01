@@ -20,6 +20,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 
 from .config import Settings
+from .db import Pool
 from .events import enqueue
 from .graph import TaskState, ready_tasks
 from .plans import StoredPlan, load
@@ -136,10 +137,18 @@ LEFT JOIN (
     SELECT "index", max(attempt) AS max_dispatched FROM task_dispatches
     WHERE plan_uuid = %(plan_uuid)s GROUP BY "index"
 ) td ON td."index" = t."index"
-WHERE t.plan_uuid = %(plan_uuid)s AND t.routing = 'auto' AND pj.passed = false
+WHERE t.plan_uuid = %(plan_uuid)s AND t.routing = 'auto' AND pj.passed IS NOT TRUE
   AND pj.last_attempt < %(max_attempts)s
   AND (td.max_dispatched IS NULL OR td.max_dispatched <= pj.last_attempt)
 """
+"""Fix round 1, Finding 1 (Critical): this used to filter ``pj.passed = false``. ``bool_or(phi_holds =
+true)`` over a group whose every ``phi_holds`` is NULL (the worker's standard inconclusive/error outcome,
+``mergit_worker/jobs.py``'s ``fail()``) returns SQL NULL, not ``false`` -- and ``NULL = false`` is NULL,
+which a ``WHERE`` clause treats as not matching, so the row was silently dropped and an index whose every
+attempt came back inconclusive was never retried and never reported `needs_requester` either: it just hung
+in `running` forever. ``IS NOT TRUE`` is NULL-safe (true for both ``false`` and ``NULL``), the same effect
+``outcomes.py``'s ``_ALL_PASSED`` gets structurally (a job is "not a pass" unless ``phi_holds = true``
+positively matches)."""
 
 
 async def _dispatch_owed_auto_retries(
@@ -157,6 +166,11 @@ async def _dispatch_owed_auto_retries(
     excluded by the ``td.max_dispatched`` condition above (a later ``task_dispatches`` row already exists,
     resolved or not), and an index with nothing eligible right now simply draws `None` again and is left
     for the next sweep -- no double dispatch, no busy-looping into an error.
+
+    A roster-*exhausted* index (fix round 1, Minor #7) is skipped before ever calling `route`, so a
+    structurally-stuck index is recognized without re-taking `route`'s global advisory lock on every single
+    sweep: `routing.roster_exhausted` is the one shared place this check lives (also used by
+    `outcomes._auto_exhausted`), so this never has to duplicate or work around it.
     """
     from . import routing
 
@@ -165,7 +179,10 @@ async def _dispatch_owed_auto_retries(
     )
     dispatched: list[str] = []
     for index, last_attempt in await cur.fetchall():
-        attempt = int(last_attempt) + 1
+        last_attempt = int(last_attempt)
+        if await routing.roster_exhausted(conn, plan, index, last_attempt, settings):
+            continue
+        attempt = last_attempt + 1
         pending = await routing.route(conn, plan, index, attempt, settings)
         if pending is None:
             continue
@@ -176,30 +193,72 @@ async def _dispatch_owed_auto_retries(
     return dispatched
 
 
-async def dispatch_waiting(conn: AsyncConnection[TupleRow], settings: Settings) -> int:
+async def _lock_candidate_plan(conn: AsyncConnection[TupleRow], plan_uuid: object) -> bool:
+    """Try to lock ``plan_uuid``'s row for this transaction, re-checking it is still `funded`/`running`
+    right now. ``SKIP LOCKED`` (not a blocking ``FOR UPDATE``): a plan another process (another
+    `OutcomeProcessor`, or this same sweep's own earlier concurrent pass) is already mid-handling is simply
+    skipped this pass, not waited on -- see `dispatch_waiting`'s docstring for why blocking here would be a
+    deadlock risk, not just a slowdown."""
+    cur = await conn.execute(
+        "SELECT 1 FROM plans WHERE plan_uuid = %s AND state IN ('funded', 'running') FOR UPDATE SKIP LOCKED",
+        (plan_uuid,),
+    )
+    return await cur.fetchone() is not None
+
+
+async def dispatch_waiting(pool: Pool, settings: Settings) -> int:
     """The periodic sweep for every plan still `funded`/`running`: newly-unblocked ready indexes (the same
     question `dispatch_ready` always answers, including an auto index that was waiting on capacity and may
     now be eligible) plus any "owed" auto retry (`_dispatch_owed_auto_retries`). Returns the total number of
     task ids dispatched across every plan swept.
+
+    **Fix round 1, Findings 3+4.** This used to run the whole sweep inside ONE caller-supplied transaction,
+    looping over every candidate plan while holding that single transaction's locks the entire time. Two
+    problems: (1) the plan list was read without any lock, so a plan could be abandoned/closed between that
+    read and this code acting on it (a stale-state race); (2) far more seriously, `route()` takes a single,
+    database-wide advisory lock (``pg_advisory_xact_lock('mergit.routing')``) that is held for the rest of
+    the transaction it was taken in. With the old one-big-transaction sweep, routing plan A's auto index
+    left this sweep's transaction holding that global advisory lock *while it went on to take plan B's row
+    lock* a few lines later. A concurrent `OutcomeProcessor` instance mid-processing plan B (ordinary
+    `process_one`, holding plan B's row lock via `load(..., for_update=True)`) that then tried to route an
+    auto retry of its own would be waiting on that same global advisory lock -- held by the first sweep,
+    which was in turn waiting on plan B's row lock, held by the second. Classic AB-BA deadlock; Postgres
+    aborts one side.
+
+    This version gives each candidate plan its OWN transaction (acquired fresh from ``pool``), so the
+    lock-then-check in `_lock_candidate_plan` replaces the old listing-then-act pattern (fixing the stale
+    read), and -- the real point -- no transaction here is ever holding more than one plan's row lock at a
+    time, or the global advisory lock from one plan's routing while trying to acquire a different plan's row
+    lock: each per-plan transaction commits (releasing both the row lock and, since
+    ``pg_advisory_xact_lock`` is transaction-scoped, the advisory lock too) before the next plan is even
+    looked at. There is no longer any transaction state in which "holds the advisory lock" and "wants
+    another plan's row lock" are both true at once, which is exactly the cycle the old version risked. The
+    Task 5 one-transaction contract (`route()`/`dispatch_task()`/`record_draw()` sharing one connection)
+    still holds -- per plan, which is all it ever needed.
 
     A plan that was `funded` and had something newly dispatched here is moved to `running` (`mark_running`)
     -- the same transition ``on_plan_funded`` makes the moment its own `dispatch_ready` call succeeds,
     needed here too since an all-auto, all-capacity-blocked plan can enter `funded` and sit there with
     nothing dispatched until a later sweep like this one is what actually gets it moving.
     """
-    cur = await conn.execute("SELECT plan_uuid FROM plans WHERE state IN ('funded', 'running')")
-    plan_uuids = [row[0] for row in await cur.fetchall()]
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT plan_uuid FROM plans WHERE state IN ('funded', 'running')")
+        candidate_uuids = [row[0] for row in await cur.fetchall()]
+
     total = 0
-    for plan_uuid in plan_uuids:
-        plan = await load(conn, plan_uuid, for_update=True)
-        if plan is None:
-            continue
-        was_funded = plan.state == "funded"
-        dispatched = list(await dispatch_ready(conn, plan, settings))
-        dispatched.extend(await _dispatch_owed_auto_retries(conn, plan, settings))
-        total += len(dispatched)
-        if dispatched and was_funded:
-            await mark_running(conn, plan.plan_uuid)
+    for plan_uuid in candidate_uuids:
+        async with pool.connection() as conn, conn.transaction():
+            if not await _lock_candidate_plan(conn, plan_uuid):
+                continue  # no longer funded/running, or another process already has it locked this pass
+            plan = await load(conn, plan_uuid)  # already locked by _lock_candidate_plan, in this same txn
+            if plan is None:
+                continue
+            was_funded = plan.state == "funded"
+            dispatched = list(await dispatch_ready(conn, plan, settings))
+            dispatched.extend(await _dispatch_owed_auto_retries(conn, plan, settings))
+            total += len(dispatched)
+            if dispatched and was_funded:
+                await mark_running(conn, plan.plan_uuid)
     return total
 
 

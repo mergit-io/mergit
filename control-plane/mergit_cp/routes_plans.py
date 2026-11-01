@@ -226,28 +226,27 @@ async def approve_plan(
         if set(body.agents) != expected:
             problems.append(f"agents must name every task index exactly once: {sorted(expected, key=int)}")
 
+        # Validation only, below: every index is still a raw string key here, deliberately never `int(...)`
+        # converted until AFTER the `if problems: raise` check further down (fix round 1, Finding 5) --
+        # `int()` on a requester-supplied, not-yet-validated index would turn a malformed key (e.g.
+        # `{"agents": {"x": ["1"]}}`) into an uncaught `ValueError`/500 instead of a clean 422. The
+        # `set(body.agents) != expected` check above is what actually guarantees every surviving key is one
+        # of `drafts`' real integer indices, so converting is safe once we're past `if problems: raise`.
         auto_indexes = {i for i, picked in body.agents.items() if picked == "auto"}
         extra_routing = set(body.routing) - auto_indexes
         problems.extend(
             f"task {index}: routing options are only valid when agents is 'auto'"
-            for index in sorted(extra_routing, key=int)
+            for index in sorted(extra_routing)  # plain string sort: these keys are not guaranteed numeric
         )
 
-        picks: dict[int, list[str] | None] = {}
-        routing: dict[int, tuple[str, bool, bool]] = {}
         for index, picked in sorted(body.agents.items()):
             if picked == "auto":
-                opts = body.routing.get(index, RoutingOptions())
-                picks[int(index)] = None
-                routing[int(index)] = ("auto", opts.explore, opts.retry_tolerant)
-            else:
-                if not 1 <= len(picked) <= settings.max_attempts:
-                    problems.append(f"task {index}: pick between 1 and {settings.max_attempts} agents")
-                if len(set(picked)) != len(picked):
-                    problems.append(f"task {index}: an agent is listed twice")
-                problems.extend(f"task {index}: unknown agent {a!r}" for a in picked if a not in known)
-                picks[int(index)] = picked
-                routing[int(index)] = ("pick", True, True)
+                continue
+            if not 1 <= len(picked) <= settings.max_attempts:
+                problems.append(f"task {index}: pick between 1 and {settings.max_attempts} agents")
+            if len(set(picked)) != len(picked):
+                problems.append(f"task {index}: an agent is listed twice")
+            problems.extend(f"task {index}: unknown agent {a!r}" for a in picked if a not in known)
         if (
             principal.user_id is not None
             and plan.requester in await accounts.trial_addresses(conn, principal.user_id)
@@ -256,6 +255,18 @@ async def approve_plan(
             problems.append("a plan drafted on the free trial can only be funded from credits")
         if problems:
             raise _problems(422, problems)
+
+        # Every index key is now known-good (matches a real draft index exactly), so converting is safe.
+        picks: dict[int, list[str] | None] = {}
+        routing: dict[int, tuple[str, bool, bool]] = {}
+        for index, picked in body.agents.items():
+            if picked == "auto":
+                opts = body.routing.get(index, RoutingOptions())
+                picks[int(index)] = None
+                routing[int(index)] = ("auto", opts.explore, opts.retry_tolerant)
+            else:
+                picks[int(index)] = picked
+                routing[int(index)] = ("pick", True, True)
 
         total = sum(t.budget_usdc_units for t in drafts)
         await plans.approve(

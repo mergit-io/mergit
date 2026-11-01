@@ -376,6 +376,19 @@ def test_approve_auto_leaves_agents_null(app_client: TestClient, settings: Setti
     assert rows[1] == (1, ["1"], "pick")
 
 
+def test_approve_rejects_non_numeric_index_cleanly(app_client: TestClient, settings: Settings) -> None:
+    """Fix round 1, Finding 5: a non-numeric index key must still be a clean 422 ("agents must name every
+    task index exactly once"), not an uncaught `ValueError`/500 -- a pick-mode-visible regression introduced
+    by converting index keys to `int` too early (inside the validation loop, before the ``if problems:
+    raise`` check) while wiring the `"auto"` routing option through."""
+    sign_in(app_client)
+    plan = create(app_client)
+    bad = {"agents": {"x": ["1"]}, "funding": "wallet"}
+    response = app_client.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=bad)
+    assert response.status_code == 422, response.text
+    assert outbox(settings) == []
+
+
 def test_approve_requires_agent_for_every_task(app_client: TestClient, settings: Settings) -> None:
     sign_in(app_client)
     plan = create(app_client)

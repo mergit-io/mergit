@@ -167,6 +167,40 @@ async def candidates(
     return arms, ineligible
 
 
+async def roster_exhausted(
+    conn: AsyncConnection[TupleRow],
+    plan: StoredPlan,
+    index: int,
+    last_processed_attempt: int,
+    settings: Settings,
+) -> bool:
+    """True once every agent in the roster has been dispatched, at or before ``last_processed_attempt``,
+    for `(plan.plan_uuid, index)` -- `candidates`' "already tried" exclusion then rules out every one of
+    them, forever, so there is structurally nothing left for `route` to ever draw for this index again
+    (unlike the concurrency cap or probation, both transient).
+
+    Shared by `dispatch.py` (to skip calling `route` -- and so skip taking its global advisory lock -- for
+    an index already known to be hopeless, rather than re-discovering that the hard way on every sweep) and
+    `outcomes.py`'s `stuck_indexes` (to report ``needs_requester``), so the one roster-exhaustion rule lives
+    in one place, next to the eligibility rule (`candidates`) it mirrors.
+
+    Only counts a dispatch toward exhaustion if its attempt is ``<= last_processed_attempt``: an attempt
+    still in flight (dispatched, but not yet processed) might still pass, so it must never count as "this
+    agent already failed" -- the same restriction pick-mode's own `_next_agent` gets for free by only ever
+    looking at the latest *processed* attempt.
+    """
+    agents = roster(settings)
+    if not agents:
+        return False
+    cur = await conn.execute(
+        "SELECT DISTINCT agent_id FROM task_dispatches"
+        ' WHERE plan_uuid = %s AND "index" = %s AND attempt <= %s',
+        (plan.plan_uuid, index, last_processed_attempt),
+    )
+    tried = {row[0] for row in await cur.fetchall()}
+    return {a.agent_id for a in agents}.issubset(tried)
+
+
 @dataclass(frozen=True)
 class PendingDraw:
     """What `route` decided, ready for `record_draw` to persist once the caller actually dispatches
