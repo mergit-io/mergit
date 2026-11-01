@@ -27,6 +27,7 @@ dev = [
   "eth-account>=0.13.1",
   # Starlette's TestClient is built on httpx2; with plain httpx it warns and pyright cannot type it.
   "httpx2>=2.13",
+  "hypothesis>=6.170.14",
   "pyright>=1.1.390",
   "pytest>=8.3",
   "respx>=0.22",

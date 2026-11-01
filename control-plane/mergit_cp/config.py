@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     """How often GET /v0/plans/{id}/events re-reads plan and task state from the database. A step the
     worker posts to /v0/internal/progress is relayed to subscribers immediately, not on this timer."""
 
+    reputation_pooling_weight: float = Field(default=0.25, gt=0)
+    """Weight `w` for pooling an agent-level posterior toward the base prior (paper 8.5). Our
+    parameterisation, not the paper's."""
+    reputation_value_ref_usdc_units: int = Field(default=1_000_000, gt=0)
+    """Reference budget size `value_ref` for the update-weight value term (paper 8.7). Our
+    parameterisation, not the paper's."""
+    router_prior_cost_micros: int = Field(default=200_000, gt=0)
+    """Prior mean cost, in micro-USD, seeded into a fresh agent's Gamma posterior (paper 8.2). Our
+    parameterisation, not the paper's."""
+
     @model_validator(mode="before")
     @classmethod
     def _blank_is_unset(cls, data: object) -> object:
