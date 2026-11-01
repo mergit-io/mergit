@@ -312,3 +312,20 @@
     padding: 8px 16px;
   }
 }
+
+/* The smallest phones: logo plus four 36 to 44px controls need about 308px, and a 320px screen has 288 inside the
+   padding. Tighter gaps and a slightly smaller logo bring it under, so the bar never pushes the page sideways. */
+@media (max-width: 400px) {
+  .nav {
+    padding-inline: 12px;
+    column-gap: 8px;
+  }
+  .navr {
+    gap: 4px;
+  }
+  .brand img,
+  .brand svg {
+    max-height: 26px;
+    width: auto;
+  }
+}

@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { paths } from "../../app/paths";
-import { useAuth } from "../../auth/context";
 import { MergitLogo } from "../../components/MergitLogo";
 import symbolColour from "./assets/symbol-colour.svg?raw";
 import { storyCopy as c } from "./copy";
@@ -85,7 +84,6 @@ function Stepper({
 export function StoryStage({ variant }: { variant: Variant }) {
   const root = useRef<HTMLDivElement>(null);
   const art = useRef<SVGSVGElement>(null);
-  const { openConnect } = useAuth();
   const track = variantTrack(variant);
 
   useLayoutEffect(() => {
@@ -93,16 +91,11 @@ export function StoryStage({ variant }: { variant: Variant }) {
     return mountStory(root.current, art.current, variant);
   }, [variant]);
 
+  // The demo is its own page (/demo, sample data, no sign-in); the sign-in button sits beside it.
   const demo = (
-    <button
-      type="button"
-      className="sbtn primary"
-      onClick={() => {
-        openConnect();
-      }}
-    >
-      Try the demo
-    </button>
+    <a href={paths.demo} className="sbtn primary">
+      View demo
+    </a>
   );
 
   return (

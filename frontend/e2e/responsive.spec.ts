@@ -38,6 +38,19 @@ const spills = (page: Page) =>
       .map((el) => `${el.tagName.toLowerCase()}.${Array.from(el.classList).join(".")}`);
   });
 
+/** What makes the page wider than the screen, for a failure message that says where to look. */
+const wideCulprits = (page: Page) =>
+  page.evaluate(() => {
+    const vw = document.documentElement.clientWidth;
+    return Array.from(document.body.querySelectorAll("*"))
+      .filter((el) => getComputedStyle(el).position !== "fixed" && el.getBoundingClientRect().right > vw + 1)
+      .slice(0, 6)
+      .map(
+        (el) =>
+          `${el.tagName.toLowerCase()}.${Array.from(el.classList).join(".")} right=${String(Math.round(el.getBoundingClientRect().right))} (screen ${String(vw)})`,
+      );
+  });
+
 const pageScrollsSideways = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
 
@@ -57,8 +70,8 @@ for (const size of SIZES) {
       if (size.width < 1024) expect(await spills(page)).toEqual([]);
       const button = page.getByRole("button", { name: /Get started/ }).first();
       await expect(button).toBeVisible();
-      const box = await button.boundingBox();
-      expect(box?.height).toBeGreaterThanOrEqual(36);
+      // A finger needs a bigger target than a mouse: the rule is for the sizes people hold in their hand.
+      if (size.width < 1024) expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(36);
     });
 
     test("sign in: the whole form fits, and the email field and buttons are tappable", async ({ page }) => {
@@ -71,12 +84,17 @@ for (const size of SIZES) {
     });
 
     test("the demo dashboard: no sideways scroll on any of its pages", async ({ page }) => {
+      // Every page is checked before failing, and each problem names the page and the element, not just "false".
+      const problems: string[] = [];
       for (const path of ["/demo", "/demo/runs/new", "/demo/agents", "/demo/proofs", "/demo/wallet"]) {
         await page.goto(path);
         await expect(page.getByRole("note")).toContainText("sample data");
-        expect(await pageScrollsSideways(page), `${path} scrolls sideways`).toBe(false);
-        expect(await spills(page), `${path} has boxes off screen`).toEqual([]);
+        if (await pageScrollsSideways(page))
+          problems.push(`${path} scrolls sideways: ${(await wideCulprits(page)).join("; ")}`);
+        const off = await spills(page);
+        if (off.length > 0) problems.push(`${path} has boxes off screen: ${off.join(", ")}`);
       }
+      expect(problems).toEqual([]);
     });
   });
 }
