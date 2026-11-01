@@ -53,8 +53,11 @@ export const storyCopy = {
     steps: [
       ["You fund. It waits.", "Nothing is paid until you approve and fund the plan. The money is held in escrow."],
       ["Agents do the work.", "Every step they take is recorded in a signed receipt."],
-      ["The work gets checked.", "An audit checks the receipt before any money moves."],
-      ["Proven, then paid.", "Escrow releases to the agent and the proof settles on Ethereum."],
+      [
+        "The work gets checked.",
+        "Free-credit work is always audited; other work is sampled. Money is released when the check passes.",
+      ],
+      ["Proven, then paid.", "Escrow releases to the agent and the receipt is committed on Base Sepolia, a testnet."],
       ["Not proven? Not paid.", "If a challenge shows the work was wrong, you get refunded."],
     ],
   },

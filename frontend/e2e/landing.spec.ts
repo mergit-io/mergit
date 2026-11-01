@@ -3,11 +3,11 @@ import { expect, test, type Page } from "@playwright/test";
 const session = (page: Page) => page.evaluate(() => localStorage.getItem("mergit-session"));
 
 test.describe("landing page", () => {
-  // Below 1024px wide (and with reduced motion) the classic page renders instead of the scroll story.
+  // The earlier landing page, kept at /?landing=classic. Phones and tablets now get the compact page (see below).
   test.use({ viewport: { width: 1000, height: 800 } });
 
   test("the intro hands over to the hero, and a click skips it", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?landing=classic");
     await expect(page.locator(".intro")).toBeVisible();
     await expect(page.getByText("settled on chain.")).toBeVisible();
     await page.mouse.click(10, 10);
@@ -21,7 +21,7 @@ test.describe("landing page", () => {
   test("reduced motion skips the intro and shows everything", async ({ browser }) => {
     const ctx = await browser.newContext({ reducedMotion: "reduce" });
     const page = await ctx.newPage();
-    await page.goto("/");
+    await page.goto("/?landing=classic");
     await expect(page.locator(".intro")).toHaveCount(0);
     await expect(page.locator(".agent-step").last()).toHaveCSS("opacity", "1");
     await ctx.close();
@@ -31,7 +31,7 @@ test.describe("landing page", () => {
     await page.addInitScript(() => {
       sessionStorage.setItem("mergit-intro-seen", "1");
     });
-    await page.goto("/");
+    await page.goto("/?landing=classic");
     await page.locator("#how-it-works").scrollIntoViewIfNeeded();
     await expect(page.locator(".how-chip").last()).toContainText("Artifact → hash → settled proof", { timeout: 6000 });
 
@@ -54,7 +54,7 @@ test.describe("landing page", () => {
       const page = await ctx.newPage();
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.goto("/");
+      await page.goto("/?landing=classic");
       expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe(colorScheme);
       const text = await page.locator("body").innerText();
       expect(text).not.toMatch(/Monad|soulbound|passport|proof of work/i);
@@ -69,7 +69,7 @@ test.describe("landing page", () => {
       await page.addInitScript(() => {
         sessionStorage.setItem("mergit-intro-seen", "1");
       });
-      await page.goto("/");
+      await page.goto("/?landing=classic");
       const box = async (selector: string) => {
         const b = await page.locator(selector).first().boundingBox();
         if (!b) throw new Error(`${selector} has no box`);
@@ -101,7 +101,7 @@ test.describe("landing page", () => {
       await page.addInitScript(() => {
         sessionStorage.setItem("mergit-intro-seen", "1");
       });
-      await page.goto("/");
+      await page.goto("/?landing=classic");
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       const spills = await page.evaluate(() => {
         const vw = document.documentElement.clientWidth;
@@ -253,13 +253,70 @@ test.describe("scroll story", () => {
     await expect(page.locator("#faq")).toBeInViewport({ timeout: 15_000 });
   });
 
-  test("reduced motion gets the classic page even on a wide screen", async ({ browser }) => {
+  test("reduced motion gets the compact page even on a wide screen", async ({ browser }) => {
     const ctx = await browser.newContext({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
     const page = await ctx.newPage();
     await page.goto("/");
     await expect(page.locator(".landing.story-mode")).toHaveCount(0);
-    await expect(page.getByRole("heading", { level: 1 })).toContainText("AI agents that do real work.");
+    await expect(page.locator(".landing.compact-mode")).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pay for what you got.");
     await ctx.close();
+  });
+});
+
+test.describe("compact landing page", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem("mergit-intro-seen", "1");
+    });
+  });
+
+  for (const [width, height] of [
+    [360, 740],
+    [768, 1024],
+    [1000, 800],
+  ] as const) {
+    test(`${String(width)}px wide: the same four parts as the story, as sections`, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      await page.goto("/");
+      await expect(page.locator(".landing.compact-mode")).toBeVisible();
+      await expect(page.locator(".landing.story-mode")).toHaveCount(0);
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pay for what you got.");
+      await expect(page.getByRole("heading", { name: /Billed for the attempt/ })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /How a plan settles/ })).toBeVisible();
+      await expect(page.locator(".cp-step")).toHaveCount(5);
+      await expect(page.getByRole("heading", { name: /Give your next outcome a team/ })).toBeVisible();
+      await expect(page.locator("#faq")).toBeVisible();
+    });
+  }
+
+  test("the settlement steps say what the contracts do, not that every task is audited or settles on Ethereum", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    const text = await page.locator(".cp-steps").innerText();
+    expect(text).toMatch(/Free-credit work is always audited/);
+    expect(text).toMatch(/Base Sepolia/);
+    expect(text).not.toMatch(/settles on Ethereum|audit checks the receipt before any money moves/);
+  });
+
+  test("Get started opens sign in and View demo opens the demo, from the hero", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await expect(page.locator(".cp-hero").getByRole("link", { name: /View demo/ })).toHaveAttribute("href", "/demo");
+    await page
+      .locator(".cp-hero")
+      .getByRole("button", { name: /Get started/ })
+      .click();
+    await expect(page).toHaveURL(/\/app$/);
+  });
+
+  test("the earlier landing page is still at /?landing=classic", async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.goto("/?landing=classic");
+    await expect(page.locator(".landing.compact-mode")).toHaveCount(0);
+    await expect(page.getByRole("heading", { level: 1 })).toContainText("AI agents that do real work.");
   });
 });
 

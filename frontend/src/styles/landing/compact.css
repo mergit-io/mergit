@@ -1,0 +1,295 @@
+/*
+ * The compact landing page: fluid from a 320px phone to a wide window. Sizes come from clamp() against the viewport,
+ * not from the 1920px design units (--u) the classic page scales, so nothing here is a fixed-width artboard. Colours
+ * are the landing tokens, so both themes work. Layouts only switch where there is room: one column by default, two
+ * from 640px, three from 960px.
+ */
+.compact-mode {
+  --cp-gap: clamp(16px, 3vw, 28px);
+  --cp-pad: clamp(56px, 9vw, 112px);
+  font-size: 16px;
+}
+.compact-mode main {
+  min-width: 0;
+}
+.compact-mode .l-container {
+  width: min(1120px, calc(100% - clamp(32px, 8vw, 96px)));
+}
+
+/* hero */
+.cp-hero {
+  background: var(--l-hero);
+  padding: clamp(32px, 7vw, 88px) 0 var(--cp-pad);
+}
+.cp-hero-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: clamp(16px, 3vw, 28px);
+}
+.cp-pill {
+  display: inline-block;
+  max-width: 100%;
+  padding: 6px 14px;
+  border: 1px solid var(--l-line);
+  border-radius: 999px;
+  background: var(--l-card);
+  font-family: var(--l-mono);
+  font-size: clamp(10px, 2.6vw, 12px);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--l-muted);
+  overflow-wrap: anywhere;
+}
+.cp-display {
+  font-size: clamp(40px, 11vw, 96px);
+  line-height: 1.02;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+}
+.cp-display-sm {
+  font-size: clamp(32px, 8vw, 64px);
+}
+.cp-display em,
+.cp-h2 em {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--l-green-ink);
+}
+.cp-lede {
+  max-width: 40em;
+  font-size: clamp(16px, 2.4vw, 21px);
+  line-height: 1.55;
+  color: var(--l-muted);
+  text-wrap: pretty;
+}
+.cp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+}
+@media (max-width: 479px) {
+  /* Full-width buttons on a phone: a big, easy target, and the pair reads as one group. */
+  .cp-actions > * {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+}
+.cp-actions .l-btn,
+.cp-actions .l-btn-ghost {
+  min-height: 48px;
+}
+
+/* sections */
+.cp-section {
+  padding: var(--cp-pad) 0;
+}
+.cp-alt {
+  background: var(--l-alt);
+}
+.cp-h2 {
+  margin-top: 14px;
+  font-size: clamp(30px, 6vw, 56px);
+  line-height: 1.06;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+}
+.cp-section .cp-lede {
+  margin-top: 16px;
+}
+
+/* the problem: two cards that sit side by side only when they have room */
+.cp-cards {
+  margin-top: clamp(28px, 5vw, 48px);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--cp-gap);
+}
+@media (min-width: 720px) {
+  .cp-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.cp-card {
+  padding: clamp(18px, 3.5vw, 30px);
+  border: 1px solid var(--l-line);
+  border-radius: 20px;
+  background: var(--l-card);
+  box-shadow: var(--l-shadow);
+  min-width: 0;
+}
+.cp-card-good {
+  border-color: var(--l-green);
+}
+.cp-card-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: clamp(18px, 3vw, 22px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.cp-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--l-green);
+  border-radius: 999px;
+  font-family: var(--l-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--l-green-ink);
+}
+.cp-meters {
+  list-style: none;
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+.cp-meters li {
+  display: grid;
+  grid-template-columns: minmax(96px, 36%) 1fr;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--l-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--l-muted);
+}
+.cp-track {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--l-gray-wash);
+  overflow: hidden;
+}
+.cp-track b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--l-ink);
+}
+.cp-faded .cp-track b {
+  background: var(--l-faint);
+  opacity: 0.55;
+}
+.cp-ok .cp-track b {
+  background: var(--l-green);
+  opacity: 1;
+}
+.cp-none strong {
+  color: #c0392b;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  border-bottom: 1px dashed currentColor;
+  justify-self: start;
+}
+:root[data-theme="dark"] .cp-none strong {
+  color: #ff8a7a;
+}
+
+/* how a plan settles: a vertical timeline on a phone, a grid once there is room */
+.cp-steps {
+  margin-top: clamp(28px, 5vw, 48px);
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--cp-gap);
+  counter-reset: none;
+}
+@media (min-width: 640px) {
+  .cp-steps {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (min-width: 960px) {
+  .cp-steps {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+.cp-step {
+  display: flex;
+  gap: 14px;
+  padding: clamp(18px, 3vw, 26px);
+  border: 1px solid var(--l-line);
+  border-radius: 18px;
+  background: var(--l-card);
+  min-width: 0;
+}
+.cp-num {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--l-purple-wash);
+  color: var(--l-purple);
+  font-family: var(--l-mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+.cp-step > div {
+  min-width: 0;
+}
+.cp-rail {
+  font-family: var(--l-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--l-muted);
+}
+.cp-step h3 {
+  margin-top: 4px;
+  font-size: clamp(17px, 2.6vw, 20px);
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.cp-step p {
+  margin-top: 8px;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--l-muted);
+}
+
+/* the call to action */
+.cp-close {
+  background: var(--l-cta);
+}
+.cp-close-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: clamp(14px, 2.4vw, 22px);
+}
+.cp-close-inner .l-mono {
+  max-width: 36em;
+  overflow-wrap: anywhere;
+}
+
+/* The nav's section links are hidden below 1100px by the shared rules; nothing here adds a menu, so keep the actions
+   from crowding the logo on the narrowest phones. */
+@media (max-width: 359px) {
+  .compact-mode .l-nav .l-btn {
+    padding: 0 10px;
+  }
+}
+
+/* A landscape phone is wide but short: do not let the hero grow a screen of padding. */
+@media (max-height: 520px) and (orientation: landscape) {
+  .cp-hero {
+    padding-top: 16px;
+  }
+}

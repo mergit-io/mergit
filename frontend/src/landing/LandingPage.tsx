@@ -30,14 +30,15 @@ import { HowItWorks } from "./sections/HowItWorks";
 import { LandingNav } from "./sections/LandingNav";
 import { ProofOfWork } from "./sections/ProofOfWork";
 import { Team } from "./sections/Team";
+import { CompactLanding } from "./CompactLanding";
 import { navFor, storyVariant } from "./story/storyConfig";
 import { StoryStage } from "./story/StoryStage";
 
 const INTRO_KEY = "mergit-intro-seen";
 
 /*
- * The scroll story needs a landscape screen and motion. Phones, small tablets
- * and reduced-motion visitors get the classic, fully static-friendly page.
+ * The scroll story needs a landscape screen and motion. Phones, small tablets, short windows and
+ * reduced-motion visitors get the compact page: the same words and parts, as sections that reflow.
  */
 const STORY_QUERY = "(min-width: 1024px) and (min-height: 600px) and (prefers-reduced-motion: no-preference)";
 function useStoryMode() {
@@ -63,9 +64,14 @@ function shouldPlayIntro() {
   }
 }
 
+/** `/?landing=classic` is the earlier landing page, kept to compare with the compact one that replaced it. */
+const wantsClassic = () => new URLSearchParams(window.location.search).get("landing") === "classic";
+
 export function LandingPage() {
   const story = useStoryMode();
-  return story ? <StoryLanding /> : <ClassicLanding />;
+  const [classic] = useState(wantsClassic);
+  if (classic) return <ClassicLanding />;
+  return story ? <StoryLanding /> : <CompactLanding />;
 }
 
 function StoryLanding() {
