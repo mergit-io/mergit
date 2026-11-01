@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     database_url: str
     app_domain: str
     """The SIWE domain the web app signs for, e.g. app.mergit.site. Messages for any other domain fail."""
+    extra_domains: Annotated[list[str], NoDecode] = []
+    """Other hostnames the same site is served on (app.mergit.site beside mergit.site). Wallet messages for
+    them are accepted too. OAuth callbacks and redirects stay on ``app_domain``: GitHub takes one callback."""
+    cookie_domain: str | None = None
+    """When set (mergit.site), the session cookie is shared by that domain and its subdomains, so signing in
+    on one of the site's hostnames signs in on the others. Unset, the cookie stays on the host that set it."""
     session_secret: SecretStr = Field(min_length=32)
     gateway_url: str
     store_url: str
@@ -106,6 +112,11 @@ class Settings(BaseSettings):
         return {k: v for k, v in values.items() if not (isinstance(v, str) and v.strip() == "")}
 
     @property
+    def sign_in_domains(self) -> list[str]:
+        """Every hostname a wallet may sign in for."""
+        return [self.app_domain, *self.extra_domains]
+
+    @property
     def public_origin(self) -> str:
         """Where the browser reaches the web app and this API (same origin behind Caddy)."""
         local = self.app_domain.split(":")[0] in ("localhost", "127.0.0.1")
@@ -123,7 +134,7 @@ class Settings(BaseSettings):
     def email_enabled(self) -> bool:
         return bool(self.smtp_host and self.smtp_from)
 
-    @field_validator("cors_origins", "repo_hosts", mode="before")
+    @field_validator("cors_origins", "repo_hosts", "extra_domains", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
         if isinstance(value, str):

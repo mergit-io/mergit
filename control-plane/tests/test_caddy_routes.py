@@ -19,7 +19,7 @@ INTERNAL = ("/v0/internal", "/v0/chain-events")
 
 def _proxied_patterns() -> list[str]:
     text = CADDYFILE.read_text()
-    block = re.search(r"(?m)^mergit\.site \{.*?@api path ([^\n]+)", text, re.S)
+    block = re.search(r"(?m)^mergit\.site, app\.mergit\.site \{.*?@api path ([^\n]+)", text, re.S)
     assert block, "the mergit.site block has no `@api path` matcher"
     return block.group(1).split()
 

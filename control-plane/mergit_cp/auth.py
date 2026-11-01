@@ -62,8 +62,11 @@ def _checked_message(body: VerifyBody, settings: Settings) -> SiweMessage:
     if message.chain_id != settings.chain_id:
         raise _unauthorized("wrong chain")
     try:
-        # Checks the domain, the expiry and not-before fields, and that the signature recovers to the address.
-        message.verify(body.signature, domain=settings.app_domain)
+        # The message's domain must be one of the site's hostnames, or it was signed for another site.
+        # verify() then checks expiry, not-before and that the signature recovers to the address.
+        if message.domain not in settings.sign_in_domains:
+            raise _unauthorized("wrong domain")
+        message.verify(body.signature, domain=message.domain)
     except VerificationError as exc:
         raise _unauthorized(type(exc).__name__) from exc
     return message
@@ -279,4 +282,6 @@ async def logout(
                 "UPDATE sessions SET revoked_at = now() WHERE token_hash = %s AND revoked_at IS NULL",
                 (_token_hash(settings, mergit_session),),
             )
-    response.delete_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+    response.delete_cookie(
+        COOKIE, path="/", domain=settings.cookie_domain, secure=True, httponly=True, samesite="lax"
+    )

@@ -89,6 +89,7 @@ def set_session_cookie(response: Response, settings: Settings, token: str) -> No
         secure=True,
         samesite="lax",
         path="/",
+        domain=settings.cookie_domain,
     )
 
 
