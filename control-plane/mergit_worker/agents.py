@@ -54,6 +54,26 @@ def load_agent_spec(
     )
 
 
+def validate_agents_have_keys(
+    agents_file: Path, agents_config: Path, environ: Mapping[str, str] | None = None
+) -> set[str]:
+    """Every provider named by a deployed agent, read exactly as `validate_agents_are_priced` reads the
+    deploy. This does not itself check that a key is present for each one: `ModelClients.build` does that,
+    against the set this returns, so the two stay in lockstep by construction."""
+    try:
+        registry: list[dict[str, Any]] = json.loads(agents_file.read_text())["agents"]
+        models: dict[str, Any] = tomllib.loads(agents_config.read_text())["agents"]
+    except (OSError, KeyError, ValueError) as exc:
+        raise ConfigError(f"cannot read agent configuration: {exc}") from exc
+    needed: set[str] = set()
+    for entry in registry:
+        cfg: dict[str, Any] | None = models.get(str(entry.get("name")))
+        provider = cfg.get("provider") if cfg else None
+        if provider:  # a missing provider here is load_agent_spec's own clear error to raise
+            needed.add(str(provider))
+    return needed
+
+
 def validate_agents_are_priced(agents_file: Path, agents_config: Path, prices: PriceTable) -> None:
     """Every agent with a model in `agents_config` must have that model in the price table, checked once
     at start-up. Otherwise a bad deploy is discovered only after a job has already paid the provider for

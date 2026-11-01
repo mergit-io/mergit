@@ -1,4 +1,5 @@
-"""The Groq adapters (worker: sync, planner: async) against Groq's documented HTTP shape, faked with respx."""
+"""The worker's `OpenAIChatLLM` (any OpenAI-compatible chat API: Groq, OpenRouter, ...) and the planner's
+async Groq adapter, against the documented HTTP shape, faked with respx."""
 
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ import respx
 from mergit_cp import llm as cp_llm
 from mergit_worker import llm as worker_llm
 
-URL = "https://api.groq.com/openai/v1/chat/completions"
+BASE_URL = "https://api.groq.com/openai/v1"
+URL = f"{BASE_URL}/chat/completions"
 TOOLS = [{"name": "finish", "description": "done", "input_schema": {"type": "object", "properties": {}}}]
 
 
@@ -44,7 +46,7 @@ def test_worker_sends_the_documented_request_and_returns_anthropic_shaped_blocks
             finish="tool_calls",
         ),
     )
-    llm = worker_llm.GroqLLM("test-key", sleep=lambda _s: None)
+    llm = worker_llm.OpenAIChatLLM("test-key", base_url=BASE_URL, sleep=lambda _s: None)
     result = llm.complete(
         [{"role": "user", "content": "go"}], TOOLS, "openai/gpt-oss-120b", system="sys", max_tokens=99
     )
@@ -79,7 +81,7 @@ def test_worker_counts_cached_prompt_tokens_in_full_so_a_receipt_never_understat
             },
         ),
     )
-    result = worker_llm.GroqLLM("k", sleep=lambda _s: None).complete(
+    result = worker_llm.OpenAIChatLLM("k", base_url=BASE_URL, sleep=lambda _s: None).complete(
         [{"role": "user", "content": "x"}], None, "m"
     )
     assert result.input_tokens == 100
@@ -94,7 +96,7 @@ def test_worker_retries_rate_limits_then_succeeds():
         ]
     )
     waits: list[float] = []
-    result = worker_llm.GroqLLM("k", sleep=waits.append).complete(
+    result = worker_llm.OpenAIChatLLM("k", base_url=BASE_URL, sleep=waits.append).complete(
         [{"role": "user", "content": "x"}], None, "m"
     )
     assert result.text == "hi" and route.call_count == 2 and waits == [1.0]
@@ -104,7 +106,9 @@ def test_worker_retries_rate_limits_then_succeeds():
 def test_worker_gives_up_after_three_attempts():
     route = respx.post(URL).respond(503, json={})
     with pytest.raises(worker_llm.LLMError, match="503"):
-        worker_llm.GroqLLM("k", sleep=lambda _s: None).complete([{"role": "user", "content": "x"}], None, "m")
+        worker_llm.OpenAIChatLLM("k", base_url=BASE_URL, sleep=lambda _s: None).complete(
+            [{"role": "user", "content": "x"}], None, "m"
+        )
     assert route.call_count == 3
 
 
@@ -112,7 +116,7 @@ def test_worker_gives_up_after_three_attempts():
 def test_worker_does_not_retry_a_rejected_request_and_never_echoes_the_key():
     route = respx.post(URL).respond(400, json={"error": {"message": "bad field"}})
     with pytest.raises(worker_llm.LLMError) as caught:
-        worker_llm.GroqLLM("secret-key-123", sleep=lambda _s: None).complete(
+        worker_llm.OpenAIChatLLM("secret-key-123", base_url=BASE_URL, sleep=lambda _s: None).complete(
             [{"role": "user", "content": "x"}], None, "m"
         )
     assert route.call_count == 1 and "secret-key-123" not in str(caught.value) and "400" in str(caught.value)
@@ -122,16 +126,37 @@ def test_worker_does_not_retry_a_rejected_request_and_never_echoes_the_key():
 def test_worker_turns_a_connection_failure_into_an_llm_error():
     respx.post(URL).mock(side_effect=httpx.ConnectError("down"))
     with pytest.raises(worker_llm.LLMError):
-        worker_llm.GroqLLM("k", sleep=lambda _s: None).complete([{"role": "user", "content": "x"}], None, "m")
+        worker_llm.OpenAIChatLLM("k", base_url=BASE_URL, sleep=lambda _s: None).complete(
+            [{"role": "user", "content": "x"}], None, "m"
+        )
 
 
-def test_the_worker_factory_picks_the_provider_from_the_environment():
-    assert isinstance(worker_llm.build_llm(10.0, {"GROQ_API_KEY": "g"}), worker_llm.GroqLLM)
-    assert isinstance(worker_llm.build_llm(10.0, {"ANTHROPIC_API_KEY": "a"}), worker_llm.AnthropicLLM)
-    from mergit_worker.config import ConfigError
+@respx.mock
+def test_error_object_in_200_is_llm_error():
+    """Some OpenAI-compatible providers (OpenRouter among them) answer a routing failure with HTTP 200 and
+    an `error` object in the body instead of a non-200 status; that must still surface as `LLMError`, with
+    the provider's own message and never the key."""
+    respx.post(URL).respond(200, json={"error": {"message": "No endpoints found", "code": 404}})
+    with pytest.raises(worker_llm.LLMError) as caught:
+        worker_llm.OpenAIChatLLM("secret-key-123", base_url=BASE_URL, sleep=lambda _s: None).complete(
+            [{"role": "user", "content": "x"}], None, "m"
+        )
+    assert "No endpoints found" in str(caught.value)
+    assert "secret-key-123" not in str(caught.value)
 
-    with pytest.raises(ConfigError):
-        worker_llm.build_llm(10.0, {})
+
+@respx.mock
+def test_posts_to_configured_base_url():
+    """`base_url` is a required constructor argument: this class is provider-agnostic, so a deploy pointed
+    at OpenRouter (or any other OpenAI-compatible endpoint) sends its request there, not to Groq."""
+    openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
+    route = respx.post(openrouter_url).respond(200, json=reply({"content": "ok"}))
+    worker_llm.OpenAIChatLLM("k", base_url="https://openrouter.ai/api/v1", sleep=lambda _s: None).complete(
+        [{"role": "user", "content": "x"}], None, "m"
+    )
+    request = route.calls.last.request
+    assert str(request.url) == openrouter_url
+    assert request.headers["authorization"] == "Bearer k"
 
 
 # -- planner (async) ---------------------------------------------------------------------------

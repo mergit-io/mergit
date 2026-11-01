@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from mergit_worker.config import WorkerConfig
+from mergit_worker.config import ConfigError, WorkerConfig
+from mergit_worker.llm import ModelClients
 from mergit_worker.models import Job, RunOutcome
+from mergit_worker.providers import ProviderSpec
 from mergit_worker.worker import Worker, WorkerDeps
 from tests.support import (
     FIX,
@@ -68,6 +71,28 @@ def cfg(tmp_path: Path) -> WorkerConfig:
     )
 
 
+@dataclass
+class _SingleModel:
+    """A `WorkerDeps.models` stand-in that answers every provider with the same fake `LLM`, for tests that
+    don't care which provider name was asked for."""
+
+    llm: Any
+
+    def for_provider(self, _name: str) -> Any:
+        return self.llm
+
+
+@dataclass
+class _RecordingModels:
+    """A `WorkerDeps.models` stand-in backed by one fake `LLM` per provider name, so a test can see which
+    one a job actually used."""
+
+    clients: dict[str, Any]
+
+    def for_provider(self, name: str) -> Any:
+        return self.clients[name]
+
+
 def make_worker(cfg: WorkerConfig, store: FakeStore, llm: Any, tmp_path: Path, made: list[ProcessSandbox]):
     def factory(job: Job) -> ProcessSandbox:
         sbx = ProcessSandbox.create(job.repo_url, job.ref, tmp_path / "ws")
@@ -76,7 +101,7 @@ def make_worker(cfg: WorkerConfig, store: FakeStore, llm: Any, tmp_path: Path, m
 
     deps = WorkerDeps(
         store=store,
-        llm=llm,
+        models=_SingleModel(llm),
         prices=make_prices(),
         publisher=RecordingPublisher(sealed=[]),
         make_sandbox=factory,
@@ -114,7 +139,7 @@ def test_a_failed_claim_does_not_crash_the_worker(cfg: WorkerConfig):
     process down with it; the poll loop backs off and tries again."""
     deps = WorkerDeps(
         store=_RaisingStore(),
-        llm=ScriptedLLM([]),
+        models=_SingleModel(ScriptedLLM([])),
         prices=make_prices(),
         publisher=RecordingPublisher(sealed=[]),
         make_sandbox=_unused_sandbox,
@@ -128,7 +153,7 @@ def test_a_crashing_pr_queue_does_not_stop_job_processing(cfg: WorkerConfig):
     its next turn."""
     deps = WorkerDeps(
         store=FakeStore([]),
-        llm=ScriptedLLM([]),
+        models=_SingleModel(ScriptedLLM([])),
         prices=make_prices(),
         publisher=RecordingPublisher(sealed=[]),
         make_sandbox=_unused_sandbox,
@@ -240,3 +265,82 @@ def test_run_forever_stops_when_asked(cfg: WorkerConfig, tmp_path: Path):
     stop.set()
     t.join(timeout=5)
     assert not t.is_alive()
+
+
+def test_each_job_uses_its_agents_provider(tmp_path: Path, repo_url: str, monkeypatch: pytest.MonkeyPatch):
+    """Two agents naming different providers must each reach their own model client: a job for agent 1
+    never calls provider 2's client, and vice versa."""
+    monkeypatch.setenv("MERGIT_AGENT_KEY_1", KEY)
+    monkeypatch.setenv("MERGIT_AGENT_KEY_2", KEY)
+    agents = tmp_path / "agents.json"
+    agents.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {"agent_id": "1", "name": "a1", "runtime_key": KEY_ADDRESS},
+                    {"agent_id": "2", "name": "a2", "runtime_key": KEY_ADDRESS},
+                ]
+            }
+        )
+    )
+    toml = tmp_path / "agents.toml"
+    toml.write_text(
+        '[providers.p1]\nkind = "anthropic"\n\n'
+        '[providers.p2]\nkind = "anthropic"\n\n'
+        '[agents.a1]\nprovider = "p1"\nmodel = "test-model"\nsystem_prompt = "p"\n'
+        '[agents.a2]\nprovider = "p2"\nmodel = "test-model"\nsystem_prompt = "p"\n'
+    )
+    cfg = WorkerConfig(
+        database_url="postgres://x",
+        gateway_url="http://g",
+        store_url="http://s",  # type: ignore[arg-type]
+        events_token="e",
+        store_write_token="s",
+        receipt_registry=REGISTRY,  # type: ignore[arg-type]
+        agents_file=agents,
+        agents_config=toml,
+        poll_interval_s=0.01,
+    )
+
+    llm1, llm2 = ScriptedLLM([turn(("finish", {}))]), ScriptedLLM([turn(("finish", {}))])
+    models = _RecordingModels({"p1": llm1, "p2": llm2})
+    made: list[ProcessSandbox] = []
+
+    def factory(job: Job) -> ProcessSandbox:
+        sbx = ProcessSandbox.create(job.repo_url, job.ref, tmp_path / f"ws-{job.agent_id}")
+        made.append(sbx)
+        return sbx
+
+    store = FakeStore([make_job(repo_url, agent_id="1"), make_job(repo_url, agent_id="2")])
+    deps = WorkerDeps(
+        store=store,
+        models=models,
+        prices=make_prices(),
+        publisher=RecordingPublisher(sealed=[]),
+        make_sandbox=factory,
+        harness=make_harness_config(),
+    )
+    worker = Worker(cfg, deps)
+
+    assert worker.run_once() is True
+    assert (llm1.calls, llm2.calls) == (1, 0)
+    assert worker.run_once() is True
+    assert (llm1.calls, llm2.calls) == (1, 1)
+    assert store.failures == []
+
+
+def test_missing_key_for_deployed_agent_refuses_start():
+    """A provider every deployed agent needs, with no key for it, is caught once at start-up: the error
+    names the provider and the environment variable it needs, never leaving that discovery for a job's
+    first model call."""
+    providers = {
+        "openrouter": ProviderSpec(
+            name="openrouter",
+            kind="openai_chat",
+            base_url="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+        )
+    }
+    with pytest.raises(ConfigError, match="OPENROUTER_API_KEY"):
+        ModelClients.build(providers, {"openrouter"}, timeout_s=1.0, environ={})
+    ModelClients.build(providers, set(), timeout_s=1.0, environ={})  # no agent needs it: does not raise
