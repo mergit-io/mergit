@@ -7,6 +7,7 @@ import pytest
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from fastapi.testclient import TestClient
+from httpx import Response
 from siwe import SiweMessage
 
 from mergit_cp.config import Settings
@@ -56,7 +57,7 @@ def test_verify_accepts_valid_siwe_and_sets_cookie(client: TestClient) -> None:
     assert "HttpOnly" in cookie
     assert "Secure" in cookie
     assert "SameSite=lax" in cookie
-    assert "Max-Age=43200" in cookie
+    assert "Max-Age=2592000" in cookie  # session_ttl_s: 30 days
     # /me also returns the profile (user_id, wallets, ...); only the address is checked here.
     assert client.get("/v0/auth/me").json()["address"] == address.lower()
 
@@ -118,6 +119,98 @@ def test_expired_session_is_rejected(client: TestClient, settings: Settings) -> 
     assert client.post("/v0/auth/verify", json=body).status_code == 200
     with psycopg.connect(settings.database_url) as conn:
         conn.execute("UPDATE sessions SET expires_at = now() - interval '1 second'")
+    assert client.get("/v0/auth/me").status_code == 401
+
+
+def _signed_in(client: TestClient) -> None:
+    _, body = _signed(_nonce(client))
+    assert client.post("/v0/auth/verify", json=body).status_code == 200
+
+
+def _session_row(settings: Settings) -> tuple[float, float]:
+    """(seconds until expiry, seconds from created_at to expiry) of the only session."""
+    with psycopg.connect(settings.database_url) as conn:
+        row = conn.execute(
+            "SELECT extract(epoch FROM expires_at - now()), extract(epoch FROM expires_at - created_at)"
+            " FROM sessions"
+        ).fetchone()
+    assert row is not None
+    return float(row[0]), float(row[1])
+
+
+def _max_age(response: Response) -> int | None:
+    cookie = response.headers.get("set-cookie", "")
+    for part in cookie.split(";"):
+        if part.strip().lower().startswith("max-age="):
+            return int(part.split("=", 1)[1])
+    return None
+
+
+def test_a_fresh_session_is_not_rewritten_on_every_request(client: TestClient, settings: Settings) -> None:
+    _signed_in(client)
+    before = _session_row(settings)
+    response = client.get("/v0/auth/me")
+    assert response.status_code == 200
+    assert "set-cookie" not in response.headers
+    assert _session_row(settings)[1] == pytest.approx(before[1], abs=1)
+
+
+def test_a_session_in_use_slides_forward_and_reissues_the_cookie(
+    client: TestClient, settings: Settings
+) -> None:
+    _signed_in(client)
+    with psycopg.connect(settings.database_url) as conn:
+        conn.execute("UPDATE sessions SET expires_at = now() + interval '1 hour'")  # under half left
+    response = client.get("/v0/auth/me")
+    assert response.status_code == 200
+    assert _max_age(response) == pytest.approx(settings.session_ttl_s, abs=5)
+    assert _session_row(settings)[0] == pytest.approx(settings.session_ttl_s, abs=5)
+    assert client.get("/v0/auth/me").status_code == 200
+
+
+def test_sliding_never_passes_the_absolute_cap(client: TestClient, settings: Settings) -> None:
+    _signed_in(client)
+    with psycopg.connect(settings.database_url) as conn:
+        # Signed in 89 days ago, one hour left: only one more day fits under the 90 day cap.
+        conn.execute(
+            "UPDATE sessions SET created_at = now() - interval '89 days',"
+            " expires_at = now() + interval '1 hour'"
+        )
+    response = client.get("/v0/auth/me")
+    assert response.status_code == 200
+    assert _max_age(response) == pytest.approx(86400, abs=5)
+    assert _session_row(settings)[1] == pytest.approx(settings.session_max_age_s, abs=5)
+
+
+def test_a_session_past_the_cap_is_not_extended(client: TestClient, settings: Settings) -> None:
+    _signed_in(client)
+    with psycopg.connect(settings.database_url) as conn:
+        conn.execute(
+            "UPDATE sessions SET created_at = now() - interval '91 days',"
+            " expires_at = now() + interval '1 hour'"
+        )
+    response = client.get("/v0/auth/me")
+    assert response.status_code == 200  # still valid for its last hour
+    assert "set-cookie" not in response.headers
+    assert _session_row(settings)[0] == pytest.approx(3600, abs=5)
+
+
+def test_an_expired_or_revoked_session_is_never_revived(client: TestClient, settings: Settings) -> None:
+    _signed_in(client)
+    with psycopg.connect(settings.database_url) as conn:
+        conn.execute("UPDATE sessions SET expires_at = now() - interval '1 second'")
+    assert client.get("/v0/auth/me").status_code == 401
+    assert _session_row(settings)[0] < 0
+
+    _signed_in(client)
+    token = client.cookies.get("mergit_session")
+    assert token
+    assert client.post("/v0/auth/logout").status_code == 204
+    with psycopg.connect(settings.database_url) as conn:
+        conn.execute(
+            "UPDATE sessions SET expires_at = now() + interval '1 hour' WHERE revoked_at IS NOT NULL"
+        )
+    client.cookies.set("mergit_session", token)
     assert client.get("/v0/auth/me").status_code == 401
 
 

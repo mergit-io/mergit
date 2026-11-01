@@ -119,39 +119,60 @@ class Principal:
         return requester in self.owned
 
 
-async def _lookup(settings: Settings, pool: Pool, token: str | None) -> Principal | None:
+async def _lookup(settings: Settings, pool: Pool, token: str | None) -> tuple[Principal, int | None] | None:
+    """The principal behind a live session, and the cookie lifetime in seconds if the session was just slid
+    forward (None when it was not renewed, so the cookie is left alone)."""
     if not token:
         return None
+    hashed = _token_hash(settings, token)
     async with pool.connection() as conn:
         cur = await conn.execute(
             "SELECT address, user_id FROM sessions"
             " WHERE token_hash = %s AND revoked_at IS NULL AND expires_at > now()",
-            (_token_hash(settings, token),),
+            (hashed,),
         )
         row = await cur.fetchone()
         if row is None:
             return None
         address, user_id = str(row[0]), row[1]
-        return Principal(address, user_id, await accounts.owned_addresses(conn, user_id, address))
+        renewed = await accounts.renew_session(conn, settings, hashed)
+        owned = await accounts.owned_addresses(conn, user_id, address)
+        return Principal(address, user_id, owned), renewed
 
 
 async def current_principal(
-    settings: SettingsDep, pool: PoolDep, mergit_session: Annotated[str | None, Cookie()] = None
+    response: Response,
+    settings: SettingsDep,
+    pool: PoolDep,
+    mergit_session: Annotated[str | None, Cookie()] = None,
 ) -> Principal:
-    """The signed-in caller. 401 when there is no live session."""
+    """The signed-in caller. 401 when there is no live session. A session in use is slid forward and its
+    cookie re-issued, so staying active keeps you signed in."""
     if not mergit_session:
         raise _unauthorized("not signed in")
-    principal = await _lookup(settings, pool, mergit_session)
-    if principal is None:
+    found = await _lookup(settings, pool, mergit_session)
+    if found is None:
         raise _unauthorized("session expired or revoked")
+    principal, renewed = found
+    if renewed is not None:
+        accounts.set_session_cookie(response, settings, mergit_session, renewed)
     return principal
 
 
 async def optional_principal(
-    settings: SettingsDep, pool: PoolDep, mergit_session: Annotated[str | None, Cookie()] = None
+    response: Response,
+    settings: SettingsDep,
+    pool: PoolDep,
+    mergit_session: Annotated[str | None, Cookie()] = None,
 ) -> Principal | None:
     """The signed-in caller, or None. Used where signing in again means linking to who is already in."""
-    return await _lookup(settings, pool, mergit_session)
+    found = await _lookup(settings, pool, mergit_session)
+    if found is None:
+        return None
+    principal, renewed = found
+    if renewed is not None and mergit_session:
+        accounts.set_session_cookie(response, settings, mergit_session, renewed)
+    return principal
 
 
 PrincipalDep = Annotated[Principal, Depends(current_principal)]

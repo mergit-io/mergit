@@ -62,7 +62,13 @@ class Settings(BaseSettings):
 
     chain_id: int = BASE_SEPOLIA_CHAIN_ID
     nonce_ttl_s: int = Field(default=600, gt=0)
-    session_ttl_s: int = Field(default=12 * 3600, gt=0)
+    session_ttl_s: int = Field(default=30 * 86400, gt=0)
+    """How long a session lives after sign-in or after its last renewal. A session in use is slid forward
+    once less than half of this remains (accounts.renew_session), so someone who keeps using the app stays
+    signed in; one who stops is signed out after this long."""
+    session_max_age_s: int = Field(default=90 * 86400, gt=0)
+    """Hard cap from sign-in: sliding never extends a session past this, so everyone signs in again at least
+    this often."""
     db_pool_max: int = Field(default=10, gt=0)
 
     github_client_id: str | None = None
