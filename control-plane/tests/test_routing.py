@@ -22,11 +22,13 @@ import random
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
 import mergit_receipt
 import pytest
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr
 
@@ -34,7 +36,8 @@ from mergit_cp import plans as plans_module
 from mergit_cp import routing
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool
-from mergit_cp.reputation import ingest_due
+from mergit_cp.dispatch import DISPATCH_DEADLINE_S
+from mergit_cp.reputation import Posterior, ingest_due
 from mergit_cp.router import Arm, Draw, Mode, draw
 from tests.test_api import phi
 from tests.test_money import receive, run
@@ -176,37 +179,58 @@ async def seed_plan(
 
 
 async def seed_dispatch(
-    pool: Pool, *, plan_uuid: str, plan_id: str, agent_id: str, index: int = 0, attempt: int = 1
+    pool: Pool,
+    *,
+    plan_uuid: str,
+    plan_id: str,
+    agent_id: str,
+    index: int = 0,
+    attempt: int = 1,
+    dispatched_at: datetime | None = None,
 ) -> str:
     """One extra `task_dispatches` row, for a plan/task already seeded (by `seed_plan` or `seed_task`).
-    Returns the task_id."""
+    Returns the task_id. `dispatched_at` overrides the default `now()`, for testing the staleness
+    carve-out against `dispatch.DISPATCH_DEADLINE_S`."""
     task_id = mergit_receipt.task_id(plan_id, index, attempt)
     async with pool.connection() as conn, conn.transaction():
-        await conn.execute(
-            'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id)'
-            " VALUES (%s, %s, %s, %s, %s)",
-            (task_id, plan_uuid, index, attempt, agent_id),
-        )
+        if dispatched_at is None:
+            await conn.execute(
+                'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id)'
+                " VALUES (%s, %s, %s, %s, %s)",
+                (task_id, plan_uuid, index, attempt, agent_id),
+            )
+        else:
+            await conn.execute(
+                'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id,'
+                " dispatched_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                (task_id, plan_uuid, index, attempt, agent_id, dispatched_at),
+            )
     return task_id
 
 
-async def seed_error_job(pool: Pool, *, task_id: str, plan_uuid: str, agent_id: str) -> None:
-    """A job that errored with nothing ever sealed: must not count toward either cap."""
+async def seed_error_job(
+    pool: Pool, *, task_id: str, plan_uuid: str, agent_id: str, receipt_root: str | None = None
+) -> None:
+    """A job that errored. With `receipt_root=None` (the default), nothing was ever sealed and it must
+    not count toward either cap; with a `receipt_root` given, something *was* sealed before the attempt
+    ended in error, and it must still count (that's exactly the forgery-relevant case the exclusion is
+    meant to carve around, not a blanket "errored jobs never count" rule)."""
     async with pool.connection() as conn, conn.transaction():
         await conn.execute(
             'INSERT INTO jobs (task_id, plan_uuid, "index", attempt, agent_id, status, receipt_root,'
-            " finished_at) VALUES (%s, %s, 0, 1, %s, 'error', NULL, now())",
-            (task_id, plan_uuid, agent_id),
+            " finished_at) VALUES (%s, %s, 0, 1, %s, 'error', %s, now())",
+            (task_id, plan_uuid, agent_id, receipt_root),
         )
 
 
 async def seed_routing_draw(pool: Pool, *, task_id: str, chosen_agent: str, exploratory: bool) -> None:
+    samples: dict[str, object] = {"arms": [], "original_chosen": None}
     async with pool.connection() as conn, conn.transaction():
         await conn.execute(
             "INSERT INTO routing_draws (task_id, seed, explore, retry_tolerant, budget_micros, samples,"
             " ineligible, chosen_agent, greedy_agent, exploratory)"
             " VALUES (%s, '1', true, true, 1000000, %s, %s, %s, %s, %s)",
-            (task_id, Jsonb([]), Jsonb({}), chosen_agent, chosen_agent, exploratory),
+            (task_id, Jsonb(samples), Jsonb({}), chosen_agent, chosen_agent, exploratory),
         )
 
 
@@ -322,6 +346,83 @@ def test_errored_unsealed_job_does_not_count_toward_cap(database_url: str, agent
     run(database_url, body)
 
 
+def test_errored_sealed_job_still_counts_toward_cap(database_url: str, agents_files: Roster) -> None:
+    settings = _settings(agents_files, database_url, router_operator_concurrency_cap=1)
+
+    async def body(pool: Pool) -> None:
+        noise_uuid, noise_id = await seed_plan(pool)
+        noise_task = await seed_dispatch(
+            pool, plan_uuid=noise_uuid, plan_id=noise_id, agent_id=agents_files.a1
+        )
+        # Something WAS sealed before this attempt ended in error -- unlike the unsealed case above, this
+        # still counts: there is a receipt that could in principle be forged/disputed, so the operator is
+        # not free to take on more concurrent work until it is resolved by a real money event.
+        await seed_error_job(
+            pool,
+            task_id=noise_task,
+            plan_uuid=noise_uuid,
+            agent_id=agents_files.a1,
+            receipt_root="0x" + "ab" * 32,
+        )
+
+        routed_uuid, _ = await seed_plan(pool)
+        plan = await load_plan(pool, routed_uuid)
+
+        async with pool.connection() as conn:
+            arms, ineligible = await routing.candidates(conn, plan, 0, settings)
+        assert {a.agent_id for a in arms} == {agents_files.b1, agents_files.c1}
+        assert ineligible[agents_files.a1] == "operator at concurrency cap"
+        assert ineligible[agents_files.a2] == "operator at concurrency cap"
+
+    run(database_url, body)
+
+
+def test_stale_unescrowed_dispatch_does_not_count_toward_cap(database_url: str, agents_files: Roster) -> None:
+    """Fix round 1, Finding 1: a dispatch that never escrows (no `jobs` row ever arrives) must stop
+    counting against its operator once it is older than `dispatch.DISPATCH_DEADLINE_S` -- otherwise a
+    handful of rejected/expired dispatches would permanently exclude an operator with no error anywhere."""
+
+    settings = _settings(agents_files, database_url, router_operator_concurrency_cap=1)
+
+    async def body(pool: Pool) -> None:
+        stale_uuid, stale_id = await seed_plan(pool)
+        stale_at = datetime.now(UTC) - timedelta(seconds=DISPATCH_DEADLINE_S + 60)
+        await seed_dispatch(
+            pool,
+            plan_uuid=stale_uuid,
+            plan_id=stale_id,
+            agent_id=agents_files.a1,
+            dispatched_at=stale_at,
+        )
+
+        routed_uuid, _ = await seed_plan(pool)
+        plan = await load_plan(pool, routed_uuid)
+
+        # The stale, never-escrowed dispatch alone does not trip the cap.
+        async with pool.connection() as conn:
+            arms, ineligible = await routing.candidates(conn, plan, 0, settings)
+        assert {a.agent_id for a in arms} == {
+            agents_files.a1,
+            agents_files.a2,
+            agents_files.b1,
+            agents_files.c1,
+        }
+        assert ineligible == {}
+
+        # A second, FRESH never-escrowed dispatch for the same operator -- still within its deadline --
+        # does still count, and alone trips cap=1.
+        fresh_uuid, fresh_id = await seed_plan(pool)
+        await seed_dispatch(pool, plan_uuid=fresh_uuid, plan_id=fresh_id, agent_id=agents_files.a1)
+
+        async with pool.connection() as conn:
+            arms, ineligible = await routing.candidates(conn, plan, 0, settings)
+        assert {a.agent_id for a in arms} == {agents_files.b1, agents_files.c1}
+        assert ineligible[agents_files.a1] == "operator at concurrency cap"
+        assert ineligible[agents_files.a2] == "operator at concurrency cap"
+
+    run(database_url, body)
+
+
 def test_probation_excludes_whole_operator(database_url: str, agents_files: Roster) -> None:
     settings = _settings(agents_files, database_url)
 
@@ -350,19 +451,21 @@ def test_probation_excludes_whole_operator(database_url: str, agents_files: Rost
 
 
 def test_already_tried_agent_is_excluded_on_retry(database_url: str, agents_files: Roster) -> None:
+    """Only the agent actually dispatched on this index is excluded -- its operator's OTHER agent stays
+    eligible. (Marking both of the operator's agents as already-tried, as an earlier version of this test
+    did, could not tell a correct per-agent rule apart from a wrong per-operator one.)"""
+
     settings = _settings(agents_files, database_url)
 
     async def body(pool: Pool) -> None:
         plan_uuid, plan_id = await seed_plan(pool)
         await seed_dispatch(pool, plan_uuid=plan_uuid, plan_id=plan_id, agent_id=agents_files.a1, attempt=1)
-        await seed_dispatch(pool, plan_uuid=plan_uuid, plan_id=plan_id, agent_id=agents_files.a2, attempt=2)
         plan = await load_plan(pool, plan_uuid)
 
         async with pool.connection() as conn:
             arms, ineligible = await routing.candidates(conn, plan, 0, settings)
-        assert {a.agent_id for a in arms} == {agents_files.b1, agents_files.c1}
-        assert ineligible[agents_files.a1] == "already tried on this task"
-        assert ineligible[agents_files.a2] == "already tried on this task"
+        assert {a.agent_id for a in arms} == {agents_files.a2, agents_files.b1, agents_files.c1}
+        assert ineligible == {agents_files.a1: "already tried on this task"}
 
     run(database_url, body)
 
@@ -370,7 +473,9 @@ def test_already_tried_agent_is_excluded_on_retry(database_url: str, agents_file
 # --- route(): the draw, the exploration cap, and the cross-task None-greedy constraint ---------------
 
 
-def test_explore_cap_falls_back_to_greedy(database_url: str, agents_files: Roster) -> None:
+def test_explore_cap_falls_back_to_greedy(
+    database_url: str, agents_files: Roster, monkeypatch: pytest.MonkeyPatch
+) -> None:
     settings = _settings(agents_files, database_url, router_explore_cap_per_operator=2)
     capped_settings = _settings(agents_files, database_url, router_explore_cap_per_operator=1)
 
@@ -405,14 +510,11 @@ def test_explore_cap_falls_back_to_greedy(database_url: str, agents_files: Roste
         exploratory_agent, greedy_agent = expected.chosen, expected.greedy
         assert greedy_agent is not None
 
+        monkeypatch.setattr(routing, "secrets", _FixedSecrets(seed_value))
+
         async def route_with(s: Settings) -> routing.PendingDraw | None:
-            original = routing.secrets
-            routing.secrets = _FixedSecrets(seed_value)  # type: ignore[assignment]
-            try:
-                async with pool.connection() as conn:
-                    return await routing.route(conn, plan, 0, 1, s)
-            finally:
-                routing.secrets = original
+            async with pool.connection() as conn:
+                return await routing.route(conn, plan, 0, 1, s)
 
         # Control: under the *uncapped* operator, the natural exploratory pick goes through untouched.
         natural = await route_with(settings)
@@ -432,7 +534,9 @@ def test_explore_cap_falls_back_to_greedy(database_url: str, agents_files: Roste
     run(database_url, body)
 
 
-def test_explore_cap_hit_with_no_greedy_returns_none(database_url: str, single_agent_files: Roster) -> None:
+def test_explore_cap_hit_with_no_greedy_returns_none(
+    database_url: str, single_agent_files: Roster, monkeypatch: pytest.MonkeyPatch
+) -> None:
     settings = _settings(single_agent_files, database_url, router_explore_cap_per_operator=2)
     capped_settings = _settings(single_agent_files, database_url, router_explore_cap_per_operator=1)
     agent = single_agent_files.a1
@@ -462,14 +566,11 @@ def test_explore_cap_hit_with_no_greedy_returns_none(database_url: str, single_a
         )
         assert expected.exploratory is True  # chosen is not None, greedy is None => always exploratory
 
+        monkeypatch.setattr(routing, "secrets", _FixedSecrets(seed_value))
+
         async def route_with(s: Settings) -> routing.PendingDraw | None:
-            original = routing.secrets
-            routing.secrets = _FixedSecrets(seed_value)  # type: ignore[assignment]
-            try:
-                async with pool.connection() as conn:
-                    return await routing.route(conn, plan, 0, 1, s)
-            finally:
-                routing.secrets = original
+            async with pool.connection() as conn:
+                return await routing.route(conn, plan, 0, 1, s)
 
         # Control: uncapped, a no-greedy exploratory pick still dispatches normally.
         natural = await route_with(settings)
@@ -487,6 +588,12 @@ def test_explore_cap_hit_with_no_greedy_returns_none(database_url: str, single_a
 
 
 def test_draw_is_recorded_with_seed_and_replays(database_url: str, agents_files: Roster) -> None:
+    """Fix round 1, Finding 3: a `routing_draws` row must be able to replay its own draw from the STORED
+    row alone -- `reputation_posteriors` mutates in place over time, so a fresh `candidates()`/`posterior()`
+    call against the live database would not actually prove anything about the stored record once those
+    posteriors have moved on. This reconstructs `Arm`s purely from `samples.arms`' stored
+    alpha/beta/kappa/tau, never touching `candidates()`/`posterior()` again."""
+
     settings = _settings(agents_files, database_url)
 
     async def body(pool: Pool) -> None:
@@ -498,12 +605,6 @@ def test_draw_is_recorded_with_seed_and_replays(database_url: str, agents_files:
         assert pending is not None
         assert pending.draw.chosen is not None
 
-        # Capture the arm set `route()` actually drew over *before* recording the dispatch: once a
-        # dispatch row for this index exists, `candidates()` would (correctly) mark the chosen agent
-        # "already tried" and exclude it, which would break the replay below for an unrelated reason.
-        async with pool.connection() as conn:
-            arms, _ = await routing.candidates(conn, plan, 0, settings)
-
         task_id = await seed_dispatch(
             pool, plan_uuid=plan_uuid, plan_id=plan_id, agent_id=pending.draw.chosen
         )
@@ -511,28 +612,43 @@ def test_draw_is_recorded_with_seed_and_replays(database_url: str, agents_files:
             await routing.record_draw(conn, task_id, pending)
 
         async with pool.connection() as conn:
-            cur = await conn.execute(
+            cur = conn.cursor(row_factory=dict_row)
+            await cur.execute(
                 "SELECT seed, chosen_agent, greedy_agent, exploratory, budget_micros, explore,"
-                " retry_tolerant FROM routing_draws WHERE task_id = %s",
+                " retry_tolerant, samples FROM routing_draws WHERE task_id = %s",
                 (task_id,),
             )
             row = await cur.fetchone()
         assert row is not None
-        stored_seed, chosen_agent, greedy_agent, exploratory, budget_micros, explore, retry_tolerant = row
-        assert chosen_agent == pending.draw.chosen
-        assert greedy_agent == pending.draw.greedy
-        assert exploratory == pending.draw.exploratory
-        assert budget_micros == pending.budget_micros
-        assert explore == pending.mode.explore
-        assert retry_tolerant == pending.mode.retry_tolerant
+        assert row["chosen_agent"] == pending.draw.chosen
+        assert row["greedy_agent"] == pending.draw.greedy
+        assert row["exploratory"] == pending.draw.exploratory
+        assert row["budget_micros"] == pending.budget_micros
+        assert row["explore"] == pending.mode.explore
+        assert row["retry_tolerant"] == pending.mode.retry_tolerant
+        assert row["samples"]["original_chosen"] == pending.original_chosen
+
+        # Reconstruct the exact Arms `route()` drew over purely from the stored posterior parameters --
+        # never a fresh `candidates()`/`posterior()` call against the live database, which is the whole
+        # point: this must prove the row is self-sufficient, independent of whatever the live posteriors
+        # have since moved on to.
+        stored_arms = [
+            Arm(
+                agent_id=a["agent_id"],
+                posterior=Posterior(alpha=a["alpha"], beta=a["beta"], kappa=a["kappa"], tau=a["tau"]),
+            )
+            for a in row["samples"]["arms"]
+        ]
+        assert {a.agent_id for a in stored_arms} == {a.agent_id for a in pending.arms}
+        stored_mode = Mode(explore=row["explore"], retry_tolerant=row["retry_tolerant"])
 
         replay = draw(
-            arms,
-            pending.budget_micros,
-            pending.mode,
+            stored_arms,
+            row["budget_micros"],
+            stored_mode,
             settings.router_budget_tolerance,
-            random.Random(int(stored_seed)),
+            random.Random(int(row["seed"])),
         )
-        assert replay.chosen == chosen_agent
+        assert replay.chosen == row["chosen_agent"]
 
     run(database_url, body)
