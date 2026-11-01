@@ -23,19 +23,36 @@ const seeIntro = (page: Page) =>
     sessionStorage.setItem("mergit-intro-seen", "1");
   });
 
-/** Boxes (outside art that is meant to bleed) that stick out past either side of the screen. */
+/**
+ * Boxes (outside art that is meant to bleed) that stick out past either side of the screen. A box inside a container
+ * that scrolls sideways on purpose (a row of filter buttons, a tab bar) is allowed to extend past the screen as long
+ * as the container itself stays on it: that is how it is meant to behave.
+ */
 const spills = (page: Page) =>
   page.evaluate(() => {
     const vw = document.documentElement.clientWidth;
+    const scrollsOnPurpose = (el: Element) => {
+      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        const x = getComputedStyle(p).overflowX;
+        const b = p.getBoundingClientRect();
+        if ((x === "auto" || x === "scroll") && b.left >= -1 && b.right <= vw + 1) return true;
+      }
+      return false;
+    };
     return Array.from(document.body.querySelectorAll("*"))
       .filter((el) => !el.closest("svg, .l-hero-globe, .proof-chain, .story-pin, [aria-hidden='true'], .splash"))
       .filter((el) => {
         const b = el.getBoundingClientRect();
         const style = getComputedStyle(el);
-        return b.width > 0 && style.position !== "fixed" && (b.right > vw + 1 || b.left < -1);
+        return b.width > 0 && style.position !== "fixed" && (b.right > vw + 1 || b.left < -1) && !scrollsOnPurpose(el);
       })
       .slice(0, 8)
-      .map((el) => `${el.tagName.toLowerCase()}.${Array.from(el.classList).join(".")}`);
+      .map((el) => {
+        const name = (e: Element | null) =>
+          e ? `${e.tagName.toLowerCase()}.${Array.from(e.classList).join(".")}` : "";
+        const b = el.getBoundingClientRect();
+        return `${name(el)} "${(el.textContent || "").trim().slice(0, 24)}" in ${name(el.parentElement)} [${String(Math.round(b.left))}..${String(Math.round(b.right))} of ${String(vw)}]`;
+      });
   });
 
 /** What makes the page wider than the screen, for a failure message that says where to look. */

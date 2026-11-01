@@ -25,7 +25,8 @@ test("View demo on the home page opens the demo, with no sign-in", async ({ page
 
 test("every home page button that shows the demo goes to /demo", async ({ page }) => {
   await page.goto("/");
-  const demoLinks = page.getByRole("link", { name: /View demo/ });
+  // includeHidden: the story's hero and closing scenes are hidden until their turn, and are demo buttons too.
+  const demoLinks = page.getByRole("link", { name: /View demo/, includeHidden: true });
   expect(await demoLinks.count()).toBeGreaterThanOrEqual(3);
   for (let i = 0; i < (await demoLinks.count()); i++) {
     await expect(demoLinks.nth(i)).toHaveAttribute("href", "/demo");
