@@ -194,3 +194,52 @@ def test_same_provider_and_model_is_checked_only_once(
     assert len(lines) == 2
     assert any(line.startswith("provider=anthropic") for line in lines)
     assert any("provider=openrouter" in line and "model=model-a" in line for line in lines)
+
+
+def _two_providers(tmp_path: Path) -> tuple[Path, Path]:
+    return _write_agents(
+        tmp_path,
+        {
+            "anthropic": {"kind": "anthropic"},
+            "openrouter": {
+                "kind": "openai_chat",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            },
+        },
+        [_agent("coder-a", "openrouter", "model-a")],
+    )
+
+
+def _record_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def fake_build(providers: Any, name: str, *a: Any, **k: Any) -> Fake:
+        calls.append(name)
+        return Fake()
+
+    monkeypatch.setattr(llm_check, "build_planner_llm", fake_build)
+    return calls
+
+
+def test_the_planner_scope_checks_only_the_planner_so_the_api_container_needs_no_agent_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Run in the api container, which holds no agent keys, the default check must not report the
+    agents' providers as failed."""
+    calls = _record_builds(monkeypatch)
+    assert asyncio.run(llm_check.check_planner(_settings(_two_providers(tmp_path), "anthropic"))) is True
+    assert calls == ["anthropic"]
+
+
+def test_the_agents_scope_checks_only_the_deployed_agents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    calls = _record_builds(monkeypatch)
+    chain, config = _two_providers(tmp_path)
+    assert asyncio.run(llm_check.check_agents(chain, config)) is True
+    assert calls == ["openrouter"]
+
+
+@pytest.mark.parametrize("argv", [["everything"], ["planner", "agents"]])
+def test_an_unknown_scope_prints_the_usage(argv: list[str], capsys: pytest.CaptureFixture[str]):
+    assert llm_check.main(argv) == 2
+    assert "planner|agents|all" in capsys.readouterr().err

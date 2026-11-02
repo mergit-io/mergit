@@ -1,8 +1,12 @@
-"""Checks the model credential the way the planner and the agents use it, before a real run depends on it:
-every provider actually in use, the planner's own (``Settings.planner_provider``) plus every provider named
-by a deployed agent in ``agents.toml``.
+"""Checks the model credentials the way the planner and the agents use them, before a real run depends on
+them. Each container holds only its own keys, so each checks only its own:
 
-    python -m mergit_cp.llm_check        (run inside the api container, or with the same env)
+    python -m mergit_cp.llm_check planner   in the api container: the planner's provider and model
+    python -m mergit_cp.llm_check agents    in the worker container: every deployed agent's
+    python -m mergit_cp.llm_check all       both, from a shell that holds every key
+
+``planner`` is the default. Run in the api container, ``agents`` would report every agent key as missing,
+because ``api.env`` rightly does not have them.
 
 For each distinct (provider, model) pair actually in use, makes two tiny calls (a plain answer, then one
 that must call a tool, because the agents work by tool calls): the planner's own provider and model, plus
@@ -16,12 +20,13 @@ token counts; never a key or a token. Exit status 0 only if every check worked.
 import asyncio
 import json
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from mergit_worker.config import ConfigError
+from mergit_worker.config import ConfigError, load_config
 from mergit_worker.providers import ProviderSpec, load_providers
 
 from .config import Settings
@@ -108,17 +113,46 @@ async def _check_one(providers: dict[str, ProviderSpec], name: str, model: str) 
     return ok
 
 
-async def check(settings: Settings) -> bool:
-    providers = load_providers(Path(settings.agents_config))
+async def _check_pairs(agents_config: Path, pairs: set[tuple[str, str]]) -> bool:
+    providers = load_providers(agents_config)
     ok = True
-    for name, model in sorted(_providers_in_use(settings)):
+    for name, model in sorted(pairs):
         ok = await _check_one(providers, name, model) and ok
     return ok
 
 
-def main() -> int:
-    settings = Settings()  # type: ignore[call-arg]  # read from the environment, as the API does
-    return 0 if asyncio.run(check(settings)) else 1
+async def check(settings: Settings) -> bool:
+    """The planner's pair and every deployed agent's: `all`, for a shell that holds every key."""
+    return await _check_pairs(Path(settings.agents_config), _providers_in_use(settings))
+
+
+async def check_planner(settings: Settings) -> bool:
+    """The planner's pair only, with the api container's own keys."""
+    pairs = {(settings.planner_provider, settings.planner_model)}
+    return await _check_pairs(Path(settings.agents_config), pairs)
+
+
+async def check_agents(agents_file: Path, agents_config: Path) -> bool:
+    """Every deployed agent's pair, with the worker container's own keys."""
+    return await _check_pairs(agents_config, _agent_pairs_in_use(agents_file, agents_config))
+
+
+_USAGE = "usage: python -m mergit_cp.llm_check [planner|agents|all]"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    scope = args[0] if args else "planner"
+    if len(args) > 1 or scope not in ("planner", "agents", "all"):
+        print(_USAGE, file=sys.stderr)
+        return 2
+    if scope == "agents":
+        cfg = load_config()  # the worker's own settings: the api's are not in the worker container
+        ok = asyncio.run(check_agents(cfg.agents_file, cfg.agents_config))
+    else:
+        settings = Settings()  # type: ignore[call-arg]  # read from the environment, as the API does
+        ok = asyncio.run(check_planner(settings) if scope == "planner" else check(settings))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

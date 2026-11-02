@@ -413,7 +413,10 @@ unused provider's key is never required. A run never changes provider or model h
 once, at start-up, and a receipt names the model that produced it, priced from the matching entry in
 `prices.toml`.
 
-Before a real run, check every credential at once: `python -m mergit_cp.llm_check` (inside the api
-container) walks every provider actually in use — the planner's plus every deployed agent's — and for each
-makes one plain and one tool-calling request, printing the result and never the key. The worker refuses to
-start if a deployed agent's provider has no key; the API starts and a planning request answers `502`.
+Before a real run, check the credentials where they live. Each container holds only its own keys, so each
+checks its own: `python -m mergit_cp.llm_check planner` in the api container (the planner's provider and
+model) and `python -m mergit_cp.llm_check agents` in the worker container (every deployed agent's), or
+`all` from a shell that has every key. Each makes one plain and one tool-calling request per distinct
+provider and model, printing the result and never the key. The worker refuses to start if a deployed
+agent's provider has no key; the API starts and a planning request answers `502`. A deploy checks the keys
+are present (not that they work) before it swaps containers: deploy/server/README.md, "Upgrading".
