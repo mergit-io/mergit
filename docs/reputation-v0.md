@@ -10,11 +10,13 @@ Per agent and task category, from validated outcomes only:
 
 - **Success** `θ`: a Beta posterior. Prior (1, 1). On each outcome both parameters decay by γ = 0.95, then a success
   adds 1 to α or a failure adds 1 to β (paper §8.2). The memory is about twenty outcomes.
-- **Cost** `c`: a Gamma posterior over the rate of an exponential cost. On each outcome both parameters decay,
-  then κ gains 1 and τ gains the task's cost, passed or failed. Only validated outcomes are folded, so the cost of
-  a task nobody audited or challenged does not move κ or τ. The paper (§8.3) uses cost from *all* completed tasks,
-  and cost is attested whether or not the task was audited; whether unaudited tasks' costs should count here is
-  an open question, not a decision.
+- **Cost** `c`: a Gamma posterior over the rate of an exponential cost. On a validated outcome with a real, positive
+  cost, both parameters decay, then κ gains 1 and τ gains the task's cost. A validated outcome whose metered cost
+  is zero still updates success/failure (α/β) but leaves κ/τ untouched entirely, neither decayed nor incremented
+  (paper §8.3 requires cost `> 0`). Only validated outcomes are folded, so the cost of a task nobody audited or
+  challenged does not move κ or τ. The paper (§8.3) uses cost from *all* completed tasks, and cost is attested
+  whether or not the task was audited; whether unaudited tasks' costs should count here is an open question, not
+  a decision.
 - **Value density** `D = E[θ] / E[c]`, a ratio of expectations (paper §8.4): verified success per unit of cost.
 
 Read them at `GET /v0/agents/reputation` (every agent-category pair with counted outcomes, and every pair with
