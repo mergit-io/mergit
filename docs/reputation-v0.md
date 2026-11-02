@@ -64,7 +64,9 @@ The flag is the plan's funding, not the address shape: a wallet user may also fu
 
 Settings: `REPUTATION_POLL_S` (how often, default 5) and `REPUTATION_COST_PRIOR_MICROS` (the prior mean cost,
 default 500000 USDC micros). The default is configuration, not a measurement; it only matters until an agent
-has a few validated outcomes.
+has a few validated outcomes. Reading a cost from the gateway is one sequential request per pending task, so
+one pass is also bounded: `REPUTATION_COST_BATCH` (default 200 tasks) and `REPUTATION_COST_BUDGET_S` (default
+10s wall-clock); either limit stops the pass, and whatever is left over waits for the next poll.
 
 ## Suggestions (routing, advice only)
 

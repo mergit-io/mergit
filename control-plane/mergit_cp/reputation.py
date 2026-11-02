@@ -23,6 +23,7 @@ category, and writes ``task_costs`` and ``agent_posteriors``.
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, cast
@@ -103,20 +104,31 @@ class GatewayCosts:
         return cost
 
 
-async def record_missing_costs(pool: Pool, costs: GatewayCosts) -> int:
-    """Writes ``task_costs`` for counted outcomes that lack one. Returns how many were written.
+async def record_missing_costs(
+    pool: Pool, costs: GatewayCosts, *, batch: int = 200, budget_s: float = 10.0
+) -> int:
+    """Writes ``task_costs`` for up to ``batch`` counted outcomes that lack one, stopping early past
+    ``budget_s``. Returns how many were written.
 
-    Every pending outcome is tried, oldest first, in one pass. A task whose commitment is not there yet, or
-    whose answer is unusable, is left for the next pass and does not hold back the tasks after it (a
-    commitment that never arrives must not block every newer outcome). Only a gateway that cannot answer at
-    all ends the pass early, since every remaining task would fail the same way."""
+    Pending outcomes are tried oldest first. A task whose commitment is not there yet, or whose answer is
+    unusable, is left for the next pass and does not hold back the tasks after it (a commitment that never
+    arrives must not block every newer outcome). A gateway that cannot answer at all ends the pass early,
+    since every remaining task would fail the same way. ``batch`` and ``budget_s`` bound one pass to a known
+    number of sequential gateway requests and a known wall-clock time, however large the backlog (an outage,
+    or heavy volume) grows, or however slow a gateway that does answer is; the rest wait for the next poll,
+    which also serves ``GET /v0/agents/reputation`` from the same table."""
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT task_id FROM task_outcomes WHERE cost_micros IS NULL ORDER BY position"
+            "SELECT task_id FROM task_outcomes WHERE cost_micros IS NULL ORDER BY position LIMIT %s",
+            (batch,),
         )
         pending = [row[0] for row in await cur.fetchall()]
     written = 0
+    started = time.monotonic()
     for task_id in pending:
+        if time.monotonic() - started > budget_s:
+            log.warning("costs not read this pass (budget exceeded, %d left pending)", len(pending) - written)
+            break
         try:
             cost = await costs.cost_micros(task_id)
         except GatewayUnavailable as problem:
@@ -172,7 +184,12 @@ class ReputationUpdater:
         self._costs = costs
 
     async def update(self) -> None:
-        await record_missing_costs(self._pool, self._costs)
+        await record_missing_costs(
+            self._pool,
+            self._costs,
+            batch=self._settings.reputation_cost_batch,
+            budget_s=self._settings.reputation_cost_budget_s,
+        )
         await refresh_posteriors(self._pool, self._settings)
 
     async def run(self, poll_s: float, stop: asyncio.Event) -> None:

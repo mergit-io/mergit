@@ -404,3 +404,66 @@ def test_a_zero_cost_outcome_still_counts_as_a_success_or_failure_but_not_as_a_c
         assert got["tau"] == pytest.approx(0.95 * settings.reputation_cost_prior_micros + 300000)
 
     run(database_url, body)
+
+
+def test_record_missing_costs_stops_at_the_batch_size(database_url: str, settings: Settings):
+    """Without a cap, a backlog of pending outcomes (an outage, or heavy volume) makes one pass make one
+    sequential gateway request per task with no bound; a request is required on every poll on top of
+    whatever the pass is still working through, so the backlog never shrinks."""
+
+    def body_with(n: int, batch: int) -> Callable[[Pool], Awaitable[None]]:
+        async def body(pool: Pool) -> None:
+            _, _, tasks = await seed_plan(pool, requester=REQUESTER, n_tasks=n)
+            for i, task in enumerate(tasks):
+                await verdict(pool, settings, task, "pass", f"{i:x}")
+                await released(pool, settings, task, f"{i + 8:x}")
+            costs = gateway({t: "100000" for t in tasks})
+            assert await record_missing_costs(pool, costs, batch=batch) == min(n, batch)
+
+        return body
+
+    run(database_url, body_with(5, 2))
+
+
+def test_record_missing_costs_stops_at_the_time_budget(database_url: str, settings: Settings):
+    """A gateway that answers, but slowly, must not make one pass run arbitrarily long either; the rest
+    wait for the next poll, same as hitting the batch cap."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER, n_tasks=3)
+        for i, task in enumerate(tasks):
+            await verdict(pool, settings, task, "pass", f"{i:x}")
+            await released(pool, settings, task, f"{i + 8:x}")
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            task_id = request.url.params["task_id"]
+            return httpx.Response(200, json=[{"task_id": task_id, "cost_micros": "100000"}])
+
+        costs = GatewayCosts(
+            "http://gateway.test", client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        )
+        written = await record_missing_costs(pool, costs, batch=100, budget_s=0.0)
+        assert written == 0  # the budget is spent before the first request is even tried
+
+    run(database_url, body)
+
+
+def test_the_updater_passes_its_settings_batch_and_budget(
+    database_url: str, settings: Settings, monkeypatch: pytest.MonkeyPatch
+):
+    s = settings.model_copy(update={"reputation_cost_batch": 3, "reputation_cost_budget_s": 7.0})
+    seen: dict[str, Any] = {}
+
+    async def fake(pool: Pool, costs: GatewayCosts, *, batch: int, budget_s: float) -> int:
+        seen["batch"], seen["budget_s"] = batch, budget_s
+        return 0
+
+    import mergit_cp.reputation as reputation_module
+
+    monkeypatch.setattr(reputation_module, "record_missing_costs", fake)
+
+    async def body(pool: Pool) -> None:
+        await ReputationUpdater(pool, s, gateway()).update()
+
+    run(database_url, body)
+    assert seen == {"batch": 3, "budget_s": 7.0}

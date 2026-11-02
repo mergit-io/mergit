@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     """How often finished jobs are checked for a retry, an escalation or plan completion (plan O6)."""
     reputation_poll_s: float = Field(default=5.0, gt=0)
     """How often finished tasks' costs are read from the gateway and the posteriors refreshed."""
+    reputation_cost_batch: int = Field(default=200, ge=1)
+    """Pending costs read from the gateway in one pass of ``record_missing_costs``; the rest wait for the
+    next poll. Bounds one pass to a known number of sequential gateway requests, however large the backlog
+    (an outage, or heavy volume) grows."""
+    reputation_cost_budget_s: float = Field(default=10.0, gt=0)
+    """A pass of ``record_missing_costs`` stops asking for more costs once it has run this long, even inside
+    the batch above: a gateway that answers but is slow must not make one pass run arbitrarily long."""
     routing_epsilon: float = Field(default=0.1, ge=0)
     """Slack on the task budget when a suggestion skips an agent whose cost would not fit (paper §9.3)."""
     routing_min_observations: int = Field(default=5, ge=1)
