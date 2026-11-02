@@ -42,6 +42,17 @@ class AgentCategory:
     category: str
 
 
+class GatewayUnavailable(Exception):
+    """The gateway cannot be asked right now: unreachable, failing, refusing us, or not answering with a list
+    of commitments. Every task would get the same answer, so the pass stops and tries again next time."""
+
+
+class BadCommitment(ValueError):
+    """The gateway's answer about this one task cannot be used (another task's commitment, a cost that is not
+    a non-negative integer, a row that is not an object, a request refused for this task id). Other tasks are
+    not affected, so the pass goes on to them."""
+
+
 class GatewayCosts:
     """Reads a task's committed cost from the gateway (``GET /v0/commitments?task_id=``)."""
 
@@ -55,47 +66,73 @@ class GatewayCosts:
         await self._http.aclose()
 
     async def cost_micros(self, task_id: str) -> int | None:
-        """The cost in USDC micros, or None when the gateway has not seen the commitment yet. Anything else
-        (an unreachable gateway, an answer that is not a commitment) raises."""
-        response = await self._http.get(self._url, params={"task_id": task_id, "limit": 1})
-        response.raise_for_status()
-        rows = cast("list[dict[str, Any]]", response.json())
-        if not isinstance(rows, list):  # pyright: ignore[reportUnnecessaryIsInstance]
-            raise ValueError("the gateway's answer is not a list")
+        """The cost in USDC micros, or None when the gateway has not seen the commitment yet. Raises
+        ``GatewayUnavailable`` when the gateway as a whole cannot answer, ``BadCommitment`` when its answer
+        about this task is unusable."""
+        try:
+            response = await self._http.get(self._url, params={"task_id": task_id, "limit": 1})
+        except httpx.HTTPError as problem:
+            raise GatewayUnavailable(f"{type(problem).__name__}: {problem}") from problem
+        if response.status_code in (400, 422):  # the gateway refused this task id, not every request
+            raise BadCommitment(f"HTTP {response.status_code}")
+        if not response.is_success:
+            raise GatewayUnavailable(f"HTTP {response.status_code}")
+        try:
+            rows: object = response.json()
+        except ValueError as problem:
+            raise GatewayUnavailable("the gateway's answer is not JSON") from problem
+        if not isinstance(rows, list):
+            raise GatewayUnavailable("the gateway's answer is not a list")
         if not rows:
             return None
-        row = rows[0]
-        if row.get("task_id") != task_id:
-            raise ValueError("the gateway answered with another task's commitment")
-        cost = int(row["cost_micros"])
+        row = cast("list[object]", rows)[0]
+        if not isinstance(row, dict):
+            raise BadCommitment("the gateway's commitment is not an object")
+        fields = cast("dict[str, Any]", row)
+        if fields.get("task_id") != task_id:
+            raise BadCommitment("the gateway answered with another task's commitment")
+        raw = fields.get("cost_micros")
+        if not isinstance(raw, str | int) or isinstance(raw, bool):
+            raise BadCommitment("the commitment has no cost")
+        try:
+            cost = int(raw)
+        except ValueError as problem:
+            raise BadCommitment(f"the cost {raw!r} is not an integer") from problem
         if cost < 0:
-            raise ValueError("a negative cost")
+            raise BadCommitment("a negative cost")
         return cost
 
 
-async def record_missing_costs(pool: Pool, costs: GatewayCosts, limit: int = 50) -> int:
-    """Writes ``task_costs`` for counted outcomes that lack one. Returns how many were written. A task whose
-    commitment is not there yet, or a gateway that cannot be asked, leaves it for the next pass."""
+async def record_missing_costs(pool: Pool, costs: GatewayCosts) -> int:
+    """Writes ``task_costs`` for counted outcomes that lack one. Returns how many were written.
+
+    Every pending outcome is tried, oldest first, in one pass. A task whose commitment is not there yet, or
+    whose answer is unusable, is left for the next pass and does not hold back the tasks after it (a
+    commitment that never arrives must not block every newer outcome). Only a gateway that cannot answer at
+    all ends the pass early, since every remaining task would fail the same way."""
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT task_id FROM task_outcomes WHERE cost_micros IS NULL ORDER BY position LIMIT %s", (limit,)
+            "SELECT task_id FROM task_outcomes WHERE cost_micros IS NULL ORDER BY position"
         )
         pending = [row[0] for row in await cur.fetchall()]
     written = 0
     for task_id in pending:
         try:
             cost = await costs.cost_micros(task_id)
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as problem:
-            log.warning("cost of %s not read: %s: %s", task_id, type(problem).__name__, problem)
-            break  # the gateway is unwell or odd; do not hammer it for each remaining task
+        except GatewayUnavailable as problem:
+            log.warning("costs not read this pass (%d pending): %s", len(pending), problem)
+            break  # the gateway is unwell; do not hammer it for each remaining task
+        except BadCommitment as problem:
+            log.warning("cost of %s not read: %s", task_id, problem)
+            continue
         if cost is None:
             continue
         async with pool.connection() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 "INSERT INTO task_costs (task_id, cost_micros) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (task_id, cost),
             )
-        written += 1
+            written += cur.rowcount  # 0 when another instance recorded it first
     return written
 
 

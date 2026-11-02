@@ -10,12 +10,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
+import psycopg
 import pytest
 from psycopg.rows import dict_row
 
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool, migrate, open_pool
-from mergit_cp.reputation import GatewayCosts, record_missing_costs, refresh_posteriors
+from mergit_cp.reputation import GatewayCosts, ReputationUpdater, record_missing_costs, refresh_posteriors
 from mergit_cp.reputation_model import Params, Posterior
 from tests.test_api import seed_plan
 from tests.test_money import receive, tx
@@ -217,5 +218,150 @@ def test_a_refresh_does_not_touch_the_task_graph(database_url: str, settings: Se
         await record_missing_costs(pool, gateway({tasks[0]: "1"}))
         await refresh_posteriors(pool, settings)
         assert await snapshot() == before
+
+    run(database_url, body)
+
+
+def scripted(answer: Callable[[str], httpx.Response], asked: list[str]) -> GatewayCosts:
+    """A gateway whose answer for each task id is ``answer(task_id)``; every task asked about is appended to
+    ``asked``. ``answer`` may raise an ``httpx`` error to play an unreachable gateway."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        task_id = request.url.params["task_id"]
+        asked.append(task_id)
+        return answer(task_id)
+
+    return GatewayCosts(
+        "http://gateway.test", client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    )
+
+
+def commitment(task_id: str, cost: str) -> httpx.Response:
+    return httpx.Response(200, json=[{"task_id": task_id, "cost_micros": cost}])
+
+
+async def fail_each(pool: Pool, settings: Settings, tasks: list[str]) -> None:
+    """A validated failure for each task, in order."""
+    for i, task in enumerate(tasks):
+        await receive(
+            pool, settings, "verdict.recorded", {"task_id": task, "verdict": "fail", "tx": f"0x{i + 1:064x}"}
+        )
+
+
+async def recorded(pool: Pool) -> set[str]:
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT task_id FROM task_costs")
+        return {r[0] for r in await cur.fetchall()}
+
+
+def test_outcomes_whose_cost_never_arrives_do_not_hold_back_newer_ones(database_url: str, settings: Settings):
+    """The review's case: 51 validated failures, and the gateway knows only the newest one's commitment. The
+    50 older ones used to fill every slot of every pass, so the 51st was never asked about."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER, n_tasks=51)
+        await fail_each(pool, settings, tasks)
+        asked: list[str] = []
+        newest = tasks[-1]
+        costs = scripted(
+            lambda t: commitment(t, "300000") if t == newest else httpx.Response(200, json=[]), asked
+        )
+        assert await record_missing_costs(pool, costs) == 1
+        assert await recorded(pool) == {newest}
+        assert asked == tasks  # every pending outcome was tried, oldest first, in one pass
+        assert await refresh_posteriors(pool, settings) == 1
+
+    run(database_url, body)
+
+
+def test_an_unusable_answer_for_one_task_does_not_stop_the_others(database_url: str, settings: Settings):
+    """Another task's commitment, a negative cost, a row that is not an object (D11), a cost that is not a
+    number, a 400: each is that task's problem. The task after them still gets its cost."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER, n_tasks=6)
+        await fail_each(pool, settings, tasks)
+        bad = {
+            tasks[0]: httpx.Response(200, json=[{"task_id": "0x" + "9" * 64, "cost_micros": "1"}]),
+            tasks[1]: commitment(tasks[1], "-5"),
+            tasks[2]: httpx.Response(200, json=["x"]),
+            tasks[3]: commitment(tasks[3], "lots"),
+            tasks[4]: httpx.Response(400),
+        }
+        asked: list[str] = []
+        costs = scripted(lambda t: bad.get(t) or commitment(t, "200000"), asked)
+        assert await record_missing_costs(pool, costs) == 1
+        assert await recorded(pool) == {tasks[5]}
+        assert asked == tasks
+
+    run(database_url, body)
+
+
+def gateway_cannot_answer(
+    database_url: str, settings: Settings, answer: Callable[[str], httpx.Response]
+) -> None:
+    """Every task would fail the same way, so the rest are left for the next pass rather than each asked."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER, n_tasks=3)
+        await fail_each(pool, settings, tasks)
+        asked: list[str] = []
+        assert await record_missing_costs(pool, scripted(answer, asked)) == 0
+        assert asked == tasks[:1]
+        assert await recorded(pool) == set()
+
+    run(database_url, body)
+
+
+def _unreachable(task_id: str) -> httpx.Response:
+    raise httpx.ConnectError(f"refused while asking about {task_id}")
+
+
+@pytest.mark.parametrize(
+    ("status", "content"),
+    [(503, b"[]"), (429, b"[]"), (401, b"[]"), (200, b"<html>not json</html>"), (200, b'{"not": "a list"}')],
+    ids=["503", "429", "401", "not-json", "not-a-list"],
+)
+def test_a_gateway_that_cannot_answer_ends_the_pass_after_one_request(
+    database_url: str, settings: Settings, status: int, content: bytes
+):
+    gateway_cannot_answer(database_url, settings, lambda _: httpx.Response(status, content=content))
+
+
+def test_an_unreachable_gateway_ends_the_pass_after_one_request(database_url: str, settings: Settings):
+    gateway_cannot_answer(database_url, settings, _unreachable)
+
+
+def test_a_cost_another_instance_recorded_first_is_not_counted_as_written(
+    database_url: str, settings: Settings
+):
+    """Two API instances read the same pending task; the other one's INSERT lands first, ours does nothing."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER)
+        await verdict(pool, settings, tasks[0], "fail", "1")
+
+        def raced(task_id: str) -> httpx.Response:
+            with psycopg.connect(database_url) as conn:
+                conn.execute("INSERT INTO task_costs (task_id, cost_micros) VALUES (%s, 7)", (task_id,))
+            return commitment(task_id, "7")
+
+        assert await record_missing_costs(pool, scripted(raced, [])) == 0
+        assert await recorded(pool) == {tasks[0]}
+
+    run(database_url, body)
+
+
+def test_a_commitment_that_is_not_an_object_does_not_skip_the_refresh(database_url: str, settings: Settings):
+    """A gateway row that is not a dict used to raise AttributeError, which escaped the pass before the
+    posteriors were refreshed."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER)
+        await verdict(pool, settings, tasks[0], "fail", "1")
+        await record_missing_costs(pool, gateway({tasks[0]: "300000"}))
+        await verdict(pool, settings, tasks[1], "fail", "2")
+        await ReputationUpdater(pool, settings, gateway(raw=["x"])).update()
+        assert (await posteriors(pool))[("1", "test-repair")]["n"] == 1
 
     run(database_url, body)
