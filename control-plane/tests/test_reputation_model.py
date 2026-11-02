@@ -98,3 +98,10 @@ def test_draws_centre_on_the_posterior() -> None:
     draws = [draw(p, rng) for _ in range(4000)]
     assert sum(t for t, _ in draws) / len(draws) == pytest.approx(p.mean_success, abs=0.01)
     assert all(0.0 <= t <= 1.0 and c > 0.0 for t, c in draws)
+
+
+def test_a_zero_cost_is_refused() -> None:
+    # Paper §8.3: c > 0. A run of zero costs decays tau toward 0, and density = E[theta] * kappa / tau then
+    # overflows to inf after ~14,000 of them (which JSON cannot carry: the reputation endpoint would 500).
+    with pytest.raises(ValueError, match="cost"):
+        Posterior.prior(PARAMS).observe(True, cost=0.0)

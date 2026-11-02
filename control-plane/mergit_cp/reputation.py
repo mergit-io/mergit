@@ -141,9 +141,12 @@ async def refresh_posteriors(pool: Pool, settings: Settings) -> int:
     prior = Posterior.prior(Params(tau0=float(settings.reputation_cost_prior_micros)))
     async with pool.connection() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('reputation'))")
+        # A recorded cost of 0 is a true copy of the commitment, but outside the cost model (paper §8.3,
+        # c > 0), so that outcome is left out like one whose cost is not known yet; it is never folded with a
+        # made-up cost.
         cur = await conn.execute(
             "SELECT agent_id, category, success, cost_micros FROM task_outcomes"
-            " WHERE funding = 'wallet' AND cost_micros IS NOT NULL ORDER BY position, task_id"
+            " WHERE funding = 'wallet' AND cost_micros > 0 ORDER BY position, task_id"
         )
         folded: dict[tuple[str, str], Posterior] = {}
         for agent_id, category, success, cost in await cur.fetchall():

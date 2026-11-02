@@ -50,8 +50,8 @@ class Posterior:
     def observe(self, success: bool, cost: float, gamma: float = GAMMA) -> "Posterior":
         """One validated outcome. Every parameter decays, then the outcome adds to one Beta parameter, and the
         cost (of a failure too) adds to the Gamma pair."""
-        if not math.isfinite(cost) or cost < 0:
-            raise ValueError("cost must be a finite, non-negative number")
+        if not math.isfinite(cost) or cost <= 0:  # paper §8.3: c > 0; zeros would drive tau, so 1/D, to 0
+            raise ValueError("cost must be a finite, positive number")
         if not 0 < gamma <= 1:
             raise ValueError("gamma must be in (0, 1]")
         return Posterior(

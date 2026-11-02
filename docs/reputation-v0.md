@@ -48,7 +48,9 @@ The flag is the plan's funding, not the address shape: a wallet user may also fu
 - **Outcomes:** the money ledger, `money_events`, which is append-only.
 - **Cost:** the receipt's metered cost, as committed on chain, read from the gateway
   (`GET /v0/commitments?task_id=`) and copied once into `task_costs` (write-once). A cost that cannot be read yet
-  leaves the outcome out of the posterior until it can; it is never taken as zero.
+  leaves the outcome out of the posterior until it can; it is never taken as zero. A commitment that really says
+  zero is recorded as it is, but the cost model needs a positive cost (paper §8.3), so that outcome is left out
+  of the posterior too rather than folded with an invented cost.
 - **Posteriors:** `agent_posteriors` is a cache. It is rebuilt from the two sources above on every pass, so it
   cannot disagree with a rebuild, and a challenge that is upheld later changes it correctly.
 

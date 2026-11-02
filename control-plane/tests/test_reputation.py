@@ -365,3 +365,22 @@ def test_a_commitment_that_is_not_an_object_does_not_skip_the_refresh(database_u
         assert (await posteriors(pool))[("1", "test-repair")]["n"] == 1
 
     run(database_url, body)
+
+
+def test_a_zero_cost_outcome_is_left_out_of_the_fold_and_does_not_stop_it(
+    database_url: str, settings: Settings
+):
+    """The commitment really said 0, so it is recorded as it is; but the cost model needs c > 0 (paper §8.3),
+    so the outcome is left out, like one whose cost is unknown, instead of failing every refresh."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER)
+        await verdict(pool, settings, tasks[0], "fail", "1")
+        await verdict(pool, settings, tasks[1], "fail", "2")
+        assert await record_missing_costs(pool, gateway({tasks[0]: "0", tasks[1]: "300000"})) == 2
+        assert await refresh_posteriors(pool, settings) == 1
+        got = (await posteriors(pool))[("1", "test-repair")]
+        expected = prior(settings).observe(False, 300000.0)
+        assert (got["n"], got["tau"]) == (1, pytest.approx(expected.tau))
+
+    run(database_url, body)
