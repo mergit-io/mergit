@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentInfo, Suggestion, TaskSuggestions } from "../../../api/types";
+import { readSuggestions } from "../../../api/useSuggestions";
 import { AgentPicks } from "./AgentPicks";
 
 const AGENTS: AgentInfo[] = ["1", "2", "3", "4", "5"].map((id) => ({
@@ -162,6 +163,25 @@ describe("AgentPicks: suggestions", () => {
       expect(row).not.toHaveTextContent("$");
       cleanup();
     }
+  });
+
+  it("tells a measured cost, a prior and an unreported cost apart, as the control plane sends them", () => {
+    // The same pick three ways: cost_is_prior false, true, and absent (an older control plane, which has no
+    // such field and so says nothing either way about the cost).
+    const older: Record<string, unknown> = { ...pick() };
+    delete older.cost_is_prior;
+    const answers = [{ ...older, cost_is_prior: false }, { ...older, cost_is_prior: true }, older];
+    const shown = answers.map((p) => {
+      const read = readSuggestions({ mode: "greedy", tasks: [{ index: 0, budget_usdc_units: "500000", picks: [p] }] });
+      renderPicks({ suggestion: read?.tasks[0], mode: "greedy" });
+      const text = within(suggested()).getByRole("listitem").textContent;
+      cleanup();
+      return text;
+    });
+    expect(shown[0]).toContain("72% success · about $0.15 a run · 12 counted outcomes");
+    expect(shown[1]).toContain("72% success · no metered cost yet · 12 counted outcomes");
+    expect(shown[2]).toContain("72% success · cost not reported · 12 counted outcomes");
+    expect(shown[2]).not.toContain("$");
   });
 
   it("shows a cent from exactly 10 000 micros, where formatUsdc first prints one", () => {

@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getSuggestions } from "./client";
 import type { SuggestionsResponse } from "./types";
-import { useSuggestions } from "./useSuggestions";
+import { readSuggestions, useSuggestions } from "./useSuggestions";
 
 vi.mock("./client", async (actual) => ({ ...(await actual<typeof import("./client")>()), getSuggestions: vi.fn() }));
 const fetchSuggestions = vi.mocked(getSuggestions);
@@ -134,8 +134,8 @@ describe("useSuggestions", () => {
     });
     const [first, second] = result.current.suggestions?.tasks ?? [];
     expect(first?.ineligible).toEqual([]);
-    // Without the field nothing says the cost was measured, so it is not shown as if it were.
-    expect(first?.picks[0]?.cost_is_prior).toBe(true);
+    // Without the field the cost is unknown: not said to be measured, and not said to be only the prior.
+    expect(first?.picks[0]?.cost_is_prior).toBeNull();
     expect(second).toMatchObject({
       index: 1,
       picks: [],
@@ -224,5 +224,19 @@ describe("useSuggestions", () => {
     });
     expect(result.current.suggestions).toBeNull();
     expect(result.current.error).toBeDefined();
+  });
+});
+
+describe("readSuggestions: cost_is_prior", () => {
+  const costIsPrior = (pick: Record<string, unknown>) =>
+    readSuggestions({ tasks: [{ index: 0, picks: [pick] }] })?.tasks[0]?.picks[0]?.cost_is_prior;
+  const base = { agent_id: "1", name: "coder-a", assumed_success: 0.7, assumed_cost_micros: 1, counted_outcomes: 3 };
+
+  it("keeps true and false as sent, and reads a missing or malformed field as unknown, never as either", () => {
+    expect(costIsPrior({ ...base, cost_is_prior: true })).toBe(true);
+    expect(costIsPrior({ ...base, cost_is_prior: false })).toBe(false);
+    expect(costIsPrior(base)).toBeNull();
+    expect(costIsPrior({ ...base, cost_is_prior: null })).toBeNull();
+    expect(costIsPrior({ ...base, cost_is_prior: "yes" })).toBeNull();
   });
 });

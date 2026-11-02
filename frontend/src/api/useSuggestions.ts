@@ -17,9 +17,10 @@ function readPick(v: unknown): Suggestion | null {
     assumed_success: p.assumed_success,
     assumed_cost_micros: p.assumed_cost_micros,
     counted_outcomes: p.counted_outcomes,
-    // Absent (an older control plane) means nothing vouches for the agent or says its cost was measured.
+    // Absent (an older control plane) means nothing vouches for the agent.
     unproven: p.unproven !== false,
-    cost_is_prior: p.cost_is_prior !== false,
+    // Absent means the control plane did not say whether the cost was measured: unknown, not either answer.
+    cost_is_prior: typeof p.cost_is_prior === "boolean" ? p.cost_is_prior : null,
   };
 }
 

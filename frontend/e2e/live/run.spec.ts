@@ -246,14 +246,46 @@ test("an older control plane's suggestions (no ineligible list) never take the r
 
   const first = page.getByRole("group", { name: "Task 1" });
   const row = first.getByRole("list", { name: "Task 1: suggested agents" }).getByRole("listitem");
-  // Without cost_is_prior nothing says the cost was measured, so no dollar figure is shown.
-  await expect(row).toContainText("72% success · no metered cost yet · 12 counted outcomes");
+  // Without cost_is_prior the cost is unknown: no dollar figure, and not claimed to be only the prior either.
+  await expect(row).toContainText("72% success · cost not reported · 12 counted outcomes");
+  await expect(row).not.toContainText("no metered cost yet");
+  await expect(row).not.toContainText("$");
   await expect(page.getByRole("group", { name: "Task 2" }).getByText(NO_FIT)).toBeVisible();
   await first.getByRole("button", { name: "Use suggestion" }).click();
   await page.getByLabel("Task 2: runs it").selectOption("2");
   await page.getByRole("button", { name: "Approve plan" }).click();
   await expect(page.getByRole("heading", { name: "Fund 1.50 USDC" })).toBeVisible();
   expect(only(calls, "POST", "/approve")[0]?.body).toEqual({ agents: { "0": ["1"], "1": ["2"] }, funding: "wallet" });
+});
+
+test("a measured cost, a cost that is only the prior and an unreported cost each read differently", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  // The third pick has no cost_is_prior at all, as a control plane from before the field answers.
+  const unreported = suggestion();
+  delete unreported.cost_is_prior;
+  const greedy = suggestionsFor("greedy", [
+    {
+      index: 0,
+      budget_usdc_units: "500000",
+      picks: [suggestion(), suggestion({ agent_id: "2", name: "coder-b", cost_is_prior: true })],
+      ineligible: [],
+    },
+    { index: 1, budget_usdc_units: "1000000", picks: [unreported], ineligible: [] },
+  ]);
+  await mockPlanApi(page, { plans: [draftPlan()], suggestions: { greedy } });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  const rows = (task: number) =>
+    page
+      .getByRole("group", { name: `Task ${String(task)}` })
+      .getByRole("list", { name: `Task ${String(task)}: suggested agents` })
+      .getByRole("listitem");
+  await expect(rows(1).nth(0)).toContainText("72% success · about $0.15 a run · 12 counted outcomes");
+  await expect(rows(1).nth(1)).toContainText("72% success · no metered cost yet · 12 counted outcomes");
+  await expect(rows(2)).toContainText("72% success · cost not reported · 12 counted outcomes");
+  await expect(rows(2)).not.toContainText("$");
 });
 
 test("when suggestions fail to load, picking and approving work exactly as before", async ({ page }) => {

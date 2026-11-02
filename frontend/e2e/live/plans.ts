@@ -162,8 +162,8 @@ export type FakeSuggestion = {
   assumed_cost_micros: number;
   counted_outcomes: number;
   unproven: boolean;
-  /** No cost recorded yet: `assumed_cost_micros` is only the configured prior. */
-  cost_is_prior: boolean;
+  /** No cost recorded yet: `assumed_cost_micros` is only the configured prior. Absent from older answers. */
+  cost_is_prior?: boolean;
 };
 
 export type FakeTaskSuggestions = {

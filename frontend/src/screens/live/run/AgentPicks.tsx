@@ -21,17 +21,21 @@ function percent(success: number): string {
 
 /**
  * A suggestion's numbers, and what they are. With no counted outcome both are only the starting estimate,
- * and a cost with nothing metered behind it (`cost_is_prior`) is too, so neither is shown as if measured. In
- * explore mode the numbers are one random draw, not the agent's estimate, so they are labelled as this
- * draw's (`drawn`) and the cost loses its "about".
+ * and a cost with nothing metered behind it (`cost_is_prior`) is too, so neither is shown as if measured. A
+ * control plane that does not say (`cost_is_prior` null) gets no dollar figure and no claim about the cost
+ * either way. In explore mode the numbers are one random draw, not the agent's estimate, so they are labelled
+ * as this draw's (`drawn`) and the cost loses its "about".
  */
 function evidence(pick: Suggestion, mode: SuggestionsResponse["mode"]): { drawn: boolean; text: string } {
   if (pick.counted_outcomes <= 0) return { drawn: false, text: "new, no audited record yet" };
   const drawn = mode === "explore";
   const outcomes = `${String(pick.counted_outcomes)} counted outcome${pick.counted_outcomes === 1 ? "" : "s"}`;
-  const cost = pick.cost_is_prior
-    ? "no metered cost yet"
-    : `${drawn ? "" : "about "}${dollars(pick.assumed_cost_micros)} a run`;
+  const cost =
+    pick.cost_is_prior === null
+      ? "cost not reported"
+      : pick.cost_is_prior
+        ? "no metered cost yet"
+        : `${drawn ? "" : "about "}${dollars(pick.assumed_cost_micros)} a run`;
   return { drawn, text: `${percent(pick.assumed_success)}% success · ${cost} · ${outcomes}` };
 }
 

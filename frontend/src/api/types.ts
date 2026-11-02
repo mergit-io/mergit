@@ -116,10 +116,10 @@ export type Suggestion = {
   unproven: boolean;
   /**
    * No cost recorded for this agent yet (even with counted outcomes, if all metered 0), so
-   * `assumed_cost_micros` is only the configured prior. Older control planes omit it; the client then
-   * takes it as true, since nothing says the cost was measured.
+   * `assumed_cost_micros` is only the configured prior. Older control planes omit it, and the client then
+   * reads it as `null`: unknown, neither measured nor only the prior.
    */
-  cost_is_prior: boolean;
+  cost_is_prior: boolean | null;
 };
 
 /** A roster agent left out of a task's suggestions, with why, as a sentence to show as it is. */
