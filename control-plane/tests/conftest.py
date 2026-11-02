@@ -52,7 +52,9 @@ def agents_files(tmp_path: Path) -> tuple[Path, Path]:
     )
     config = tmp_path / "agents.toml"
     config.write_text(
-        '[agents.coder-a]\nmodel = "claude-sonnet-5"\nsystem_prompt = "You fix failing tests."\n'
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.coder-a]\nprovider = "anthropic"\nmodel = "claude-sonnet-5"\n'
+        'system_prompt = "You fix failing tests."\n'
     )
     return chain, config
 
@@ -70,6 +72,7 @@ def settings(database_url: str, agents_files: tuple[Path, Path]) -> Settings:
         agents_config=str(config),
         cors_origins=["http://localhost:5173"],
         planner_model="claude-opus-5",
+        planner_provider="anthropic",
         events_token=SecretStr("test-events-token"),
         chain_events_token=SecretStr("test-chain-events-token"),
         worker_token=SecretStr("test-worker-token"),

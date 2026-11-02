@@ -5,8 +5,6 @@ from typing import Annotated, cast
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from mergit_worker.providers import effective_model
-
 BASE_SEPOLIA_CHAIN_ID = 84532
 
 
@@ -33,6 +31,9 @@ class Settings(BaseSettings):
 
     planner_model: str
     """The planner's model (HLD D18 is open, so this is a deployment choice, not a code default)."""
+    planner_provider: str
+    """Which `[providers.<name>]` table in `agents_config` the planner uses (HLD D18 is open, so this is a
+    deployment choice, not a code default)."""
     prices_file: str = "prices.toml"
     planner_max_tasks: int = Field(default=8, ge=1, le=32)
     plans_per_hour: int = Field(default=10, ge=1)
@@ -107,15 +108,6 @@ class Settings(BaseSettings):
     sse_poll_s: float = Field(default=1.0, gt=0)
     """How often GET /v0/plans/{id}/events re-reads plan and task state from the database. A step the
     worker posts to /v0/internal/progress is relayed to subscribers immediately, not on this timer."""
-
-    @model_validator(mode="after")
-    def _planner_model_follows_the_provider(self) -> "Settings":
-        # On Groq the planner runs the Groq model, and the start-up price check and the recorded cost must
-        # name
-        # the model that really answers (mergit_worker/providers.py). Unchanged whenever Anthropic is the
-        # provider.
-        self.planner_model = effective_model(self.planner_model)
-        return self
 
     @model_validator(mode="before")
     @classmethod

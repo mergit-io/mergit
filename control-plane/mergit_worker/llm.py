@@ -14,7 +14,7 @@ import httpx
 
 from .config import ConfigError
 from .openai_chat import BadReply, parse_reply, to_openai_messages, to_openai_tools
-from .providers import require_provider
+from .providers import ProviderSpec, provider_key
 
 
 class LLMError(Exception):
@@ -96,7 +96,6 @@ class AnthropicLLM:
         )
 
 
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _ATTEMPTS = 3
 
@@ -110,12 +109,10 @@ def retry_wait(response: httpx.Response, attempt: int) -> float:
         return float(attempt)
 
 
-class GroqLLM:
-    """Groq's OpenAI-compatible chat API, the fallback when there is no Anthropic key. It takes and returns
-    the same
+class OpenAIChatLLM:
+    """Any OpenAI-compatible chat API (Groq, OpenRouter, ...). It takes and returns the same
     Anthropic-shaped data as `AnthropicLLM`, so the harness and the receipts do not know which one answered.
-    The key
-    is read from `GROQ_API_KEY` and is only ever in the `Authorization` header: errors never include it.
+    The key is only ever sent in the `Authorization` header: errors never include it.
 
     Cached prompt tokens are counted as ordinary input here, because the worker's meter has no cached-token
     field:
@@ -123,17 +120,14 @@ class GroqLLM:
 
     def __init__(
         self,
-        api_key: str | None = None,
+        api_key: str,
         *,
+        base_url: str,
         client: httpx.Client | None = None,
         timeout_s: float = 600.0,
-        base_url: str = GROQ_BASE_URL,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        key = api_key or os.environ.get("GROQ_API_KEY")
-        if not key:
-            raise ConfigError("GROQ_API_KEY is not set")
-        self._headers = {"Authorization": f"Bearer {key}"}
+        self._headers = {"Authorization": f"Bearer {api_key}"}
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._http = client or httpx.Client(timeout=timeout_s)
         self._sleep = sleep
@@ -149,9 +143,15 @@ class GroqLLM:
                 continue
             if response.status_code == 200:
                 try:
-                    return cast("dict[str, Any]", response.json())
+                    data = cast("dict[str, Any]", response.json())
                 except ValueError as exc:
                     raise LLMError("model call failed: the answer is not JSON") from exc
+                error = data.get("error")
+                if isinstance(error, dict):
+                    raise LLMError(f"model call failed: {cast('dict[str, Any]', error).get('message')}")
+                if error:
+                    raise LLMError(f"model call failed: {error}")
+                return data
             if response.status_code not in _RETRY_STATUSES or attempt == _ATTEMPTS:
                 raise LLMError(f"model call failed: HTTP {response.status_code}: {response.text[:200]}")
             self._sleep(retry_wait(response, attempt))
@@ -191,10 +191,52 @@ class GroqLLM:
         )
 
 
-def build_llm(timeout_s: float, environ: Mapping[str, str] | None = None) -> LLM:
-    """The model client for this deploy: Anthropic when its key is set, Groq when only Groq's is
-    (providers.py)."""
-    env = os.environ if environ is None else environ
-    if require_provider(env) == "groq":
-        return GroqLLM(env["GROQ_API_KEY"], timeout_s=timeout_s)
-    return AnthropicLLM(timeout_s=timeout_s)
+@dataclass(frozen=True, slots=True)
+class ModelClients:
+    """One model client per provider actually used by a deployed agent, built once at start-up so a missing
+    key is a start-up error, never a surprise on a job's first model call."""
+
+    _clients: dict[str, LLM]
+
+    @classmethod
+    def build(
+        cls,
+        providers: dict[str, ProviderSpec],
+        needed: set[str],
+        timeout_s: float,
+        environ: Mapping[str, str] | None = None,
+    ) -> ModelClients:
+        env = os.environ if environ is None else environ
+        clients: dict[str, LLM] = {}
+        for name in needed:
+            spec = providers.get(name)
+            if spec is None:
+                raise ConfigError(
+                    f"provider {name!r} is used by an agent but has no [providers.{name}] table"
+                )
+            key = provider_key(spec, env)
+            if not key:
+                env_var = spec.api_key_env or "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
+                raise ConfigError(f"{name} needs {env_var}")
+            if spec.kind == "anthropic":
+                # With its own `api_key_env`, this provider's key may not be the SDK's own env-var default
+                # (another `[providers.*]` table could be anthropic too, with a different key); pass it
+                # explicitly so the right one is actually used, not just checked for presence above.
+                clients[name] = (
+                    AnthropicLLM(client=anthropic.Anthropic(api_key=key, timeout=timeout_s))
+                    if spec.api_key_env
+                    else AnthropicLLM(timeout_s=timeout_s)
+                )
+            else:
+                if not spec.base_url:
+                    raise ConfigError(f"provider {name!r} is openai_chat but has no base_url")
+                clients[name] = OpenAIChatLLM(key, base_url=spec.base_url, timeout_s=timeout_s)
+        return cls(clients)
+
+    def for_provider(self, name: str) -> LLM:
+        """The client built for `name`. Raising here (rather than returning `None`) means a mismatch
+        between `validate_agents_have_keys` and `build` fails loudly instead of as a `None` call later."""
+        try:
+            return self._clients[name]
+        except KeyError:
+            raise ConfigError(f"no model client was built for provider {name!r}") from None

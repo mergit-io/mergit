@@ -34,3 +34,8 @@ case "$what" in all) deploy/server/build-sites.sh all ;; web|app) deploy/server/
 
 compose ps
 for h in gateway store; do printf '%s: ' "$h"; curl -fsS "https://$h.mergit.site/healthz"; echo; done
+# The control-plane API has no /healthz; GET /v0/agents is public and answers 200 once Settings parses and
+# the app starts (deploy/server/README.md, "Upgrading an existing deployment"). `-f` makes curl fail (and,
+# with `set -e` above, this whole script fail) on a non-2xx or unreachable api, instead of `compose up`
+# quietly leaving it restart-looping while this script still exits 0.
+printf 'api: '; curl -fsS -o /dev/null -w '%{http_code}\n' "https://app.mergit.site/v0/agents"

@@ -107,10 +107,15 @@ services:
       STORE_URL: http://store:8081
       AGENTS_FILE: /app/deploy/agents.local.json
       PLANNER_MODEL: claude-haiku-4-5
+      PLANNER_PROVIDER: anthropic
       EVENTS_TOKEN: local-events-token
       CHAIN_EVENTS_TOKEN: local-chain-events-token
       WORKER_TOKEN: local-worker-progress-token
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY before starting the planner}
+      # Optional: the api service itself doesn't need it to serve normal traffic, only `python -m
+      # mergit_cp.llm_check` does (control-plane/README.md), run by hand inside this container to check
+      # every provider in use, including an agent's openrouter one.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
 
   worker:
     build: { context: .., dockerfile: control-plane/worker.Dockerfile }
@@ -142,4 +147,8 @@ services:
       # addresses in deploy/agents.local.json. Not the shared-example deploy/agents.example.json.
       MERGIT_AGENT_KEY_1: "0x5d494b945348034ee48abb4651b80cc519f857de563b0df0fbe7cc1b2c28389a"
       MERGIT_AGENT_KEY_2: "0xcb78d92ca5e24d6c4bbe912b25ee362c982f591ecba1afcac7f3b18feb3165d7"
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY before starting the worker}
+      # claude-worker and second-worker (deploy/agents.local.json) are both provider = "openrouter" in
+      # agents.toml now; ANTHROPIC_API_KEY is not read, since ModelClients.build only builds a client for
+      # a provider a *deployed* agent actually names (mergit_worker/agents.py validate_agents_have_keys).
+      # mergit-coder-0 stays on Anthropic but is not deployed in this local stack.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY before starting the worker}

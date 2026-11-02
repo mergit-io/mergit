@@ -108,6 +108,7 @@ SETTINGS = Settings(
     store_url="http://store.invalid",
     agents_file="unused",
     planner_model="claude-opus-5",
+    planner_provider="anthropic",
     events_token=SecretStr("test-events-token"),
     chain_events_token=SecretStr("test-chain-events-token"),
     worker_token=SecretStr("test-worker-token"),

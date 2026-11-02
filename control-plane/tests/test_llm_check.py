@@ -1,11 +1,18 @@
-"""`python -m mergit_cp.llm_check` passes only when a plain answer and a tool call both work, and never prints
-the credential."""
+"""`python -m mergit_cp.llm_check` passes only when every provider in use answers a plain question and a
+tool call, and never prints the credential."""
 
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 
 from mergit_cp import llm_check
+from mergit_cp.config import Settings
 from mergit_cp.llm import LLMResult, LLMUnavailable
 
 
@@ -22,31 +29,168 @@ class Fake:
         return LLMResult("ready" if not tools else "", calls, 5, 3, model)
 
 
-@pytest.fixture(autouse=True)
-def _env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("ANTHROPIC_API_KEY", "GROQ_API_KEY", "LLM_PROVIDER"):
-        monkeypatch.delenv(name, raising=False)
+def _agent(name: str, provider: str, model: str) -> dict[str, str]:
+    return {"name": name, "provider": provider, "model": model}
+
+
+def _write_agents(
+    tmp_path: Path, providers: dict[str, dict[str, str]], agents: list[dict[str, str]]
+) -> tuple[Path, Path]:
+    """A minimal `agents.json` + `agents.toml` pair, built directly for the test rather than touching the
+    repo's real deploy files."""
+    chain = tmp_path / f"agents-{len(agents)}-{len(providers)}.json"
+    chain.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "agent_id": str(i),
+                        "name": a["name"],
+                        "operator": "0x" + "1" * 40,
+                        "runtime_key": "0x" + "2" * 40,
+                    }
+                    for i, a in enumerate(agents)
+                ]
+            }
+        )
+    )
+    provider_tables = "\n\n".join(
+        f"[providers.{name}]\n" + "\n".join(f'{k} = "{v}"' for k, v in table.items())
+        for name, table in providers.items()
+    )
+    agent_tables = (
+        "\n".join(
+            f'[agents.{a["name"]}]\nprovider = "{a["provider"]}"\nmodel = "{a["model"]}"\n'
+            'system_prompt = "p"\n'
+            for a in agents
+        )
+        or "[agents]\n"  # an explicit empty table, so `models["agents"]` still resolves with no agents
+    )
+    config = tmp_path / f"agents-{len(agents)}-{len(providers)}.toml"
+    config.write_text(f"{provider_tables}\n\n{agent_tables}")
+    return chain, config
+
+
+def _settings(
+    agents_files: tuple[Path, Path], planner_provider: str, planner_model: str = "claude-haiku-4-5"
+) -> Settings:
+    chain, config = agents_files
+    return Settings(
+        database_url="postgresql://unused/db",  # never connected to: llm_check touches no database
+        app_domain="app.mergit.test",
+        session_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
+        gateway_url="http://gateway.invalid",
+        store_url="http://store.invalid",
+        agents_file=str(chain),
+        agents_config=str(config),
+        planner_model=planner_model,
+        planner_provider=planner_provider,
+        events_token=SecretStr("test-events-token"),
+        chain_events_token=SecretStr("test-chain-events-token"),
+        worker_token=SecretStr("test-worker-token"),
+    )
+
+
+def test_it_passes_when_both_calls_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    agents_files = _write_agents(tmp_path, {"anthropic": {"kind": "anthropic"}}, [])
+    settings = _settings(agents_files, "anthropic")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "super-secret-token")
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://lend.example/v1")
+    monkeypatch.setattr(llm_check, "build_planner_llm", lambda *a, **k: Fake())
 
-
-def test_it_passes_when_both_calls_work(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
-    monkeypatch.setattr(llm_check, "build_llm", lambda: Fake())
-    assert llm_check.main(["claude-haiku-4-5"]) == 0
+    assert asyncio.run(llm_check.check(settings)) is True
     out = capsys.readouterr().out
-    assert "lend.example" in out and "tool call: ok" in out
+    assert "provider=anthropic" in out and "tool call: ok" in out
     assert "super-secret-token" not in out
 
 
-def test_it_fails_when_the_model_does_not_call_the_tool(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(llm_check, "build_llm", lambda: Fake(tool_works=False))
-    assert llm_check.main(["m"]) == 1
+def test_it_fails_when_the_model_does_not_call_the_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    agents_files = _write_agents(tmp_path, {"anthropic": {"kind": "anthropic"}}, [])
+    settings = _settings(agents_files, "anthropic")
+    monkeypatch.setattr(llm_check, "build_planner_llm", lambda *a, **k: Fake(tool_works=False))
+
+    assert asyncio.run(llm_check.check(settings)) is False
 
 
 def test_it_fails_and_says_why_when_the_provider_refuses(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    monkeypatch.setattr(llm_check, "build_llm", lambda: Fake(down=True))
-    assert llm_check.main(["m"]) == 1
-    out = capsys.readouterr().out
-    assert "HTTP 401" in out and "super-secret-token" not in out
+    agents_files = _write_agents(tmp_path, {"anthropic": {"kind": "anthropic"}}, [])
+    settings = _settings(agents_files, "anthropic")
+    monkeypatch.setattr(llm_check, "build_planner_llm", lambda *a, **k: Fake(down=True))
+
+    assert asyncio.run(llm_check.check(settings)) is False
+    assert "HTTP 401" in capsys.readouterr().out
+
+
+def test_distinct_models_on_the_same_provider_each_get_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """Both shipped agents are on `openrouter` but name different models (`claude-sonnet-5` via OpenRouter and
+    `deepseek-v4-flash`): each distinct (provider, model) pair actually in use gets its own check line, not
+    just the first one found for the provider."""
+    agents_files = _write_agents(
+        tmp_path,
+        {
+            "anthropic": {"kind": "anthropic"},
+            "openrouter": {
+                "kind": "openai_chat",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            },
+        },
+        [_agent("coder-a", "openrouter", "model-a"), _agent("coder-b", "openrouter", "model-b")],
+    )
+    settings = _settings(agents_files, "anthropic")
+
+    calls: list[str] = []
+
+    def fake_build(providers: Any, name: str, *a: Any, **k: Any) -> Fake:
+        calls.append(name)
+        return Fake()
+
+    monkeypatch.setattr(llm_check, "build_planner_llm", fake_build)
+
+    assert asyncio.run(llm_check.check(settings)) is True
+    assert sorted(calls) == ["anthropic", "openrouter", "openrouter"]
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("provider=")]
+    assert len(lines) == 3
+    assert any(line.startswith("provider=anthropic") for line in lines)
+    assert any("provider=openrouter" in line and "model=model-a" in line for line in lines)
+    assert any("provider=openrouter" in line and "model=model-b" in line for line in lines)
+
+
+def test_same_provider_and_model_is_checked_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """Two agents on the same provider naming the SAME model produce only one check line: no redundant call
+    for an identical (provider, model) pair."""
+    agents_files = _write_agents(
+        tmp_path,
+        {
+            "anthropic": {"kind": "anthropic"},
+            "openrouter": {
+                "kind": "openai_chat",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            },
+        },
+        [_agent("coder-a", "openrouter", "model-a"), _agent("coder-b", "openrouter", "model-a")],
+    )
+    settings = _settings(agents_files, "anthropic")
+
+    calls: list[str] = []
+
+    def fake_build(providers: Any, name: str, *a: Any, **k: Any) -> Fake:
+        calls.append(name)
+        return Fake()
+
+    monkeypatch.setattr(llm_check, "build_planner_llm", fake_build)
+
+    assert asyncio.run(llm_check.check(settings)) is True
+    assert sorted(calls) == ["anthropic", "openrouter"]
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("provider=")]
+    assert len(lines) == 2
+    assert any(line.startswith("provider=anthropic") for line in lines)
+    assert any("provider=openrouter" in line and "model=model-a" in line for line in lines)

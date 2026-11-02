@@ -1,4 +1,5 @@
-"""Which model provider runs, decided once at start-up, and the model swapped in before anything is priced."""
+"""The provider each agent and the planner use, configured once in `agents.toml` (or, for the planner, in
+`Settings.planner_provider`)."""
 
 from __future__ import annotations
 
@@ -10,63 +11,32 @@ import pytest
 from mergit_worker.agents import load_agent_spec, validate_agents_are_priced
 from mergit_worker.config import ConfigError
 from mergit_worker.meter import PriceTable
-from mergit_worker.providers import DEFAULT_GROQ_MODEL, effective_model, llm_provider, require_provider
+from mergit_worker.providers import ProviderSpec, load_providers, provider_key
 from tests.support import KEY, KEY_ADDRESS
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_anthropic_is_the_provider_whenever_its_key_is_set():
-    assert llm_provider({"ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}) == "anthropic"
+def test_provider_key_falls_back_to_anthropics_own_env_vars_when_no_api_key_env_is_named():
+    # A provider with no `api_key_env` (the common single-Anthropic-provider deploy) lets the credential
+    # come from whichever of ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN is set, exactly as the SDK itself would
+    # read it; a gateway such as Claude Lend hands out ANTHROPIC_AUTH_TOKEN (+ ANTHROPIC_BASE_URL) instead
+    # of a real key, and it must still be picked up.
+    spec = ProviderSpec(name="anthropic", kind="anthropic", base_url=None, api_key_env=None)
+    assert provider_key(spec, {"ANTHROPIC_AUTH_TOKEN": "t"}) == "t"
+    assert provider_key(spec, {"ANTHROPIC_API_KEY": "a", "ANTHROPIC_AUTH_TOKEN": "t"}) == "a"
+    assert provider_key(spec, {}) is None
 
 
-def test_an_anthropic_auth_token_counts_as_the_anthropic_credential():
-    # A gateway such as Claude Lend takes ANTHROPIC_AUTH_TOKEN (+ ANTHROPIC_BASE_URL) instead of a real key.
-    # It must win over a Groq key left in the same file, or the deploy would silently keep using Groq.
-    assert llm_provider({"ANTHROPIC_AUTH_TOKEN": "t", "GROQ_API_KEY": "g"}) == "anthropic"
-    assert require_provider({"ANTHROPIC_AUTH_TOKEN": "t"}) == "anthropic"
-    assert require_provider({"ANTHROPIC_AUTH_TOKEN": "t", "GROQ_API_KEY": "g"}) == "anthropic"
-    # A blank value is not a credential.
-    assert llm_provider({"ANTHROPIC_AUTH_TOKEN": "", "GROQ_API_KEY": "g"}) == "groq"
-    with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"):
-        require_provider({"LLM_PROVIDER": "anthropic", "ANTHROPIC_AUTH_TOKEN": ""})
-
-
-def test_groq_is_the_fallback_when_only_its_key_is_set():
-    assert llm_provider({"GROQ_API_KEY": "g"}) == "groq"
-
-
-def test_with_no_keys_the_default_is_anthropic_so_nothing_changes_for_tests_or_a_keyed_deploy():
-    assert llm_provider({}) == "anthropic"
-
-
-def test_an_explicit_choice_wins_over_the_keys_present():
-    assert llm_provider({"LLM_PROVIDER": "groq", "ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}) == "groq"
-    assert llm_provider({"LLM_PROVIDER": "anthropic", "GROQ_API_KEY": "g"}) == "anthropic"
-
-
-def test_an_unknown_provider_name_is_an_error():
-    with pytest.raises(ConfigError, match="LLM_PROVIDER"):
-        llm_provider({"LLM_PROVIDER": "openia"})
-
-
-def test_require_provider_refuses_to_start_without_the_key_it_needs():
-    with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY"):
-        require_provider({})
-    with pytest.raises(ConfigError, match="GROQ_API_KEY"):
-        require_provider({"LLM_PROVIDER": "groq", "ANTHROPIC_API_KEY": "a"})
-    assert require_provider({"GROQ_API_KEY": "g"}) == "groq"
-
-
-def test_the_configured_model_is_kept_on_anthropic():
-    assert effective_model("claude-sonnet-5", {"ANTHROPIC_API_KEY": "a"}) == "claude-sonnet-5"
-
-
-def test_on_groq_every_model_becomes_the_groq_model_and_it_can_be_chosen():
-    assert effective_model("claude-sonnet-5", {"GROQ_API_KEY": "g"}) == DEFAULT_GROQ_MODEL
-    assert effective_model("claude-opus-5", {"GROQ_API_KEY": "g", "GROQ_MODEL": "openai/gpt-oss-20b"}) == (
-        "openai/gpt-oss-20b"
+def test_provider_key_uses_the_named_env_var_when_one_is_given():
+    spec = ProviderSpec(
+        name="openrouter",
+        kind="openai_chat",
+        base_url="https://openrouter.ai/api/v1",
+        api_key_env="OPENROUTER_API_KEY",
     )
+    assert provider_key(spec, {"OPENROUTER_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}) == "k"
+    assert provider_key(spec, {}) is None
 
 
 def test_the_repo_price_table_prices_the_groq_models_from_groqs_published_prices():
@@ -77,6 +47,57 @@ def test_the_repo_price_table_prices_the_groq_models_from_groqs_published_prices
     # cached input costs 50% less (console.groq.com/docs/prompt-caching)
     cached = table.model_call_cost("openai/gpt-oss-120b", 0, 0, 5, cache_read_tokens=1_000_000)
     assert cached.usd_micros == 75_000
+
+
+def test_loads_openai_chat_and_anthropic_providers(tmp_path: Path):
+    config = tmp_path / "agents.toml"
+    config.write_text(
+        "[providers.openrouter]\n"
+        'kind = "openai_chat"\n'
+        'base_url = "https://openrouter.ai/api/v1"\n'
+        'api_key_env = "OPENROUTER_API_KEY"\n'
+        "\n"
+        "[providers.anthropic]\n"
+        'kind = "anthropic"\n'
+    )
+    assert load_providers(config) == {
+        "openrouter": ProviderSpec(
+            name="openrouter",
+            kind="openai_chat",
+            base_url="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+        "anthropic": ProviderSpec(name="anthropic", kind="anthropic", base_url=None, api_key_env=None),
+    }
+
+
+def test_openai_chat_requires_base_url_and_key_env(tmp_path: Path):
+    config = tmp_path / "agents.toml"
+    config.write_text('[providers.openrouter]\nkind = "openai_chat"\napi_key_env = "OPENROUTER_API_KEY"\n')
+    with pytest.raises(ConfigError, match="openrouter"):
+        load_providers(config)
+    config.write_text(
+        '[providers.openrouter]\nkind = "openai_chat"\nbase_url = "https://openrouter.ai/api/v1"\n'
+    )
+    with pytest.raises(ConfigError, match="openrouter"):
+        load_providers(config)
+
+
+def test_unknown_kind_is_refused(tmp_path: Path):
+    config = tmp_path / "agents.toml"
+    config.write_text('[providers.aws]\nkind = "bedrock"\n')
+    with pytest.raises(ConfigError, match="bedrock"):
+        load_providers(config)
+
+
+def test_a_malformed_provider_entry_is_a_clear_config_error_not_a_bare_attribute_error(tmp_path: Path):
+    """`openrouter = "not-a-table"` under `[providers]` is valid TOML but not a provider table; this must
+    raise `ConfigError` naming the malformed provider, not a raw `AttributeError` from calling `.get` on a
+    plain string."""
+    config = tmp_path / "agents.toml"
+    config.write_text('[providers]\nopenrouter = "not-a-table"\n')
+    with pytest.raises(ConfigError, match="openrouter"):
+        load_providers(config)
 
 
 def _agent_files(tmp_path: Path) -> tuple[Path, Path]:
@@ -96,74 +117,23 @@ def _agent_files(tmp_path: Path) -> tuple[Path, Path]:
         )
     )
     config = tmp_path / "agents.toml"
-    config.write_text('[agents.coder]\nmodel = "claude-sonnet-5"\nsystem_prompt = "p"\n')
+    config.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[agents.coder]\nprovider = "anthropic"\nmodel = "claude-sonnet-5"\nsystem_prompt = "p"\n'
+    )
     return chain, config
 
 
-def test_the_agent_is_loaded_with_the_groq_model_so_the_receipt_prices_and_names_what_really_ran(
-    tmp_path: Path,
-):
+def test_model_is_never_swapped(tmp_path: Path):
     chain, config = _agent_files(tmp_path)
     env = {"GROQ_API_KEY": "g", "MERGIT_AGENT_KEY_1": KEY}
-    assert load_agent_spec("1", chain, config, env).model == DEFAULT_GROQ_MODEL
-    env_a = {"ANTHROPIC_API_KEY": "a", "MERGIT_AGENT_KEY_1": KEY}
-    assert load_agent_spec("1", chain, config, env_a).model == "claude-sonnet-5"
+    assert load_agent_spec("1", chain, config, env).model == "claude-sonnet-5"
 
 
-def test_start_up_price_check_uses_the_model_that_will_run(tmp_path: Path):
+def test_start_up_price_check_uses_the_configured_model(tmp_path: Path):
     chain, config = _agent_files(tmp_path)
-    only_groq = tmp_path / "p.toml"
-    only_groq.write_text(f'[models."{DEFAULT_GROQ_MODEL}"]\ninput_per_mtok = 0.15\noutput_per_mtok = 0.6\n')
-    table = PriceTable.load(only_groq)
-    validate_agents_are_priced(chain, config, table, {"GROQ_API_KEY": "g"})
+    priced = tmp_path / "p.toml"
+    priced.write_text('[models."claude-sonnet-5"]\ninput_per_mtok = 1\noutput_per_mtok = 1\n')
+    validate_agents_are_priced(chain, config, PriceTable.load(priced))
     with pytest.raises(ConfigError, match="no price"):
-        validate_agents_are_priced(chain, config, table, {"ANTHROPIC_API_KEY": "a"})
-
-
-def _only(monkeypatch: pytest.MonkeyPatch, **keys: str) -> None:
-    for name in ("ANTHROPIC_API_KEY", "GROQ_API_KEY", "LLM_PROVIDER", "GROQ_MODEL"):
-        monkeypatch.delenv(name, raising=False)
-    for name, value in keys.items():
-        monkeypatch.setenv(name, value)
-
-
-def test_the_api_lists_the_model_that_will_really_run(
-    agents_files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
-):
-    from mergit_cp.agents import load_agents
-
-    chain, config = agents_files
-    _only(monkeypatch, GROQ_API_KEY="g")
-    assert load_agents(str(chain), str(config))[0].model == DEFAULT_GROQ_MODEL
-    _only(monkeypatch, ANTHROPIC_API_KEY="a")
-    assert load_agents(str(chain), str(config))[0].model == "claude-sonnet-5"
-
-
-def test_the_planner_model_follows_the_provider(
-    agents_files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
-):
-    from pydantic import SecretStr
-
-    from mergit_cp.config import Settings
-
-    chain, config = agents_files
-
-    def settings() -> Settings:
-        return Settings(
-            database_url="postgresql://x",
-            app_domain="app.mergit.test",
-            session_secret=SecretStr("test-secret-at-least-32-bytes-long!!"),
-            gateway_url="http://gateway.invalid",
-            store_url="http://store.invalid",
-            agents_file=str(chain),
-            agents_config=str(config),
-            planner_model="claude-opus-5",
-            events_token=SecretStr("e"),
-            chain_events_token=SecretStr("c"),
-            worker_token=SecretStr("w"),
-        )
-
-    _only(monkeypatch, ANTHROPIC_API_KEY="a")
-    assert settings().planner_model == "claude-opus-5"
-    _only(monkeypatch, GROQ_API_KEY="g", GROQ_MODEL="openai/gpt-oss-20b")
-    assert settings().planner_model == "openai/gpt-oss-20b"
+        validate_agents_are_priced(chain, config, PriceTable({}))

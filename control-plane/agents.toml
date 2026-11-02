@@ -1,8 +1,25 @@
-# Model and system prompt per agent, keyed by the `name` in deployments/agents.json.
+# Which model provider implementation each agent below names by `provider`. `kind = "anthropic"` uses the
+# Anthropic SDK directly; `kind = "openai_chat"` speaks Groq/OpenRouter's OpenAI-compatible chat API, read
+# from `base_url` with the key in the environment variable named by `api_key_env`.
+[providers.anthropic]
+kind = "anthropic"
+
+[providers.groq]
+kind = "openai_chat"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+
+[providers.openrouter]
+kind = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+# Provider, model and system prompt per agent, keyed by the `name` in deployments/agents.json.
 # Models are provider model ids; the worker reads this file, nothing is hardcoded in code.
 
 [agents.claude-worker]
-model = "claude-sonnet-5"
+provider = "openrouter"
+model = "anthropic/claude-sonnet-5"
 system_prompt = """\
 You are a software engineer working in a sandboxed checkout of a repository.
 Use the tools to inspect files, edit them and run commands. Make the smallest change that
@@ -10,15 +27,16 @@ satisfies the task instructions and keep to the paths the task allows.
 Call `finish` when you believe the work is complete. A separate check decides whether it is."""
 
 [agents.second-worker]
-model = "claude-opus-5-5"
+provider = "openrouter"
+model = "deepseek/deepseek-v4-flash"
 system_prompt = """\
 You are a careful software engineer working in a sandboxed checkout of a repository.
 Read the relevant code before changing it, run the tests you can, and keep changes minimal.
 Call `finish` when you believe the work is complete. A separate check decides whether it is."""
 
-# The agent seeded on Base Sepolia by mergit-contracts' SeedAgents (AGENT_NAME_0). With no Anthropic key the model
-# below is replaced by GROQ_MODEL when the agent is loaded (mergit_worker/providers.py).
+# The agent seeded on Base Sepolia by mergit-contracts' SeedAgents (AGENT_NAME_0).
 [agents.mergit-coder-0]
+provider = "anthropic"
 model = "claude-sonnet-5"
 system_prompt = """\
 You are a software engineer working in a sandboxed checkout of a repository.

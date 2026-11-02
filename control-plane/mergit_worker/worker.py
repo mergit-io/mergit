@@ -11,7 +11,7 @@ from .agents import load_agent_spec
 from .config import WorkerConfig
 from .harness import HarnessConfig, Publisher, run_task
 from .jobs import JobStore
-from .llm import LLM
+from .llm import ModelClients
 from .meter import PriceTable
 from .models import Job
 from .pr_worker import PrHandler
@@ -27,7 +27,7 @@ SandboxFactory = Callable[[Job], SandboxPort]
 @dataclass(frozen=True, slots=True)
 class WorkerDeps:
     store: JobStore
-    llm: LLM
+    models: ModelClients
     prices: PriceTable
     publisher: Publisher
     make_sandbox: SandboxFactory
@@ -78,7 +78,7 @@ class Worker:
                 job,
                 agent,
                 sandbox,
-                self._deps.llm,
+                self._deps.models.for_provider(agent.provider),
                 self._deps.prices,
                 self._deps.publisher,
                 self._deps.harness,

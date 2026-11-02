@@ -188,8 +188,9 @@ instance the worker happened to reach. Fine for one instance (`O10` as currently
 instance would need Postgres `LISTEN`/`NOTIFY` or a shared queue, which is out of scope here.
 
 **Configuration** (`mergit_cp/config.py`). Required: `DATABASE_URL`, `APP_DOMAIN`, `SESSION_SECRET` (32+
-characters), `GATEWAY_URL`, `STORE_URL`, `AGENTS_FILE`, `PLANNER_MODEL`, `EVENTS_TOKEN`, `CHAIN_EVENTS_TOKEN`,
-`WORKER_TOKEN`, plus the model provider key. Defaults: `CHAIN_ID` (84532), `PLANS_PER_HOUR` (10),
+characters), `GATEWAY_URL`, `STORE_URL`, `AGENTS_FILE`, `PLANNER_MODEL`, `PLANNER_PROVIDER`, `EVENTS_TOKEN`,
+`CHAIN_EVENTS_TOKEN`, `WORKER_TOKEN`, plus whichever model key `PLANNER_PROVIDER` needs. Defaults: `CHAIN_ID`
+(84532), `PLANS_PER_HOUR` (10),
 `PLANNER_MAX_TASKS` (8), `MAX_ATTEMPTS` (3), `REPO_HOSTS` (github.com), `CORS_ORIGINS`, `SSE_POLL_S` (1),
 `OUTCOME_POLL_S` (1).
 `WORKER_TOKEN` is this deployment's own choice, like `CHAIN_EVENTS_TOKEN`: spec/events-v0.md does not name a
@@ -261,7 +262,9 @@ depends on it. `NullProgressReporter` (the default) sends nothing, for a worker 
 
 Typed, from the environment (`mergit_worker/config.py`). Required: `DATABASE_URL`, `GATEWAY_URL`, `STORE_URL`,
 `EVENTS_TOKEN`, `STORE_WRITE_TOKEN`, `RECEIPT_REGISTRY`, `AGENTS_FILE`, and `MERGIT_AGENT_KEY_<id>` per agent,
-plus the model provider key (`ANTHROPIC_API_KEY`). Everything else has a default, including `CHAIN_ID`
+plus whichever model key(s) its deployed agents' providers need (`ModelClients.build` only builds a client
+for a provider a *deployed* agent actually names, so e.g. `ANTHROPIC_API_KEY` is not required when every
+deployed agent is `openai_chat`). Everything else has a default, including `CHAIN_ID`
 (84532), `SANDBOX_IMAGE`, `SANDBOX_RUNTIME`, `SANDBOX_MEMORY` (2g), `SANDBOX_NANO_CPUS` (2 CPUs),
 `MAX_STEPS` (60), `MAX_OUTPUT_BYTES` (1 MiB), `COMMAND_TIMEOUT_S`, `JOB_DEADLINE_S`, `MODEL_MAX_TOKENS`
 (16000; Opus 5.5's thinking tokens count against it, so this is also a per-call ceiling the harness clamps
@@ -367,23 +370,42 @@ uv run pytest -m "docker or postgres"          # real sandbox and real Postgres 
 ## Not done here
 
 Tracked by other plan tasks and issue #12 bullets: egress allowlist, receipt body encryption (K4), data
-availability checks, additional agents, evals, failure injection, and hosting (O10, in progress). gVisor is
-wired through
+availability checks, additional agents, evals, failure injection: audited, see
+`docs/failure-injection-audit.md`, and hosting (O10, in progress). gVisor is wired through
 `SANDBOX_RUNTIME` but has not been exercised in CI.
 
-## Model provider (Anthropic, with Groq as the fallback)
+## Model provider
 
-The planner and the agents call one model provider, chosen once at start-up from the environment
-(`mergit_worker/providers.py`):
+Each agent and the planner name their own model provider; there is no process-wide default and no
+fallback. `agents.toml` carries both:
 
-| Environment | Provider |
-| --- | --- |
-| `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` (with `ANTHROPIC_BASE_URL`, for a gateway such as Claude Lend) set | Anthropic (the models in `agents.toml` and `PLANNER_MODEL`) |
-| only `GROQ_API_KEY` set | Groq, through its OpenAI-compatible API; every agent and the planner run `GROQ_MODEL` (default `openai/gpt-oss-120b`) |
-| `LLM_PROVIDER=anthropic` or `groq` | forces one |
+```toml
+[providers.openrouter]
+kind = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 
-The Claude model ids are swapped for the Groq model when an agent is loaded, before anything is priced, so a
-receipt names the model that really ran and prices it with the Groq entry in `prices.toml` (list prices from Groq's
-own pages). Before a real run, check the credential: `python -m mergit_cp.llm_check` (inside the api
-container) makes one plain and one tool-calling request and prints the result, never the key. The worker refuses to start with no key; the API starts and a planning request answers `502`.
-There is no per-call fallback: a receipt belongs to one model, so a run never changes model halfway.
+[agents.claude-worker]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-5"
+...
+```
+
+A `[providers.<name>]` table names that provider's implementation: `kind = "anthropic"` talks to the
+Anthropic SDK directly and needs nothing else (it falls back to the SDK's own `ANTHROPIC_API_KEY` /
+`ANTHROPIC_AUTH_TOKEN`); `kind = "openai_chat"` speaks an OpenAI-compatible chat API (Groq, OpenRouter, or
+anything else shaped like one) and needs `base_url` plus `api_key_env`, the environment variable holding
+its key. Each `[agents.<name>]` table then names which provider it uses by `provider`, and the planner
+names its own by `Settings.planner_provider` (`PLANNER_PROVIDER`) — a deployment choice, same as
+`PLANNER_MODEL`, not derived from which keys happen to be set.
+
+`load_providers` (`mergit_worker/providers.py`) reads every `[providers.*]` table once at start-up; the
+worker builds one client per provider actually used by a *deployed* agent (`ModelClients.build`), so an
+unused provider's key is never required. A run never changes provider or model halfway: the choice is made
+once, at start-up, and a receipt names the model that produced it, priced from the matching entry in
+`prices.toml`.
+
+Before a real run, check every credential at once: `python -m mergit_cp.llm_check` (inside the api
+container) walks every provider actually in use — the planner's plus every deployed agent's — and for each
+makes one plain and one tool-calling request, printing the result and never the key. The worker refuses to
+start if a deployed agent's provider has no key; the API starts and a planning request answers `502`.

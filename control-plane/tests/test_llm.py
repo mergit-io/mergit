@@ -1,12 +1,25 @@
-"""The Anthropic adapter, against a stand-in for the SDK client (no network, no key)."""
+"""The Anthropic adapter (against a stand-in for the SDK client, no network, no key), and the planner's own
+provider choice (`build_planner_llm`): it names a provider from `[providers.<name>]`, exactly as an agent
+does."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import psycopg
 import pytest
+import respx
+from eth_account import Account
+from eth_account.messages import encode_defunct
+from fastapi.testclient import TestClient
+from siwe import SiweMessage
 
-from mergit_cp.llm import AnthropicLLM, LLMError, LLMUnavailable
+from mergit_cp.app import create_app
+from mergit_cp.config import Settings
+from mergit_cp.llm import AnthropicLLM, LLMError, LLMUnavailable, build_planner_llm
+from mergit_worker.providers import ProviderSpec
+from tests.conftest import APP_DOMAIN
 
 
 class StubMessages:
@@ -82,3 +95,81 @@ def test_provider_error_becomes_llm_unavailable() -> None:
     llm = AnthropicLLM(SimpleNamespace(messages=Down()))  # pyright: ignore[reportArgumentType]
     with pytest.raises(LLMUnavailable):
         asyncio.run(llm.complete([{"role": "user", "content": "x"}], None, "claude-opus-5"))
+
+
+@respx.mock
+def test_planner_uses_named_provider() -> None:
+    """`build_planner_llm` sends to the provider's own `base_url`, with its own key, not Anthropic's or
+    Groq's: an OpenRouter deploy sends to OpenRouter."""
+    providers = {
+        "openrouter": ProviderSpec(
+            name="openrouter",
+            kind="openai_chat",
+            base_url="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+        )
+    }
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").respond(
+        200,
+        json={
+            "model": "anthropic/claude-sonnet-5",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        },
+    )
+    llm = build_planner_llm(providers, "openrouter", environ={"OPENROUTER_API_KEY": "k"})
+    asyncio.run(llm.complete([{"role": "user", "content": "x"}], None, "anthropic/claude-sonnet-5"))
+    request = route.calls.last.request
+    assert str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
+    assert request.headers["authorization"] == "Bearer k"
+
+
+_PLAN_BODY = {
+    "goal": "Fix the failing refund test",
+    "repo_url": "https://github.com/mergit-io/demo-repo",
+    "ref": "main",
+    "budget_usdc_units": "2000000",
+    "category": "test-repair",
+}
+
+
+def _sign_in(client: TestClient) -> None:
+    account = Account.create()
+    nonce = client.get("/v0/auth/nonce").json()["nonce"]
+    message = SiweMessage.model_validate(
+        {
+            "domain": APP_DOMAIN,
+            "address": account.address,
+            "uri": f"https://{APP_DOMAIN}",
+            "version": "1",
+            "chain_id": 84532,
+            "issued_at": "2026-10-28T10:00:00.000Z",
+            "nonce": nonce,
+        }
+    ).prepare_message()
+    signature = account.sign_message(encode_defunct(text=message)).signature.to_0x_hex()
+    assert (
+        client.post("/v0/auth/verify", json={"message": message, "signature": signature}).status_code == 200
+    )
+
+
+@pytest.mark.postgres
+def test_missing_planner_key_answers_502(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no OPENROUTER_API_KEY in the environment, the API still starts — sign-in, credits and the agent
+    list all work — exactly as it always has with no Anthropic key; only a planning request fails, with a
+    clear 502, because `build_planner_llm` falls back to an always-unavailable client."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config = tmp_path / "agents.toml"
+    config.write_text(
+        Path(settings.agents_config).read_text() + '\n[providers.openrouter]\nkind = "openai_chat"\n'
+        'base_url = "https://openrouter.ai/api/v1"\napi_key_env = "OPENROUTER_API_KEY"\n'
+    )
+    missing_key = settings.model_copy(update={"planner_provider": "openrouter", "agents_config": str(config)})
+    with TestClient(create_app(missing_key, deliver_events=False), base_url="https://testserver") as c:
+        assert c.get("/v0/agents").status_code == 200
+        _sign_in(c)
+        assert c.post("/v0/plans", json=_PLAN_BODY).status_code == 502
+    with psycopg.connect(settings.database_url) as conn:
+        conn.execute("TRUNCATE planning_attempts, sessions, auth_nonces")

@@ -14,6 +14,7 @@ REQUIRED = {
     "STORE_URL": "http://s",
     "AGENTS_FILE": "a.json",
     "PLANNER_MODEL": "m",
+    "PLANNER_PROVIDER": "anthropic",
     "EVENTS_TOKEN": "e",
     "CHAIN_EVENTS_TOKEN": "c",
     "WORKER_TOKEN": "w",
