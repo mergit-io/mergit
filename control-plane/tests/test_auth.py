@@ -146,6 +146,43 @@ def _max_age(response: Response) -> int | None:
     return None
 
 
+def test_session_probe_is_quiet_when_nobody_is_signed_in(client: TestClient) -> None:
+    # A page asks who is signed in on every load; "nobody" is an answer, not an error (no red 401).
+    response = client.get("/v0/auth/session")
+    assert response.status_code == 200
+    assert response.json() is None
+    client.cookies.set("mergit_session", "forged-token")
+    forged = client.get("/v0/auth/session")
+    assert forged.status_code == 200
+    assert forged.json() is None
+
+
+def test_session_probe_describes_the_account_exactly_like_me(client: TestClient) -> None:
+    _signed_in(client)
+    probe = client.get("/v0/auth/session")
+    assert probe.status_code == 200
+    assert probe.json() == client.get("/v0/auth/me").json()
+    assert probe.json()["address"]
+
+
+def test_session_probe_is_null_for_an_expired_or_logged_out_session(
+    client: TestClient, settings: Settings
+) -> None:
+    _signed_in(client)
+    token = client.cookies.get("mergit_session")
+    assert token
+    assert client.post("/v0/auth/logout").status_code == 204
+    client.cookies.set("mergit_session", token)
+    assert client.get("/v0/auth/session").json() is None
+    # and /me stays strict: the probe must not loosen it
+    assert client.get("/v0/auth/me").status_code == 401
+
+    _signed_in(client)
+    with psycopg.connect(settings.database_url) as conn:
+        conn.execute("UPDATE sessions SET expires_at = now() - interval '1 second' WHERE revoked_at IS NULL")
+    assert client.get("/v0/auth/session").json() is None
+
+
 def test_a_fresh_session_is_not_rewritten_on_every_request(client: TestClient, settings: Settings) -> None:
     _signed_in(client)
     before = _session_row(settings)

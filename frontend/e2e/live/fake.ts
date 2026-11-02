@@ -312,6 +312,8 @@ export async function mockBackend(page: Page, b: Backend = {}) {
       if (b.me === null) return json(route, { detail: "not signed in" }, 401);
       return json(route, b.me ?? {});
     }
+    // The quiet probe the page asks on every load: the same account as /me, but nobody signed in is `200 null`.
+    if (path === "/v0/auth/session") return json(route, b.me === null ? null : (b.me ?? {}));
     if (path === "/v0/auth/email/start") return route.fulfill({ status: 204, headers: CORS(route) });
     if (path === "/v0/auth/email/verify") {
       if (b.meAfterEmail) b.me = b.meAfterEmail;

@@ -197,8 +197,10 @@ is spent, a plan is refused and the app tells the person to connect a wallet and
 
 A **redeem code** gives an account more, once. It adds its amount to the free credits, so a 20 USDC code leaves its
 owner with 25 USDC in total (make the code worth 15 if you want 20 in total). Plans funded from credits are still
-limited to 2 USDC each and 3 a day (`CREDIT_PLAN_CAP_USDC_UNITS`, `CREDIT_PLANS_PER_DAY` on the gateway), whatever the
-account holds.
+limited to 3 a day (`CREDIT_PLANS_PER_DAY` on the gateway) and to `CREDIT_PLAN_CAP_USDC_UNITS` each, whatever the
+account holds. The cap **defaults to the free grant** (5 USDC), so a new account can spend all of it on one plan; set
+the variable only to make it smaller. The New run page and the API both read the cap from the gateway, so changing it
+needs no frontend change.
 
 ```bash
 deploy/server/redeem-code.sh create --usdc 20 --note "Asha, first try"      # prints the code once

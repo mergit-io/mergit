@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The API address comes from the build's environment, which unit tests do not have.
+vi.mock("../chain/wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../chain/wallet")>()),
+  apiBase: () => "https://api.test",
+}));
+
 import {
+  askServer,
   fetchAccount,
   fundingChoiceNeeded,
   initialsOf,
@@ -70,6 +78,10 @@ describe("fetchAccount", () => {
     expect(await fetchAccount(() => reply(401, { detail: "not signed in" }))).toEqual({ status: "expired" });
   });
 
+  it("is expired when the quiet probe answers 200 with null: nobody is signed in, and that is not an error", async () => {
+    expect(await fetchAccount(() => reply(200, null))).toEqual({ status: "expired" });
+  });
+
   it("keeps whatever the browser remembers when the API cannot be asked: an outage must not sign people out", async () => {
     expect(await fetchAccount(() => Promise.reject(new TypeError("Failed to fetch")))).toEqual({ status: "unknown" });
     expect(await fetchAccount(() => reply(503))).toEqual({ status: "unknown" });
@@ -77,6 +89,30 @@ describe("fetchAccount", () => {
       status: "unknown",
     });
     expect(await fetchAccount(() => reply(200, {}))).toEqual({ status: "unknown" });
+  });
+});
+
+describe("askServer", () => {
+  const seen: string[] = [];
+  const fake = (answers: Record<string, number>) => (input: RequestInfo | URL) => {
+    const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const path = new URL(href).pathname;
+    seen.push(path);
+    return reply(answers[path] ?? 404, null);
+  };
+
+  it("asks the quiet probe, not the strict /me, so a signed-out visit leaves no 401 in the console", async () => {
+    seen.length = 0;
+    const response = await askServer(fake({ "/v0/auth/session": 200 }));
+    expect(response.status).toBe(200);
+    expect(seen).toEqual(["/v0/auth/session"]);
+  });
+
+  it("falls back to /me on an API from before the probe existed (it answers 404)", async () => {
+    seen.length = 0;
+    const response = await askServer(fake({ "/v0/auth/me": 401 }));
+    expect(response.status).toBe(401);
+    expect(seen).toEqual(["/v0/auth/session", "/v0/auth/me"]);
   });
 });
 
