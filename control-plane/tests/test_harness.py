@@ -10,7 +10,7 @@ import pytest
 
 from mergit_worker.harness import HarnessError, run_task
 from mergit_worker.llm import LLMError
-from mergit_worker.models import TRUNCATION_MARKER
+from mergit_worker.models import truncation_marker
 from mergit_worker.tools import ToolLimits
 from tests.support import (
     CHAIN_ID,
@@ -246,8 +246,8 @@ def test_tool_output_truncated_with_marker(sandbox, publisher, repo_url):
     assert cmd_step["type"] == "command"
     blobs = json.loads(publisher.sealed[-1].trajectory_blobs_json)
     stored = base64.b64decode(blobs[cmd_step["output_digest"]])
-    assert stored.endswith(TRUNCATION_MARKER)
-    assert len(stored) == cap + len(TRUNCATION_MARKER)
+    assert stored.endswith(truncation_marker(cap))
+    assert len(stored) == cap + len(truncation_marker(cap))
     assert mergit_receipt.keccak_hex(stored) == cmd_step["output_digest"]  # digest covers stored bytes
 
 
