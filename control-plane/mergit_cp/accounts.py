@@ -54,6 +54,18 @@ class OfferNotYours(Exception):
     """A merge offer made for a different account."""
 
 
+class NotFound(Exception):
+    """The sign-in method or wallet is not on the caller's account."""
+
+
+class LastMethod(Exception):
+    """Removing it would leave the account with no way to sign in."""
+
+
+class Busy(Exception):
+    """A plan the change would touch is approved, funded or running."""
+
+
 def trial_address(user_id: UUID) -> str:
     """The on-chain requester of a user's free-credit plans while they have no wallet: lowercase 0x + 40 hex.
 
@@ -368,3 +380,129 @@ async def merge_users(conn: Conn, keep: UUID, absorb: UUID) -> None:
     await conn.execute("UPDATE merged_users SET into_user_id = %s WHERE into_user_id = %s", (keep, absorb))
     await conn.execute("INSERT INTO merged_users (old_user_id, into_user_id) VALUES (%s, %s)", (absorb, keep))
     await conn.execute("DELETE FROM users WHERE user_id = %s", (absorb,))
+
+
+# --- removing sign-in methods, and deleting the account ---------------------------------------------------
+
+IN_FLIGHT = ("approved", "funded", "running")
+REDACTED = "[deleted]"
+
+
+async def _lock_user(conn: Conn, user_id: UUID) -> None:
+    """Serialises changes to one account's sign-in methods, so two removals at once cannot both see the other
+    method still there and leave the account with none."""
+    await conn.execute("SELECT 1 FROM users WHERE user_id = %s FOR UPDATE", (user_id,))
+
+
+async def _method_count(conn: Conn, user_id: UUID) -> int:
+    cur = await conn.execute(
+        "SELECT (SELECT count(*) FROM identities WHERE user_id = %s)"
+        " + (SELECT count(*) FROM wallets WHERE user_id = %s)",
+        (user_id, user_id),
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+async def _in_flight(conn: Conn, requesters: list[str]) -> bool:
+    """Whether any plan of these requesters is approved, funded or running. Locks their plans as approval
+    does (``plans.load(for_update=True)``), so an approval that commits first is seen here."""
+    cur = await conn.execute("SELECT state FROM plans WHERE requester = ANY(%s) FOR UPDATE", (requesters,))
+    return any(row[0] in IN_FLIGHT for row in await cur.fetchall())
+
+
+async def unlink_wallet(conn: Conn, user_id: UUID, address: str) -> None:
+    """Removes one of the caller's own wallets. Sessions acting as it fall back to the account's default
+    address: its first remaining wallet, else its trial address."""
+    await _lock_user(conn, user_id)
+    cur = await conn.execute("SELECT 1 FROM wallets WHERE address = %s AND user_id = %s", (address, user_id))
+    if await cur.fetchone() is None:
+        raise NotFound
+    if await _method_count(conn, user_id) <= 1:
+        raise LastMethod
+    if await _in_flight(conn, [address]):
+        raise Busy
+    await conn.execute("DELETE FROM wallets WHERE address = %s AND user_id = %s", (address, user_id))
+    await conn.execute(
+        "UPDATE sessions SET address = %s WHERE user_id = %s AND address = %s",
+        (await default_address(conn, user_id), user_id, address),
+    )
+
+
+async def unlink_identity(conn: Conn, user_id: UUID, provider: Provider) -> None:
+    """Removes the caller's sign-in with ``provider`` (every identity of that provider on the account)."""
+    await _lock_user(conn, user_id)
+    cur = await conn.execute(
+        "SELECT count(*) FROM identities WHERE user_id = %s AND provider = %s", (user_id, provider)
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    removing = int(row[0])
+    if removing == 0:
+        raise NotFound
+    if await _method_count(conn, user_id) <= removing:
+        raise LastMethod
+    await conn.execute("DELETE FROM identities WHERE user_id = %s AND provider = %s", (user_id, provider))
+
+
+def _method_hash(settings: Settings, kind: str, value: str) -> bytes:
+    """A keyed hash of one sign-in method, the only form ``deleted_methods`` keeps. The prefix sets it apart
+    from every other hash made with the same key (session tokens have no colon; merge offers and emailed
+    codes have their own prefixes)."""
+    return token_hash(settings, f"deleted-method:v0:{kind}:{value}")
+
+
+async def _method_hashes(conn: Conn, settings: Settings, user_id: UUID) -> list[bytes]:
+    cur = await conn.execute("SELECT provider, subject FROM identities WHERE user_id = %s", (user_id,))
+    hashes = [_method_hash(settings, r[0], r[1]) for r in await cur.fetchall()]
+    cur = await conn.execute("SELECT address FROM wallets WHERE user_id = %s", (user_id,))
+    hashes.extend(_method_hash(settings, "wallet", r[0]) for r in await cur.fetchall())
+    return hashes
+
+
+async def credits_forfeited(conn: Conn, settings: Settings, user_id: UUID) -> bool:
+    """Whether one of this account's sign-in methods belonged to a deleted account: the free credits are once
+    per person, and deleting an account does not hand them out again."""
+    hashes = await _method_hashes(conn, settings, user_id)
+    if not hashes:
+        return False
+    cur = await conn.execute("SELECT 1 FROM deleted_methods WHERE method_hash = ANY(%s) LIMIT 1", (hashes,))
+    return await cur.fetchone() is not None
+
+
+async def delete_account(conn: Conn, settings: Settings, user_id: UUID) -> None:
+    """Deletes the user with its sign-in methods, wallets, settings and sessions. Refused (``Busy``) while one
+    of its plans is approved, funded or running.
+
+    What stays: its plans and tasks, with the goal, repository, ref and task text replaced by ``[deleted]``,
+    since the money ledger (``money_events``) and the dispatches point at them; and a keyed hash of each
+    sign-in method in ``deleted_methods``, so the same person cannot collect the free credits again.
+    """
+    await _lock_user(conn, user_id)
+    owned = await owned_addresses(conn, user_id, "")
+    if await _in_flight(conn, owned):
+        raise Busy
+    hashes = await _method_hashes(conn, settings, user_id)
+    if hashes:
+        await conn.execute(
+            "INSERT INTO deleted_methods (method_hash) SELECT unnest(%s::bytea[]) ON CONFLICT DO NOTHING",
+            (hashes,),
+        )
+    await conn.execute(
+        "UPDATE tasks SET title = %s, instructions = %s"
+        " WHERE plan_uuid IN (SELECT plan_uuid FROM plans WHERE requester = ANY(%s))",
+        (REDACTED, REDACTED, owned),
+    )
+    await conn.execute(
+        "UPDATE plans SET goal = %s, repo_url = %s, ref = %s, updated_at = now() WHERE requester = ANY(%s)",
+        (REDACTED, REDACTED, REDACTED, owned),
+    )
+    # A session from before accounts existed has no user but acts as one of this user's wallets.
+    await conn.execute(
+        "UPDATE sessions SET revoked_at = now()"
+        " WHERE user_id IS NULL AND address = ANY(%s) AND revoked_at IS NULL",
+        (owned,),
+    )
+    # Identities, wallets, sessions, settings and pending merge offers go with the user (ON DELETE CASCADE).
+    await conn.execute("DELETE FROM users WHERE user_id = %s", (user_id,))

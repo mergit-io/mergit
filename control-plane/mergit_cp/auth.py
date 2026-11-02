@@ -293,10 +293,13 @@ async def merge_accounts(
 
 
 @account_router.post("/trial")
-async def start_trial(principal: PrincipalDep, pool: PoolDep) -> dict[str, str]:
-    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet."""
+async def start_trial(principal: PrincipalDep, settings: SettingsDep, pool: PoolDep) -> dict[str, str]:
+    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet. Refused when one
+    of the account's sign-in methods belonged to a deleted account: the free credits are once per person."""
     user_id = _member(principal)
     async with pool.connection() as conn:
+        if await accounts.credits_forfeited(conn, settings, user_id):
+            raise HTTPException(status_code=403, detail="the free credits were already used by this person")
         started = await accounts.start_trial(conn, user_id)
     return {"started_at": started.isoformat()}
 
