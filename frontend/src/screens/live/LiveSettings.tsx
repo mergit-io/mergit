@@ -303,7 +303,16 @@ function Preferences({ view, onSaved }: { view: SettingsView; onSaved: (v: Setti
       daily_cap_usdc_units: b.units,
     };
     save.run(async () => {
-      onSaved(await putSettings(next));
+      const saved = await putSettings(next);
+      // The form keeps its state (and so the note under it), and shows the values as the server stored them.
+      const q = saved.preferences;
+      setModel(q.planner_model ?? "");
+      setMode(q.routing_mode);
+      setAttempts(String(q.max_attempts));
+      setFunding(q.default_funding);
+      setPerPlan(capToInput(q.per_plan_cap_usdc_units));
+      setDaily(capToInput(q.daily_cap_usdc_units));
+      onSaved(saved);
       return "Preferences saved.";
     });
   };
@@ -548,7 +557,7 @@ export function LiveSettings() {
         <Wallets />
         <Plan />
         {view ? (
-          <Preferences key={JSON.stringify(view.preferences)} view={view} onSaved={setView} />
+          <Preferences view={view} onSaved={setView} />
         ) : (
           <section className="card pad24 col g8" aria-busy={error === null}>
             <h2 className="title">Run preferences</h2>
