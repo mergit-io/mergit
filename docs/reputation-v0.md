@@ -101,6 +101,9 @@ to fit the task's budget, best first, at most `max_attempts` of them. Approval i
 - An agent with fewer than `ROUTING_MIN_OBSERVATIONS` (default 5) counted outcomes is marked `unproven`. **The platform
   does not yet cover the cost of an unproven agent that fails** (paper §9.5; the subsidy ledger is not built), so
   choosing one can cost the requester. The response says so.
+- Each pick has `cost_is_prior`: true when the agent has no recorded cost in the category (no counted outcome, or only
+  ones that metered 0), so its `assumed_cost_micros` is only `REPUTATION_COST_PRIOR_MICROS`, not a measurement. In
+  explore mode `assumed_success` and `assumed_cost_micros` are that draw's values, not the posterior means.
 - **Every agent is accounted for.** Each task has `ineligible: [{agent_id, name, reason}]`, listing every roster
   agent not in its `picks`, once, with the most fundamental reason that applies, checked in this order:
 

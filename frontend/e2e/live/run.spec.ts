@@ -109,6 +109,7 @@ test("approving without an agent for every task says which task needs one", asyn
   expect(only(calls, "POST", "/approve")).toEqual([]);
 });
 
+// Copied from control-plane `routes_routing.NO_FIT`; the fake does not import it, so keep the two in step by hand.
 const NO_FIT = "no agent is expected to fit this budget; choose one yourself or raise the budget";
 
 /** Task 1: coder-b (unproven) then coder-a. Task 2: nothing fits, every agent listed with its reason. */
@@ -197,9 +198,10 @@ test("a random draw is one call for the whole plan, made only when the requester
   await page.getByRole("switch", { name: "Try a random draw" }).click();
   await expect(first.getByText("Random draw")).toBeVisible();
   await expect(second.getByText("Random draw")).toBeVisible();
-  await expect(
-    first.getByRole("list", { name: "Task 1: suggested agents" }).getByRole("listitem").first(),
-  ).toContainText("coder-a");
+  const drawnFirst = first.getByRole("list", { name: "Task 1: suggested agents" }).getByRole("listitem").first();
+  await expect(drawnFirst).toContainText("coder-a");
+  // The numbers are this one draw's, and say so; they are not the agent's estimate.
+  await expect(drawnFirst).toContainText("This draw: 72% success · $0.15 a run · 12 counted outcomes");
   await second.getByRole("button", { name: "Use suggestion" }).click();
   await first.getByRole("button", { name: "Use suggestion" }).click();
   expect(only(calls, "GET", "/suggestions").filter((c) => c.query === "?explore=true")).toHaveLength(1);
@@ -210,6 +212,48 @@ test("a random draw is one call for the whole plan, made only when the requester
     agents: { "0": ["1", "2"], "1": ["2"] },
     funding: "wallet",
   });
+});
+
+test("an older control plane's suggestions (no ineligible list) never take the review page down", async ({ page }) => {
+  await mockBackend(page);
+  // Exactly the shape origin/main's P4 slice 1 answers with: no `ineligible`, no `cost_is_prior`.
+  const older = {
+    plan_id: draftPlan().plan_id,
+    mode: "greedy",
+    seed: null,
+    note: SUGGESTIONS_NOTE,
+    tasks: [
+      {
+        index: 0,
+        budget_usdc_units: "500000",
+        picks: [
+          {
+            agent_id: "1",
+            name: "coder-a",
+            score_per_usdc: 4.8,
+            assumed_success: 0.72,
+            assumed_cost_micros: 150000,
+            counted_outcomes: 12,
+            unproven: false,
+          },
+        ],
+      },
+      { index: 1, budget_usdc_units: "1000000", picks: [], reason: NO_FIT },
+    ],
+  };
+  const calls = await mockPlanApi(page, { plans: [draftPlan()], suggestions: { greedy: older } });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  const first = page.getByRole("group", { name: "Task 1" });
+  const row = first.getByRole("list", { name: "Task 1: suggested agents" }).getByRole("listitem");
+  // Without cost_is_prior nothing says the cost was measured, so no dollar figure is shown.
+  await expect(row).toContainText("72% success · no metered cost yet · 12 counted outcomes");
+  await expect(page.getByRole("group", { name: "Task 2" }).getByText(NO_FIT)).toBeVisible();
+  await first.getByRole("button", { name: "Use suggestion" }).click();
+  await page.getByLabel("Task 2: runs it").selectOption("2");
+  await page.getByRole("button", { name: "Approve plan" }).click();
+  await expect(page.getByRole("heading", { name: "Fund 1.50 USDC" })).toBeVisible();
+  expect(only(calls, "POST", "/approve")[0]?.body).toEqual({ agents: { "0": ["1"], "1": ["2"] }, funding: "wallet" });
 });
 
 test("when suggestions fail to load, picking and approving work exactly as before", async ({ page }) => {

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentInfo, Suggestion, TaskSuggestions } from "../../../api/types";
 import { AgentPicks } from "./AgentPicks";
@@ -18,6 +19,7 @@ const pick = (over: Partial<Suggestion> = {}): Suggestion => ({
   assumed_cost_micros: 150_000,
   counted_outcomes: 12,
   unproven: false,
+  cost_is_prior: false,
   ...over,
 });
 
@@ -107,11 +109,81 @@ describe("AgentPicks: suggestions", () => {
     expect(onChange).toHaveBeenCalledWith(["5", "4", "3"]);
   });
 
-  it("keeps the manual picks as they are, editable after a suggestion is used", () => {
-    renderPicks({ picks: ["3", "1"], suggestion: task({ picks: [pick({ agent_id: "3" }), pick({ agent_id: "1" })] }) });
+  it("leaves the slots editable after Use suggestion fills them", () => {
+    const seen: string[][] = [];
+    function Stateful() {
+      const [picks, setPicks] = useState<string[]>([]);
+      return (
+        <AgentPicks
+          task="Task 1"
+          agents={AGENTS}
+          picks={picks}
+          onChange={(next) => {
+            seen.push(next);
+            setPicks(next);
+          }}
+          suggestion={task({ picks: [pick({ agent_id: "3" }), pick({ agent_id: "1" })] })}
+        />
+      );
+    }
+    render(<Stateful />);
+    fireEvent.click(screen.getByRole("button", { name: "Use suggestion" }));
     expect(screen.getByLabelText("Task 1: runs it")).toHaveValue("3");
     expect(screen.getByLabelText("Task 1: retry 1")).toHaveValue("1");
-    expect(screen.getByLabelText("Task 1: retry 2")).toHaveValue("");
+
+    // The requester changes the first pick and adds a third, as with any manual pick.
+    fireEvent.change(screen.getByLabelText("Task 1: runs it"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("Task 1: retry 2"), { target: { value: "2" } });
+    expect(seen).toEqual([
+      ["3", "1"],
+      ["4", "1"],
+      ["4", "1", "2"],
+    ]);
+    expect(screen.getByLabelText("Task 1: runs it")).toHaveValue("4");
+  });
+
+  it("labels explore-mode numbers as this draw's, not as the agent's estimate", () => {
+    renderPicks({ suggestion: task(), mode: "explore" });
+    const drawn = within(suggested()).getByRole("listitem");
+    expect(drawn).toHaveTextContent("This draw: 72% success · $0.15 a run · 12 counted outcomes");
+    expect(drawn).not.toHaveTextContent("about");
+    cleanup();
+    renderPicks({ suggestion: task(), mode: "greedy" });
+    const ranked = within(suggested()).getByRole("listitem");
+    expect(ranked).toHaveTextContent("72% success · about $0.15 a run · 12 counted outcomes");
+    expect(ranked).not.toHaveTextContent("This draw");
+  });
+
+  it("never shows a cost that is only the prior in dollars, even with counted outcomes", () => {
+    for (const mode of ["greedy", "explore"] as const) {
+      renderPicks({ suggestion: task({ picks: [pick({ cost_is_prior: true })] }), mode });
+      const row = within(suggested()).getByRole("listitem");
+      expect(row).toHaveTextContent("72% success · no metered cost yet · 12 counted outcomes");
+      expect(row).not.toHaveTextContent("$");
+      cleanup();
+    }
+  });
+
+  it("shows a cent from exactly 10 000 micros, where formatUsdc first prints one", () => {
+    renderPicks({ suggestion: task({ picks: [pick({ assumed_cost_micros: 9_999 })] }) });
+    expect(within(suggested()).getByRole("listitem")).toHaveTextContent("under $0.01 a run");
+    cleanup();
+    renderPicks({ suggestion: task({ picks: [pick({ assumed_cost_micros: 10_000 })] }) });
+    expect(within(suggested()).getByRole("listitem")).toHaveTextContent("about $0.01 a run");
+    cleanup();
+    renderPicks({ suggestion: task({ picks: [pick({ assumed_cost_micros: 0.4 })] }) });
+    expect(within(suggested()).getByRole("listitem")).toHaveTextContent("under $0.01 a run");
+  });
+
+  it("never rounds a success rate to a certainty it cannot have", () => {
+    renderPicks({ suggestion: task({ picks: [pick({ assumed_success: 0.996 })] }) });
+    expect(within(suggested()).getByRole("listitem")).toHaveTextContent("99% success");
+    cleanup();
+    renderPicks({ suggestion: task({ picks: [pick({ assumed_success: 0.003 })] }) });
+    expect(within(suggested()).getByRole("listitem")).toHaveTextContent("1% success");
+    cleanup();
+    renderPicks({ suggestion: task({ picks: [pick({ assumed_success: 0.5 })] }) });
+    expect(within(suggested()).getByRole("listitem")).toHaveTextContent("50% success");
   });
 
   it("renders the manual pick slots alone when there are no suggestions (not loaded, or failed)", () => {

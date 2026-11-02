@@ -66,7 +66,10 @@ PARTLY_LEFT_OUT = (
 implies the budget is the only obstacle: an agent out for probation may well fit the budget."""
 
 
-def _pick_view(pick: Pick, name: str) -> dict[str, Any]:
+def _pick_view(pick: Pick, name: str, cost_is_prior: bool) -> dict[str, Any]:
+    """``cost_is_prior`` (additive) is ``_cost_is_the_prior`` for this agent: no cost recorded in this
+    category yet, even if it has counted outcomes (all metered 0). A client then must not show
+    ``assumed_cost_micros`` as a measured cost; it is only the configured starting estimate."""
     return {
         "agent_id": pick.agent_id,
         "name": name,
@@ -75,6 +78,7 @@ def _pick_view(pick: Pick, name: str) -> dict[str, Any]:
         "assumed_cost_micros": pick.cost,
         "counted_outcomes": pick.counted_outcomes,
         "unproven": pick.unproven,
+        "cost_is_prior": cost_is_prior,
     }
 
 
@@ -136,7 +140,10 @@ async def suggestions(
         view: dict[str, Any] = {
             "index": task.draft.index,
             "budget_usdc_units": str(budget),
-            "picks": [_pick_view(p, names[p.agent_id]) for p in picks],
+            "picks": [
+                _pick_view(p, names[p.agent_id], _cost_is_the_prior(candidates[p.agent_id], prior))
+                for p in picks
+            ],
             "ineligible": [
                 {"agent_id": p.agent_id, "name": names[p.agent_id], "reason": BELOW_MAX_ATTEMPTS} for p in cut
             ]

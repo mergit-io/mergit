@@ -108,6 +108,7 @@ describe("suggested picks", () => {
       assumed_cost_micros: 100_000,
       counted_outcomes: 3,
       unproven: false,
+      cost_is_prior: false,
     })),
     ineligible: ineligible.map((agent_id) => ({
       agent_id,

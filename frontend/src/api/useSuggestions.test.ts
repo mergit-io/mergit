@@ -101,6 +101,121 @@ describe("useSuggestions", () => {
     expect(result.current.suggestions?.mode).toBe("greedy");
   });
 
+  it("reads an older control plane's answer (no ineligible, no cost_is_prior) without breaking", async () => {
+    // Exactly the shape origin/main's P4 slice 1 answers with, before Task 3 and the cost_is_prior fix.
+    const older = {
+      plan_id: `0x${"ab".repeat(32)}`,
+      mode: "greedy",
+      seed: null,
+      note: "A suggestion, not an assignment.",
+      tasks: [
+        {
+          index: 0,
+          budget_usdc_units: "500000",
+          picks: [
+            {
+              agent_id: "1",
+              name: "coder-a",
+              score_per_usdc: 4.8,
+              assumed_success: 0.72,
+              assumed_cost_micros: 150000,
+              counted_outcomes: 12,
+              unproven: false,
+            },
+          ],
+        },
+        { index: 1, budget_usdc_units: "100", picks: [], reason: "no agent is expected to fit this budget" },
+      ],
+    };
+    fetchSuggestions.mockResolvedValue(older as unknown as SuggestionsResponse);
+    const { result } = renderHook(() => useSuggestions(UUID, "500000"));
+    await waitFor(() => {
+      expect(result.current.suggestions).not.toBeNull();
+    });
+    const [first, second] = result.current.suggestions?.tasks ?? [];
+    expect(first?.ineligible).toEqual([]);
+    // Without the field nothing says the cost was measured, so it is not shown as if it were.
+    expect(first?.picks[0]?.cost_is_prior).toBe(true);
+    expect(second).toMatchObject({
+      index: 1,
+      picks: [],
+      ineligible: [],
+      reason: "no agent is expected to fit this budget",
+    });
+  });
+
+  it("drops a task or a pick it cannot read, and keeps the rest", async () => {
+    const odd = {
+      ...answer("greedy"),
+      tasks: [
+        { index: 0, budget_usdc_units: "1", picks: "nope" },
+        {
+          index: 1,
+          budget_usdc_units: "1",
+          picks: [{ agent_id: 2 }, { agent_id: "x", name: "coder-x" }], // a numeric id; no numbers at all
+          ineligible: [
+            { agent_id: "3", name: "coder-c" },
+            { agent_id: "4", name: "coder-d", reason: "operator at concurrency cap" },
+          ],
+        },
+      ],
+    };
+    fetchSuggestions.mockResolvedValue(odd as unknown as SuggestionsResponse);
+    const { result } = renderHook(() => useSuggestions(UUID, "500000"));
+    await waitFor(() => {
+      expect(result.current.suggestions).not.toBeNull();
+    });
+    const tasks = result.current.suggestions?.tasks ?? [];
+    expect(tasks.map((t) => t.index)).toEqual([1]);
+    expect(tasks[0]?.picks).toEqual([]);
+    expect(tasks[0]?.ineligible).toEqual([{ agent_id: "4", name: "coder-d", reason: "operator at concurrency cap" }]);
+  });
+
+  it("reads the ranking, never a draw, after a save made while exploring", async () => {
+    fetchSuggestions.mockImplementation((_, explore) => Promise.resolve(answer(explore ? "explore" : "greedy")));
+    const { result, rerender } = renderHook(({ saved }) => useSuggestions(UUID, saved), {
+      initialProps: { saved: "500000" },
+    });
+    await waitFor(() => {
+      expect(result.current.suggestions?.mode).toBe("greedy");
+    });
+    act(() => {
+      result.current.setExplore(true);
+    });
+    await waitFor(() => {
+      expect(result.current.suggestions?.mode).toBe("explore");
+    });
+    rerender({ saved: "900000" });
+    expect(result.current.loading).toBe(true); // the old answer is for the old budgets until the new one lands
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.suggestions?.mode).toBe("greedy");
+    expect(fetchSuggestions.mock.calls).toEqual([
+      [UUID, false],
+      [UUID, true],
+      [UUID, false],
+    ]);
+  });
+
+  it("makes one draw for two requests while one is in flight, even in the same batch", async () => {
+    fetchSuggestions.mockResolvedValueOnce(answer("greedy"));
+    fetchSuggestions.mockReturnValue(new Promise(() => undefined)); // the draw never answers
+    const { result } = renderHook(() => useSuggestions(UUID, "500000"));
+    await waitFor(() => {
+      expect(result.current.suggestions?.mode).toBe("greedy");
+    });
+    act(() => {
+      result.current.setExplore(true);
+      result.current.setExplore(true);
+    });
+    act(() => {
+      result.current.setExplore(true);
+    });
+    expect(result.current.loading).toBe(true);
+    expect(fetchSuggestions.mock.calls.filter(([, explore]) => explore)).toHaveLength(1);
+  });
+
   it("treats an answer without a task list as no suggestions", async () => {
     fetchSuggestions.mockResolvedValue({ detail: "not this service" } as unknown as SuggestionsResponse);
     const { result } = renderHook(() => useSuggestions(UUID, "500000"));

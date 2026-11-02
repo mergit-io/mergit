@@ -159,6 +159,8 @@ export type FakeSuggestion = {
   assumed_cost_micros: number;
   counted_outcomes: number;
   unproven: boolean;
+  /** No cost recorded yet: `assumed_cost_micros` is only the configured prior. */
+  cost_is_prior: boolean;
 };
 
 export type FakeTaskSuggestions = {
@@ -184,6 +186,7 @@ export const suggestion = (over: Partial<FakeSuggestion> = {}): FakeSuggestion =
   assumed_cost_micros: 150_000,
   counted_outcomes: 12,
   unproven: false,
+  cost_is_prior: false,
   ...over,
 });
 

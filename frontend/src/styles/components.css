@@ -369,6 +369,11 @@ button.link {
   transform: translateX(14px);
   background: var(--toggle-knob-on);
 }
+/* Same treatment as .btn:disabled. */
+.toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 .kv {
   display: flex;

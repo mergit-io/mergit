@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { approvePlan, editPlan } from "../../../api/client";
-import type { AgentInfo, Funding, Plan, SuggestionsResponse } from "../../../api/types";
+import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { useSuggestions } from "../../../api/useSuggestions";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
@@ -9,7 +9,6 @@ import { formatUsdc, parseUsdc } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon } from "../../../components/Icon";
 import { Segmented } from "../../../components/Segmented";
-import { Switch } from "../../../components/Switch";
 import {
   editProblems,
   hasEdits,
@@ -21,6 +20,7 @@ import {
   type TaskForm,
 } from "./draft";
 import { Problems } from "./Problems";
+import { SuggestionsPanel } from "./SuggestionsPanel";
 import { TaskDraftCard } from "./TaskDraftCard";
 import { useSubmit } from "./useSubmit";
 
@@ -28,67 +28,6 @@ const FUNDING_OPTIONS = ["Wallet", "Free credits"] as const;
 const CREDITS_ONLY = ["Free credits"] as const;
 type FundingOption = (typeof FUNDING_OPTIONS)[number];
 const FUNDING: Record<FundingOption, Funding> = { Wallet: "wallet", "Free credits": "credits" };
-
-/**
- * What the suggestions under each task are, said once for the whole plan, with the one switch between the
- * ranking and a random draw. A draw is one call for every task (one seed), so the switch lives here rather
- * than on each task. `noteId` labels the answer's own note, which the Unproven badges point to.
- */
-function SuggestionsPanel({
-  suggestions,
-  error,
-  loading,
-  stale,
-  noteId,
-  onExplore,
-}: {
-  suggestions: SuggestionsResponse | null;
-  error?: string;
-  loading: boolean;
-  /** A budget has an unsaved edit, so the suggestions are for a budget that is no longer on screen. */
-  stale: boolean;
-  noteId: string;
-  onExplore: (explore: boolean) => void;
-}) {
-  if (!suggestions) {
-    // Manual picking is the whole task here; a missing suggestion is a footnote, not an error.
-    return error ? <p className="small c3">Suggestions are unavailable right now. Pick the agents yourself.</p> : null;
-  }
-  const exploring = suggestions.mode === "explore";
-  return (
-    <section className="card pad24 col g8" aria-label="Suggested agents">
-      <div className="row between g12">
-        <span className="cap">Suggested agents</span>
-        <span className="row g8">
-          <span className="small c2">Try a random draw</span>
-          <Switch
-            checked={exploring}
-            label="Try a random draw"
-            onChange={(on) => {
-              onExplore(on);
-            }}
-          />
-        </span>
-      </div>
-      <p className="small c3">
-        {loading
-          ? "Updating…"
-          : exploring
-            ? "Random draw: each agent's place comes from one draw over its record, so a less-tried agent can come first and the order changes with every draw. Turn it off for the ranking."
-            : "Ranked by expected success per dollar. A random draw gives less-tried agents a chance; each draw counts toward an hourly limit."}
-      </p>
-      <p className="small c3" id={noteId}>
-        {suggestions.note}
-      </p>
-      {stale && <p className="small c3">These are for the saved budgets. Save your changes to update them.</p>}
-      {error && (
-        <p className="small c3" role="status">
-          {error}
-        </p>
-      )}
-    </section>
-  );
-}
 
 /**
  * Review of a draft plan (plan task O3): the requester edits any task or its check, picks the agents,

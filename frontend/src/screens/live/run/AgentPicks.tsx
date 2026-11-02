@@ -4,20 +4,45 @@ import { MAX_PICKS, suggestedPicks } from "./draft";
 
 const slotLabel = (slot: number) => (slot === 0 ? "Runs it" : `Retry ${String(slot)}`);
 
-/** `formatUsdc` rounds down to cents, which would print a real but tiny cost as $0.00. */
+/**
+ * `formatUsdc` rounds down to cents, which would print a real but tiny cost as $0.00; 10 000 micros is where
+ * it first prints a cent. Rounding up first keeps a cost under one micro from reading as zero too.
+ */
 function dollars(micros: number): string {
-  const units = BigInt(Math.max(0, Math.round(micros)));
+  const units = BigInt(Math.max(0, Math.ceil(micros)));
   return units > 0n && units < 10_000n ? "under $0.01" : `$${formatUsdc(units)}`;
 }
 
+/** A posterior (or a draw from one) is never exactly 0 or 1, so the rounded figure isn't either. */
+function percent(success: number): string {
+  const rounded = Math.round(success * 100);
+  return String(success > 0 && success < 1 ? Math.min(99, Math.max(1, rounded)) : rounded);
+}
+
 /**
- * A suggestion's numbers. With no counted outcome both are only the starting estimate, so neither is shown
- * as if it were measured.
+ * A suggestion's numbers, and what they are. With no counted outcome both are only the starting estimate,
+ * and a cost with nothing metered behind it (`cost_is_prior`) is too, so neither is shown as if measured. In
+ * explore mode the numbers are one random draw, not the agent's estimate, so they are labelled as this
+ * draw's (`drawn`) and the cost loses its "about".
  */
-function evidence(pick: Suggestion): string {
-  if (pick.counted_outcomes <= 0) return "new, no audited record yet";
+function evidence(pick: Suggestion, mode: SuggestionsResponse["mode"]): { drawn: boolean; text: string } {
+  if (pick.counted_outcomes <= 0) return { drawn: false, text: "new, no audited record yet" };
+  const drawn = mode === "explore";
   const outcomes = `${String(pick.counted_outcomes)} counted outcome${pick.counted_outcomes === 1 ? "" : "s"}`;
-  return `${String(Math.round(pick.assumed_success * 100))}% success · about ${dollars(pick.assumed_cost_micros)} a run · ${outcomes}`;
+  const cost = pick.cost_is_prior
+    ? "no metered cost yet"
+    : `${drawn ? "" : "about "}${dollars(pick.assumed_cost_micros)} a run`;
+  return { drawn, text: `${percent(pick.assumed_success)}% success · ${cost} · ${outcomes}` };
+}
+
+function Evidence({ pick, mode }: { pick: Suggestion; mode: SuggestionsResponse["mode"] }) {
+  const { drawn, text } = evidence(pick, mode);
+  return (
+    <span className="small c2">
+      {drawn && <span className="strong">This draw: </span>}
+      {text}
+    </span>
+  );
 }
 
 /**
@@ -77,7 +102,7 @@ function Suggested({
                   </span>
                 )}
               </div>
-              <span className="small c2">{evidence(p)}</span>
+              <Evidence pick={p} mode={mode} />
             </li>
           ))}
         </ol>

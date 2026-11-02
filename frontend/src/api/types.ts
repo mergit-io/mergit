@@ -104,13 +104,22 @@ export type Suggestion = {
   agent_id: string;
   name: string;
   score_per_usdc: number;
-  /** Chance of passing the check, 0 to 1, from the agent's posterior. Only the prior when `counted_outcomes` is 0. */
+  /**
+   * Chance of passing the check, 0 to 1: the posterior mean in `greedy` mode, one random draw in `explore`
+   * mode. Only the prior when `counted_outcomes` is 0.
+   */
   assumed_success: number;
-  /** Cost of one run, micro-USD (the same scale as USDC base units). */
+  /** Cost of one run, micro-USD (the same scale as USDC base units); a mean or one draw, as above. */
   assumed_cost_micros: number;
   counted_outcomes: number;
   /** Too few counted outcomes for the platform to vouch for it; a failed run is not covered. */
   unproven: boolean;
+  /**
+   * No cost recorded for this agent yet (even with counted outcomes, if all metered 0), so
+   * `assumed_cost_micros` is only the configured prior. Older control planes omit it; the client then
+   * takes it as true, since nothing says the cost was measured.
+   */
+  cost_is_prior: boolean;
 };
 
 /** A roster agent left out of a task's suggestions, with why, as a sentence to show as it is. */

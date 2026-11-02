@@ -200,6 +200,7 @@ PICK_FIELDS = {
     "assumed_cost_micros",
     "counted_outcomes",
     "unproven",
+    "cost_is_prior",
 }
 
 
@@ -373,8 +374,8 @@ def test_existing_response_fields_unchanged(roster: Settings, llm: FakeLLM, expl
             assert isinstance(pick["agent_id"], str) and pick["name"] == f"agent-{pick['agent_id']}"
             assert all(isinstance(pick[k], float) for k in ("score_per_usdc", "assumed_success"))
             assert isinstance(pick["assumed_cost_micros"], float)
-            assert (pick["counted_outcomes"], pick["unproven"]) == (0, True)
-        if not explore:  # the prior's own means, exactly as before
+            assert (pick["counted_outcomes"], pick["unproven"], pick["cost_is_prior"]) == (0, True, True)
+        if not explore:  # the prior's own means, exactly as before (plus the additive "cost_is_prior")
             assert task["picks"][0] == {
                 "agent_id": "1",
                 "name": "agent-1",
@@ -383,7 +384,30 @@ def test_existing_response_fields_unchanged(roster: Settings, llm: FakeLLM, expl
                 "assumed_cost_micros": 500_000.0,
                 "counted_outcomes": 0,
                 "unproven": True,
+                "cost_is_prior": True,
             }
+
+
+@pytest.mark.parametrize("explore", [False, True])
+def test_a_pick_says_when_its_cost_is_only_the_prior(
+    roster: Settings, llm: FakeLLM, database_url: str, explore: bool
+):
+    """Agent 1 has counted outcomes, but every one metered 0, so its cost is still the configured prior
+    (``Posterior.observe``) and a client must not show it as measured. Agent 2 has recorded costs. Agents
+    3-5 have no history at all."""
+    prior = Posterior.prior(Params(tau0=float(roster.reputation_cost_prior_micros)))
+    no_cost = prior.observe(True, None).observe(True, None).observe(False, None)
+    assert no_cost.n == 3
+    history(database_url, posteriors={"1": no_cost, "2": EXCELLENT})
+    with suggesting(roster, llm) as c:
+        body = suggest(c, explore=explore)
+    for task in body["tasks"]:
+        for pick in task["picks"]:
+            assert pick["cost_is_prior"] is (pick["agent_id"] != "2"), pick
+        if not explore:
+            by_id = {p["agent_id"]: p for p in task["picks"]}
+            assert by_id["1"]["counted_outcomes"] == 3 and by_id["1"]["cost_is_prior"] is True
+            assert by_id["2"]["cost_is_prior"] is False
 
 
 @pytest.mark.parametrize("explore", [False, True])
