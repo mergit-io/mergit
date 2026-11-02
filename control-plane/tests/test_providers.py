@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from mergit_worker.agents import load_agent_spec, validate_agents_are_priced
+from mergit_worker.agents import (
+    load_agent_spec,
+    validate_agents_are_priced,
+    validate_agents_have_keys,
+)
 from mergit_worker.config import ConfigError
 from mergit_worker.meter import PriceTable
 from mergit_worker.providers import ProviderSpec, load_providers, provider_key, stale_settings
@@ -261,3 +265,43 @@ def test_a_stale_groq_base_url_that_agrees_with_agents_toml_only_warns():
     relay = ProviderSpec("groq", "openai_chat", "http://keyrelay:8787/v1", "GROQ_API_KEY")
     env = {"GROQ_BASE_URL": "http://keyrelay:8787/v1/"}
     assert stale_settings({"groq": relay}, {"groq"}, env) == ["GROQ_BASE_URL"]
+
+
+def _deploy(tmp_path: Path, registry: object, toml: str) -> tuple[Path, Path]:
+    chain = tmp_path / "agents.json"
+    chain.write_text(json.dumps({"agents": registry}))
+    config = tmp_path / "agents.toml"
+    config.write_text(toml)
+    return chain, config
+
+
+_GOOD_ENTRY = {"agent_id": "1", "name": "coder", "operator": "0x" + "1" * 40, "runtime_key": KEY_ADDRESS}
+
+
+def _every_reader(chain: Path, config: Path) -> list[object]:
+    from mergit_cp.llm_check import _agent_pairs_in_use  # pyright: ignore[reportPrivateUsage]
+
+    return [
+        lambda: validate_agents_have_keys(chain, config),
+        lambda: validate_agents_are_priced(chain, config, PriceTable.load(ROOT / "prices.toml")),
+        lambda: load_agent_spec("1", chain, config, {"MERGIT_AGENT_KEY_1": KEY}),
+        lambda: _agent_pairs_in_use(chain, config),
+    ]
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_an_agent_entry_that_is_not_a_table_is_a_config_error_for_every_reader(tmp_path: Path, index: int):
+    """`coder = "claude"` under [agents] is valid TOML. Every reader of the deploy used to call `.get` on
+    it and crash with AttributeError; they now share one reader that names the bad entry."""
+    chain, config = _deploy(tmp_path, [_GOOD_ENTRY], '[agents]\ncoder = "claude"\n')
+    with pytest.raises(ConfigError, match="coder"):
+        _every_reader(chain, config)[index]()  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_a_registry_entry_that_is_not_an_object_is_a_config_error_for_every_reader(
+    tmp_path: Path, index: int
+):
+    chain, config = _deploy(tmp_path, ["coder"], '[agents.coder]\nprovider = "anthropic"\n')
+    with pytest.raises(ConfigError, match="object"):
+        _every_reader(chain, config)[index]()  # type: ignore[operator]

@@ -18,15 +18,14 @@ token counts; never a key or a token. Exit status 0 only if every check worked.
 """
 
 import asyncio
-import json
 import os
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from mergit_worker.config import ConfigError, load_config
+from mergit_worker.agents import deployed_agents
+from mergit_worker.config import load_config
 from mergit_worker.providers import ProviderSpec, load_providers
 
 from .config import Settings
@@ -43,6 +42,12 @@ _TOOL = {
 }
 
 
+# A probe needs a word or one tool call; reasoning models spend some tokens before either. The planner's own
+# 16000 is a cap, not usage, but OpenRouter checks the account's credit against it, so a low balance would
+# fail a probe it would pass for real.
+_PROBE_MAX_TOKENS = 1024
+
+
 def _endpoint(spec: ProviderSpec) -> str:
     if spec.kind == "openai_chat":
         return urlsplit(spec.base_url or "").hostname or spec.base_url or spec.name
@@ -52,14 +57,8 @@ def _endpoint(spec: ProviderSpec) -> str:
 def _agent_pairs_in_use(agents_file: Path, agents_config: Path) -> set[tuple[str, str]]:
     """Every distinct (provider, model) pair actually used by a deployed agent, read the same way
     `mergit_worker.agents.validate_agents_have_keys` reads the deploy."""
-    try:
-        registry: list[dict[str, Any]] = json.loads(agents_file.read_text())["agents"]
-        models: dict[str, Any] = tomllib.loads(agents_config.read_text())["agents"]
-    except (OSError, KeyError, ValueError) as exc:
-        raise ConfigError(f"cannot read agent configuration: {exc}") from exc
     pairs: set[tuple[str, str]] = set()
-    for entry in registry:
-        cfg: dict[str, Any] | None = models.get(str(entry.get("name")))
+    for _entry, cfg in deployed_agents(agents_file, agents_config):
         provider = cfg.get("provider") if cfg else None
         model = cfg.get("model") if cfg else None
         if provider and model:  # a missing provider/model here is load_agent_spec's own clear error to raise
@@ -81,7 +80,7 @@ async def _check_one(providers: dict[str, ProviderSpec], name: str, model: str) 
     if spec is None:
         print(f"provider={name}  model={model}  FAILED  no [providers.{name}] table in agents.toml")
         return False
-    llm = build_planner_llm(providers, name)
+    llm = build_planner_llm(providers, name, max_tokens=_PROBE_MAX_TOKENS)
     print(f"provider={name}  endpoint={_endpoint(spec)}  model={model}")
     ok = True
     steps: list[tuple[str, list[dict[str, Any]], list[dict[str, Any]] | None]] = [

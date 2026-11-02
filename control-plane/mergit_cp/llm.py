@@ -264,6 +264,7 @@ def build_planner_llm(
     name: str,
     timeout_s: float = 120.0,
     environ: Mapping[str, str] | None = None,
+    max_tokens: int = 16000,
 ) -> LLM:
     """The planner's model client for its configured provider, named in `Settings.planner_provider` exactly
     as an agent names its own in `agents.toml`.
@@ -290,6 +291,7 @@ def build_planner_llm(
         # With its own `api_key_env`, this provider's key may not be the SDK's own env-var default (another
         # `[providers.*]` table could be anthropic too, with a different key); pass it explicitly so the
         # right one is actually used, not just checked for presence above.
-        return AnthropicLLM(client=AsyncAnthropic(api_key=key)) if spec.api_key_env else AnthropicLLM()
+        client = AsyncAnthropic(api_key=key) if spec.api_key_env else None
+        return AnthropicLLM(client=client, max_tokens=max_tokens)
     assert spec.base_url is not None  # load_providers requires base_url for kind == "openai_chat"
-    return OpenAIChatLLM(key, base_url=spec.base_url, timeout_s=timeout_s)
+    return OpenAIChatLLM(key, base_url=spec.base_url, timeout_s=timeout_s, max_tokens=max_tokens)

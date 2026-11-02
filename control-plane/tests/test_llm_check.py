@@ -269,3 +269,34 @@ def test_a_refused_key_is_reported_and_never_printed_even_when_the_provider_echo
     assert asyncio.run(llm_check.check_planner(settings)) is False
     out = capsys.readouterr().out
     assert "HTTP 401" in out and key not in out
+
+
+@respx.mock
+def test_a_probe_asks_for_a_small_answer_not_the_planners_16000_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """OpenRouter checks the account's credit against max_tokens, so a probe asking for 16000 could fail
+    on a balance that real work would not."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").respond(
+        200,
+        json={
+            "model": "model-a",
+            "choices": [{"message": {"role": "assistant", "content": "ready"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+        },
+    )
+    agents_files = _write_agents(
+        tmp_path,
+        {
+            "openrouter": {
+                "kind": "openai_chat",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            }
+        },
+        [],
+    )
+    asyncio.run(llm_check.check_planner(_settings(agents_files, "openrouter", planner_model="model-a")))
+    sent = [json.loads(c.request.content) for c in route.calls]
+    assert sent and all(body["max_completion_tokens"] == 1024 for body in sent)
