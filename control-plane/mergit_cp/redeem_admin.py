@@ -100,8 +100,10 @@ def revoke(conn: Connection[Any], code_id: str) -> None:
         raise ValueError("no unused code with that id")
 
 
-def _units_as_usdc(units: int) -> str:
-    return f"{Decimal(units) / 1_000_000:f}".rstrip("0").rstrip(".") or "0"
+def units_as_usdc(units: int) -> str:
+    text = f"{Decimal(units) / 1_000_000:f}"
+    # Trailing zeros come off only after a decimal point: "20" is twenty, and stripping it gives "2".
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -129,11 +131,11 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 for _, code in made:
-                    print(f"{code}  {_units_as_usdc(units)} USDC")
+                    print(f"{code}  {units_as_usdc(units)} USDC")
             elif args.cmd == "list":
                 for r in list_codes(conn):
                     print(
-                        f"{r['code_id']}  {_units_as_usdc(r['amount_usdc_units']):>8} USDC  {r['state']:<9}"
+                        f"{r['code_id']}  {units_as_usdc(r['amount_usdc_units']):>8} USDC  {r['state']:<9}"
                         f"  {r['note']}"
                     )
             else:

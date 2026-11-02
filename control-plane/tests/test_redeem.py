@@ -267,6 +267,22 @@ def test_the_amount_argument_is_in_usdc_and_exact() -> None:
             redeem_admin.usdc_to_units(bad)
 
 
+def test_the_amount_is_printed_as_the_amount_it_is() -> None:
+    """The operator reads this to know what a code is worth: 20 USDC must not print as 2."""
+    shown = {
+        u: redeem_admin.units_as_usdc(u)
+        for u in (20_000_000, 100_000_000, 5_000_000, 7_500_000, 1, 1_000_000_000_000)
+    }
+    assert shown == {
+        20_000_000: "20",
+        100_000_000: "100",
+        5_000_000: "5",
+        7_500_000: "7.5",
+        1: "0.000001",
+        1_000_000_000_000: "1000000",
+    }
+
+
 # --- the account's credits ------------------------------------------------------------------------------
 
 

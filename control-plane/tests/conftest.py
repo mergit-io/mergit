@@ -73,6 +73,7 @@ def settings(database_url: str, agents_files: tuple[Path, Path]) -> Settings:
         cors_origins=["http://localhost:5173"],
         planner_model="claude-opus-5",
         planner_provider="anthropic",
+        verify_repos=False,  # tests do not reach GitHub; the ones about the check turn it on
         events_token=SecretStr("test-events-token"),
         chain_events_token=SecretStr("test-chain-events-token"),
         worker_token=SecretStr("test-worker-token"),

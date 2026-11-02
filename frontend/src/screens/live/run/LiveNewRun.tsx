@@ -2,6 +2,7 @@ import { useEffect, useState, type SyntheticEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { createPlan } from "../../../api/client";
+import { planKey } from "../../../api/idempotency";
 import { parseRepo, repoUrl } from "../../../api/github";
 import { useAgents } from "../../../api/useAgents";
 import { fetchProviders, oauthStartUrl } from "../../../auth/accountApi";
@@ -108,6 +109,8 @@ export function LiveNewRun() {
   const { account, session } = useAuth();
   const [fields, setFields] = useState<Fields>(INITIAL);
   const { busy, problems, setProblems, submit } = useSubmit();
+  // One per page load: the same form sent twice (a retry, a second click) is the same plan.
+  const [nonce] = useState(() => crypto.randomUUID());
   const [githubOn, setGithubOn] = useState(false);
   const [browse, setBrowse] = useState<string | null>(null);
   const { agents } = useAgents();
@@ -223,13 +226,14 @@ export function LiveNewRun() {
       return;
     }
     void submit(async () => {
-      const plan = await createPlan({
+      const request = {
         goal: fields.goal.trim(),
         repo_url: toRepoUrl(fields.repo),
         ref: ref.trim(),
         budget_usdc_units: (budgetUnits ?? 0n).toString(),
         category: fields.category,
-      });
+      };
+      const plan = await createPlan(request, planKey(nonce, request));
       await navigate(paths.run(plan.plan_uuid));
     });
   };

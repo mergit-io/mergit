@@ -1,0 +1,72 @@
+.st-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.st-grid > * {
+  min-width: 0;
+}
+.st-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--soft);
+}
+.st-row .grow {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.st-wrap {
+  flex-wrap: wrap;
+}
+.st-plans {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.st-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  opacity: 0.85;
+}
+.st-plan.on {
+  opacity: 1;
+  border-color: var(--mint);
+  background: var(--mint-wash);
+}
+.st-select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font: inherit;
+}
+.st-danger {
+  border-color: var(--red);
+  grid-column: 1 / -1;
+}
+.st-delete {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+.st-delete:disabled {
+  opacity: 0.45;
+}
+@media (max-width: 980px) {
+  .st-grid,
+  .st-plans {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
