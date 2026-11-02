@@ -334,8 +334,9 @@ def test_the_migration_backfills_history_from_the_raw_log(database_url: str, tmp
     old.mkdir()
     # Every migration except the one under test, not "< 0006": a later migration added after this
     # test was written (0009, from #15) must not also show up as newly applied below. 0015 reads the
-    # ledger (a view over money_events), so it cannot exist without 0006 and is applied with it.
-    held_back = {"0006_money_events", "0015_reputation"}
+    # ledger (a view over money_events), so it cannot exist without 0006 and is applied with it; so does
+    # 0018, an index on money_events.
+    held_back = {"0006_money_events", "0015_reputation", "0018_money_events_task"}
     for path in sorted(MIGRATIONS.glob("*.sql")):
         if path.stem not in held_back:
             (old / path.name).write_text(path.read_text())
@@ -417,7 +418,7 @@ def test_the_migration_backfills_history_from_the_raw_log(database_url: str, tmp
                     "task.released",
                     {"task_id": task_id, "to": ADDR, "amount_usdc_units": "9" * 78, "tx": tx("6")},
                 )
-                assert await migrate(conn) == ["0006_money_events", "0015_reputation"]
+                assert await migrate(conn) == sorted(held_back)
                 cur = conn.cursor(row_factory=dict_row)
                 await cur.execute("SELECT * FROM money_events ORDER BY id")
                 return await cur.fetchall()
