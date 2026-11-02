@@ -13,21 +13,36 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from mergit_cp import routes_routing
 from mergit_cp.agents import Agent
 from mergit_cp.app import create_app
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool
 from mergit_cp.eligibility import AT_CAP, IN_PROBATION
 from mergit_cp.reputation import record_missing_costs, refresh_posteriors
-from mergit_cp.reputation_model import Posterior
-from mergit_cp.routes_routing import ALL_LEFT_OUT, NO_FIT, NO_FIT_ON_PRIOR_ALONE
-from mergit_cp.routing import BELOW_MAX_ATTEMPTS, OVER_BUDGET, OVER_BUDGET_IN_THIS_DRAW, rank
+from mergit_cp.reputation_model import Params, Posterior
+from mergit_cp.routes_routing import (
+    ALL_LEFT_OUT,
+    NO_FIT,
+    NO_FIT_ON_PRIOR_ALONE,
+    NO_FIT_THIS_DRAW,
+    PARTLY_LEFT_OUT,
+)
+from mergit_cp.routing import (
+    BELOW_MAX_ATTEMPTS,
+    OVER_BUDGET,
+    OVER_BUDGET_IN_THIS_DRAW,
+    feasible_probability,
+    mean_feasible,
+    rank,
+)
 from tests.cp_fakes import FakeLLM
 from tests.test_api import seed_plan
 from tests.test_eligibility import dispatch, invalid_verdict
@@ -377,14 +392,14 @@ def test_an_empty_answer_says_when_it_rests_on_the_prior_alone(
 ):
     """No agent has a recorded cost, and the configured prior's mean (5M) is ten times the task's budget:
     the answer is still empty, but it says the expectation is an assumption, not what anyone was seen to do.
-    One agent in probation does not change that."""
+    One agent in probation does not change that, but the answer says it is out for another reason too."""
     history(database_url, probation=("1",))
     with suggesting(roster, llm, reputation_cost_prior_micros=5_000_000) as c:
         body = suggest(c, explore=explore)
     for task in body["tasks"]:
         assert task["picks"] == []
         assert why(task) == {"1": IN_PROBATION} | {a: OVER_BUDGET for a in "2345"}
-        assert task["reason"] == NO_FIT_ON_PRIOR_ALONE != NO_FIT
+        assert task["reason"] == PARTLY_LEFT_OUT + NO_FIT_ON_PRIOR_ALONE
         assert "not evidence" in task["reason"] and "starting" in task["reason"]
 
 
@@ -422,3 +437,86 @@ def test_an_empty_answer_when_every_agent_is_left_out_for_now(
     for task in body["tasks"]:
         assert task["picks"] == [] and set(why(task).values()) == {IN_PROBATION}
         assert task["reason"] == ALL_LEFT_OUT
+
+
+# Explore: an empty answer because every draw missed is not "no agent is expected to fit".
+
+
+def unlucky_seed(settings: Settings, candidates: dict[str, Posterior], reasons: set[str]) -> int:
+    """The first seed whose draw for task 0 (as the route seeds it) ranks nobody and leaves the candidates out
+    for exactly ``reasons``. Found by search over the same pure ``rank`` the route calls, so it is fixed."""
+    for seed in range(10_000):
+        ranked, left_out = rank(
+            candidates,
+            500_000.0,
+            explore=True,
+            epsilon=settings.routing_epsilon,
+            min_observations=settings.routing_min_observations,
+            min_feasible_probability=settings.routing_min_feasible_probability,
+            rng=random.Random(f"{seed}/0"),
+        )
+        if not ranked and set(left_out.values()) == reasons:
+            return seed
+    raise AssertionError(f"no seed in 10000 gives {reasons}")
+
+
+def seeded(monkeypatch: pytest.MonkeyPatch, seed: int) -> None:
+    """Make the route's exploring seed ``seed`` instead of a random one."""
+    monkeypatch.setattr(routes_routing, "secrets", SimpleNamespace(randbits=lambda _bits: seed))
+
+
+def test_an_explore_answer_where_every_draw_missed_does_not_claim_no_agent_fits(
+    roster: Settings, llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+):
+    """Cold start: five agents on the prior (mean 500k) for a 500k task. Each one fits (greedy suggests
+    them) and each draw fits about 40% of the time, so all five missing at once happens on about 7% of
+    exploring calls. That is one unlucky draw, not evidence, and the answer must not say otherwise."""
+    prior = Posterior.prior(Params(tau0=float(roster.reputation_cost_prior_micros)))
+    eps, floor = roster.routing_epsilon, roster.routing_min_feasible_probability
+    assert mean_feasible(prior, 500_000, eps) and feasible_probability(prior, 500_000, eps) > 0.4 > floor
+    seed = unlucky_seed(roster, dict.fromkeys(OPERATORS, prior), {OVER_BUDGET_IN_THIS_DRAW})
+    seeded(monkeypatch, seed)
+    with suggesting(roster, llm) as c:
+        explored, greedy = suggest(c, explore=True), suggest(c)
+    task = explored["tasks"][0]
+    assert explored["seed"] == seed and task["picks"] == []
+    assert set(why(task).values()) == {OVER_BUDGET_IN_THIS_DRAW}
+    assert task["reason"] == NO_FIT_THIS_DRAW
+    assert "expected to fit" not in task["reason"] and "raise the budget" not in task["reason"]
+    assert picked(greedy["tasks"][0]) == ["1", "2", "3"]  # the same posteriors, ranked greedily
+
+
+def test_an_explore_answer_with_some_over_budget_and_the_rest_unlucky_says_it_was_the_draw(
+    roster: Settings, llm: FakeLLM, database_url: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Agent 1 is over budget on evidence; the other four could fit and only missed this draw. "No agent is
+    expected to fit" is true of agent 1 only, so it is not what the answer says."""
+    history(database_url, posteriors={"1": PRICEY})
+    prior = Posterior.prior(Params(tau0=float(roster.reputation_cost_prior_micros)))
+    candidates = dict.fromkeys(OPERATORS, prior) | {"1": PRICEY}
+    seed = unlucky_seed(roster, candidates, {OVER_BUDGET, OVER_BUDGET_IN_THIS_DRAW})
+    seeded(monkeypatch, seed)
+    with suggesting(roster, llm) as c:
+        task = suggest(c, explore=True)["tasks"][0]
+    assert task["picks"] == []
+    assert why(task) == {"1": OVER_BUDGET} | dict.fromkeys("2345", OVER_BUDGET_IN_THIS_DRAW)
+    assert task["reason"] == NO_FIT_THIS_DRAW
+
+
+def test_an_empty_answer_with_agents_out_for_probation_does_not_blame_the_budget_alone(
+    roster: Settings, llm: FakeLLM, database_url: str
+):
+    """Agent 3 would fit easily; it is out for probation. The rest are over budget on evidence. The answer
+    says the budget rules out only the others."""
+    history(
+        database_url,
+        posteriors=dict.fromkeys(OPERATORS, PRICEY) | {"3": EXCELLENT},
+        probation=("3",),
+    )
+    with suggesting(roster, llm) as c:
+        body = suggest(c)
+    for task in body["tasks"]:
+        assert task["picks"] == []
+        assert why(task) == {"3": IN_PROBATION} | dict.fromkeys("1245", OVER_BUDGET)
+        assert task["reason"] == PARTLY_LEFT_OUT + NO_FIT
+        assert task["reason"].startswith("some agents are left out for probation or the operator cap")

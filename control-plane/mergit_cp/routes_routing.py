@@ -7,8 +7,9 @@ from (invariant 6). See ``routing.py`` for the two modes.
 Every roster agent not in a task's ``picks`` is in its ``ineligible`` list with one reason, the most
 fundamental that applies: probation or the operator cap (``eligibility``, checked first, so such an agent is
 never ranked), then the budget (``routing.OVER_BUDGET``, or ``OVER_BUDGET_IN_THIS_DRAW`` when exploring), then
-the ``max_attempts`` cut. When ``picks`` is empty, ``reason`` also says whether the budget call rests on
-evidence or only on the configured cost prior (``NO_FIT`` or ``NO_FIT_ON_PRIOR_ALONE``).
+the ``max_attempts`` cut. When ``picks`` is empty, ``reason`` says only what is true of every agent left out:
+whether one merely missed this draw (``NO_FIT_THIS_DRAW``), and otherwise whether the budget call rests on
+evidence or only on the configured cost prior (``NO_FIT`` or ``NO_FIT_ON_PRIOR_ALONE``): ``_empty_reason``.
 """
 
 import json
@@ -28,7 +29,7 @@ from .agents import Agent
 from .auth import PoolDep, PrincipalDep, SettingsDep
 from .reputation_model import Params, Posterior
 from .routes_plans import get_agents
-from .routing import BELOW_MAX_ATTEMPTS, Pick, rank
+from .routing import BELOW_MAX_ATTEMPTS, OVER_BUDGET_IN_THIS_DRAW, Pick, rank
 
 router = APIRouter(prefix="/v0/plans", tags=["routing"])
 
@@ -39,18 +40,30 @@ NOTE = (
     "cover the cost of an unproven agent that fails, so choosing one can cost you."
 )
 
-# A task's ``reason`` when it has no picks. ``NO_FIT`` is the text this field always had; it now stands only
-# when at least one agent left out on budget has a recorded cost behind that call.
+# A task's ``reason`` when it has no picks (``_empty_reason`` chooses). ``NO_FIT`` is the text this field
+# always had; it now stands only when every agent ranked was over budget on its posterior (not just in one
+# draw) and at least one of them has a recorded cost behind that call.
 NO_FIT = "no agent is expected to fit this budget; choose one yourself or raise the budget"
 NO_FIT_ON_PRIOR_ALONE = (
     "no agent is expected to fit this budget, but that expectation is only the configured starting cost "
     "estimate, not evidence: none of the agents left out on budget has a recorded cost in this category yet. "
     "Choose one yourself or raise the budget"
 )
+NO_FIT_THIS_DRAW = (
+    "no agent's drawn cost fit the budget this time, but at least one could have (each is listed under "
+    "ineligible with the reason): this is one unlucky draw, not evidence that none can do it. Ask again, use "
+    "the default ranking (without explore), or choose one yourself"
+)
 ALL_LEFT_OUT = (
     "every agent is left out of suggestions for now (each is listed under ineligible with the reason); "
     "you can still choose one yourself"
 )
+PARTLY_LEFT_OUT = (
+    "some agents are left out for probation or the operator cap, whatever their cost (see ineligible); "
+    "of the others, "
+)
+"""Put before any of the budget reasons when probation or the cap also left agents out, so the answer never
+implies the budget is the only obstacle: an agent out for probation may well fit the budget."""
 
 
 def _pick_view(pick: Pick, name: str) -> dict[str, Any]:
@@ -172,22 +185,36 @@ async def suggestions(
 def _empty_reason(
     left_out: dict[str, str], excluded: dict[str, str], candidates: dict[str, Posterior], prior: Posterior
 ) -> str:
-    """Why a task has no picks. With none, every candidate ``rank`` saw is in ``left_out`` on budget, so the
-    question is what that budget call rests on: if no agent it left out has a recorded cost, it is only the
-    configured prior, and the answer says so rather than reading like evidence."""
-    on_budget = [candidates[agent_id] for agent_id in left_out]
-    if on_budget and all(_cost_is_the_prior(p, prior) for p in on_budget):
-        return NO_FIT_ON_PRIOR_ALONE
-    if not on_budget and excluded:
-        return ALL_LEFT_OUT
-    return NO_FIT
+    """Why a task has no picks. With none, every candidate ``rank`` saw is in ``left_out`` on budget; the
+    answer says only what is true of all of them:
+
+    * If any of them only missed this draw (``OVER_BUDGET_IN_THIS_DRAW``), that agent could fit, so "no agent
+      is expected to fit" is false: ``NO_FIT_THIS_DRAW``, whatever the others' reasons.
+    * Otherwise every one is over budget on its posterior. If none of those has a recorded cost, that call is
+      only the configured prior (``NO_FIT_ON_PRIOR_ALONE``); else it rests on evidence (``NO_FIT``).
+    * With nobody ranked at all, probation and the cap left out the whole roster (``ALL_LEFT_OUT``).
+
+    When probation or the cap also left agents out, a budget reason is prefixed with ``PARTLY_LEFT_OUT``,
+    since those agents' cost was never the question."""
+    if not left_out:
+        return ALL_LEFT_OUT if excluded else NO_FIT
+    if OVER_BUDGET_IN_THIS_DRAW in left_out.values():
+        budget = NO_FIT_THIS_DRAW
+    elif all(_cost_is_the_prior(candidates[agent_id], prior) for agent_id in left_out):
+        budget = NO_FIT_ON_PRIOR_ALONE
+    else:
+        budget = NO_FIT
+    return PARTLY_LEFT_OUT + budget if excluded else budget
 
 
 def _cost_is_the_prior(posterior: Posterior, prior: Posterior) -> bool:
     """No cost has been recorded for this agent in this category, so its cost posterior is still the prior.
-    That includes an agent whose counted outcomes all metered 0: ``Posterior.observe`` leaves kappa and tau
-    alone without a cost, and kappa only ever grows from the prior's once one arrives."""
-    return posterior.n == 0 or posterior.kappa == prior.kappa
+    Kappa alone tells: ``Posterior.observe`` leaves kappa and tau alone for an outcome without a cost (one
+    that metered 0), and moves kappa to ``0.95 kappa + 1`` with one, which from the prior's 1 only grows and
+    never returns. So this also covers an agent with no counted outcome (it is the prior) and one whose
+    counted outcomes all metered 0, which is why it does not test ``n``. It relies on the prior's kappa being
+    below 20, the fixed point of that update; the route's prior has 1."""
+    return posterior.kappa == prior.kappa
 
 
 async def _recent_explorations(conn: AsyncConnection[TupleRow], requester: str) -> int:

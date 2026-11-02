@@ -86,8 +86,9 @@ to fit the task's budget, best first, at most `max_attempts` of them. Approval i
   0.25 because an agent whose mean cost fits always has at least a 1/e chance, so exploring never leaves out an agent
   greedy would suggest. Each remaining agent draws θ from its Beta and a cost from its Gamma; one whose drawn cost
   exceeds the budget is left out of this draw only; the rest rank by drawn θ over drawn cost. The seed and the
-  posterior of each agent that was ranked (not those probation or the cap left out) are stored in `routing_decisions`,
-  so a draw can be replayed.
+  posterior of every agent passed to the ranking (all those probation and the cap left in, including any the ranking
+  then left out on budget) are stored in `routing_decisions`, so a draw can be replayed. Agents probation or the cap
+  left out are not in that record.
   Because each exploring call writes that record, a requester may make `SUGGESTIONS_PER_HOUR` (default 60) of them
   an hour; past that the answer is 429. Greedy calls write nothing and are not limited.
 - **Probation and the operator cap** (paper §7.5 ii and iii; `eligibility.py`), both per operator. An operator is in
@@ -112,12 +113,23 @@ to fit the task's budget, best first, at most `max_attempts` of them. Approval i
   | `ranked below the first max_attempts` | fits, but ranked after the `MAX_ATTEMPTS` (default 3) picks |
 
   The ones cut by `max_attempts` come first, in rank order; the rest follow by agent id.
-- **When nothing is suggested**, the task's `reason` says why, and says what the budget call rests on. If no agent
-  left out on budget has a recorded cost in the category (no counted outcome, or only ones that metered 0), the call
-  rests on `REPUTATION_COST_PRIOR_MICROS` alone, and the reason says it is the configured starting estimate, not
-  evidence. With the default prior (500000) and slack, greedy suggests nothing for any task under 454546 micros
-  until agents have recorded costs. Otherwise it is the plain "no agent is expected to fit this budget". If probation or the cap leave out
-  every agent, it says that instead. Either way the requester can still choose agents at approval.
+- **When nothing is suggested**, the task's `reason` says why, and claims only what is true of every agent left out:
+  - If any agent was left out only `over budget in this draw` (explore), it could fit, so the reason says this was
+    one unlucky draw, not evidence that none can do it, and suggests asking again or using the default ranking. It
+    does not say "no agent is expected to fit". This is not rare: at cold start (agents on the prior, mean 500000,
+    for a 500000 task) each agent's draw fits about 40% of the time, so with three agents every draw misses on about
+    one exploring call in five.
+  - Otherwise every agent ranked is over budget on its posterior, and the reason says what that rests on. If none of
+    them has a recorded cost in the category (no counted outcome, or only ones that metered 0), it rests on
+    `REPUTATION_COST_PRIOR_MICROS` alone, and the reason says it is the configured starting estimate, not evidence.
+    With the default prior (500000) and slack, greedy suggests nothing for any task under 454546 micros until agents
+    have recorded costs. If at least one has a recorded cost, it is the plain "no agent is expected to fit this
+    budget".
+  - When probation or the cap also left agents out, the budget reason is prefixed with "some agents are left out
+    for probation or the operator cap, whatever their cost (see ineligible); of the others, ...", since such an
+    agent may well fit the budget. If they left out every agent, it says that instead.
+
+  Either way the requester can still choose agents at approval.
 - Free-credit history never shapes a suggestion, because it is not in the posteriors the ranking reads.
 - Autonomous routing (the platform choosing without the requester) is not built.
 
