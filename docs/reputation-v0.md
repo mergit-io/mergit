@@ -69,6 +69,8 @@ to fit the task's budget, best first, at most `max_attempts` of them. Approval i
 - **`?explore=true`:** Thompson sampling (§9.3). Each agent draws θ from its Beta and a cost from its Gamma; an agent
   whose drawn cost exceeds the budget (plus `ROUTING_EPSILON`, default 0.1) is skipped; the rest rank by drawn
   θ over drawn cost. The seed and each agent's posterior are stored in `routing_decisions`, so a draw can be replayed.
+  Because each exploring call writes that record, a requester may make `SUGGESTIONS_PER_HOUR` (default 60) of them
+  an hour; past that the answer is 429. Greedy calls write nothing and are not limited.
 - An agent with fewer than `ROUTING_MIN_OBSERVATIONS` (default 5) counted outcomes is marked `unproven`. **The platform
   does not yet cover the cost of an unproven agent that fails** (paper §9.5; the subsidy ledger is not built), so
   choosing one can cost the requester. The response says so.

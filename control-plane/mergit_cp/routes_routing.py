@@ -12,6 +12,8 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from psycopg import AsyncConnection
+from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 
 from . import plans
@@ -53,7 +55,8 @@ async def suggestions(
     explore: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """Per task: the agents expected to fit its budget, best first (at most ``max_attempts``). With
-    ``explore=true`` the ranking is a seeded Thompson draw, and the draw is recorded so it can be replayed."""
+    ``explore=true`` the ranking is a seeded Thompson draw, and the draw is recorded so it can be replayed;
+    since that writes, exploring calls are limited to ``suggestions_per_hour`` per requester (then 429)."""
     async with pool.connection() as conn:
         plan = await plans.load(conn, plan_uuid)
         if plan is None:
@@ -102,7 +105,15 @@ async def suggestions(
         tasks.append(view)
 
     if seed is not None:
+        address = principal.address
         async with pool.connection() as conn, conn.transaction():
+            # One lock per requester, so two concurrent calls cannot both pass the limit (as for plans).
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"suggestions:{address}",))
+            if await _recent_explorations(conn, address) >= settings.suggestions_per_hour:
+                raise HTTPException(
+                    status_code=429, detail="too many exploring suggestions this hour; try again later"
+                )
+            await conn.execute("INSERT INTO suggestion_attempts (requester) VALUES (%s)", (address,))
             for index, budget, picks in decisions:
                 await conn.execute(
                     "INSERT INTO routing_decisions (plan_uuid, task_index, category, seed, budget_micros,"
@@ -124,6 +135,15 @@ async def suggestions(
         "note": NOTE,
         "tasks": tasks,
     }
+
+
+async def _recent_explorations(conn: AsyncConnection[TupleRow], requester: str) -> int:
+    cur = await conn.execute(
+        "SELECT count(*) FROM suggestion_attempts WHERE requester = %s AND at > now() - interval '1 hour'",
+        (requester,),
+    )
+    row = await cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 def _snapshot(candidates: dict[str, Posterior]) -> list[dict[str, Any]]:

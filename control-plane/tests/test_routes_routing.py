@@ -13,11 +13,13 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from mergit_cp.app import create_app
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool
 from mergit_cp.reputation import record_missing_costs, refresh_posteriors
 from mergit_cp.reputation_model import Posterior
 from mergit_cp.routing import rank
+from tests.cp_fakes import FakeLLM
 from tests.test_api import seed_plan
 from tests.test_plans import app_client, create, llm, settings, sign_in  # noqa: F401  (fixtures)
 from tests.test_reputation import gateway, run
@@ -134,3 +136,25 @@ def test_validated_history_moves_the_ranking(app_client: TestClient, settings: S
     picks = app_client.get(f"/v0/plans/{plan['plan_uuid']}/suggestions").json()["tasks"][0]["picks"]
     assert [p["agent_id"] for p in picks] == ["2", "1"]  # the untried agent's prior beats a failing record
     assert {p["agent_id"]: p["counted_outcomes"] for p in picks} == {"1": 2, "2": 0}
+
+
+def test_exploring_suggestions_are_rate_limited_per_requester(settings: Settings, llm: FakeLLM) -> None:
+    """Each exploring call appends a replay record per task to the append-only routing_decisions, so it is
+    limited per requester like the planner (plans_per_hour). A greedy call writes nothing and is not."""
+    limited = settings.model_copy(update={"suggestions_per_hour": 2})
+    with TestClient(create_app(limited, llm=llm, deliver_events=False), base_url="https://testserver") as c:
+        sign_in(c)
+        plan = create(c)
+        url = f"/v0/plans/{plan['plan_uuid']}/suggestions"
+        for _ in range(2):
+            assert c.get(url, params={"explore": "true"}).status_code == 200
+        refused = c.get(url, params={"explore": "true"})
+        assert refused.status_code == 429, refused.text
+        assert len(decisions(settings, plan["plan_uuid"])) == 2 * 2  # two calls x two tasks; not the third
+        assert c.get(url).status_code == 200  # greedy is still answered
+
+        c.cookies.clear()
+        sign_in(c)  # someone else has their own allowance
+        other = create(c)
+        theirs = f"/v0/plans/{other['plan_uuid']}/suggestions"
+        assert c.get(theirs, params={"explore": "true"}).status_code == 200

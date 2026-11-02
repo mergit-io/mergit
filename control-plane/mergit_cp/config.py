@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     """Slack on the task budget when a suggestion skips an agent whose cost would not fit (paper §9.3)."""
     routing_min_observations: int = Field(default=5, ge=1)
     """Counted outcomes below which a suggested agent is called unproven."""
+    suggestions_per_hour: int = Field(default=60, ge=1)
+    """Exploring suggestions per requester per hour. Each one appends a replay record per task to
+    ``routing_decisions``, which is append-only; greedy suggestions write nothing and are not limited."""
     reputation_cost_prior_micros: int = Field(default=500_000, ge=1)
     """The cost prior's mean for an agent with no history, in USDC micros. Configuration, not a measurement:
     it only matters until an agent has a few validated outcomes."""
