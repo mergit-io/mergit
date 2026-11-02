@@ -2,8 +2,9 @@
 
 Three steps, none of which writes anything the others do not own:
 
-1. ``task_outcomes`` (a view, migration 0015) says which tasks are validated outcomes. Only those count
-   (invariant 4); a release nobody audited, or a deadline return, is not evidence.
+1. ``task_outcomes`` (a view, migrations 0015 and 0019) says which tasks are validated outcomes: audited, or
+   challenged and adjudicated. Only those count (invariant 4); a release nobody audited or challenged, or a
+   deadline return, is not evidence.
 2. ``record_missing_costs`` copies each such task's metered cost from the gateway's on-chain commitment
    into ``task_costs``, once. A cost that cannot be read yet leaves the outcome pending; it is never taken
    as zero.

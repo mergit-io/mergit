@@ -20,16 +20,19 @@ counted outcome shows the prior and says so (`basis: "prior (no counted outcomes
 
 ## What counts as an outcome (invariant 4)
 
-One row per task, in the view `task_outcomes` (migration 0015), which is the only place the rule lives:
+One row per task, in the view `task_outcomes` (migration 0015, replaced by 0019), which is the only place the
+rule lives. An outcome counts if it was audited or was challenged and adjudicated (paper §8.2):
 
 | Ledger | Counts as |
 | --- | --- |
 | validator verdict `fail` or `invalid` | a failure, at that event |
 | verdict `pass` and `task.released`, no upheld challenge | a success, at the release |
 | verdict `pass`, released, then a challenge **upheld** | one failure (the adjudicated outcome replaces the audit's), placed where the release was |
-| released with no verdict (unaudited) | nothing |
+| no verdict, and a challenge **upheld** (before or after a release) | a failure, at the upheld resolution |
+| no verdict, a challenge **rejected**, and released | a success, at whichever of the release and the rejection came later |
+| released with no verdict and no challenge resolved (unaudited) | nothing |
 | returned at the deadline | nothing |
-| a receipt, or a verdict with no release | nothing |
+| a receipt, a verdict with no release, or a rejected challenge with no release yet | nothing |
 | Φ results from the worker | nothing, ever |
 
 A task that never delivered (deadline) is therefore not penalised. That is the paper's rule (only audited or

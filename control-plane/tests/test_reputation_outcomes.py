@@ -222,3 +222,110 @@ def test_the_outcome_view_finds_each_tasks_ledger_rows_through_an_index(
         assert set(scans) == {"money_events_task"}, scans
 
     run(database_url, body)
+
+
+async def returned(pool: Pool, s: Settings, task: str, reason: str, t: str) -> None:
+    await receive(
+        pool,
+        s,
+        "task.returned",
+        {"task_id": task, "amount_usdc_units": "500000", "reason": reason, "tx": tx(t)},
+    )
+
+
+def test_an_unaudited_release_that_a_challenge_overturns_is_an_adjudicated_failure(
+    database_url: str, settings: Settings
+):
+    """Paper §8.2: validated is audited, *or challenged and adjudicated*. Released unaudited, then upheld."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester="0x" + "1" * 40)
+        await released(pool, settings, tasks[0], "1")
+        assert await outcomes(pool, tasks) == {}  # unaudited and unchallenged: still not evidence
+        await challenge(pool, settings, tasks[0], upheld=True, t="2")
+        got = await outcomes(pool, tasks)
+        assert list(got) == [tasks[0]]
+        assert got[tasks[0]]["success"] is False
+        # Nothing counted until the adjudication, so that is where it sits.
+        assert got[tasks[0]]["position"] == await ledger_id(pool, tasks[0], "challenge.resolved")
+
+    run(database_url, body)
+
+
+def test_a_challenge_upheld_before_release_is_an_adjudicated_failure(database_url: str, settings: Settings):
+    """No verdict and no release: the challenge is upheld inside the window and the escrow goes back."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester="0x" + "1" * 40)
+        await challenge(pool, settings, tasks[0], upheld=True, t="1")
+        await returned(pool, settings, tasks[0], "challenge", "2")
+        got = await outcomes(pool, tasks)
+        assert list(got) == [tasks[0]]
+        assert got[tasks[0]]["success"] is False
+        assert got[tasks[0]]["position"] == await ledger_id(pool, tasks[0], "challenge.resolved")
+
+    run(database_url, body)
+
+
+def test_an_unaudited_release_that_survived_a_challenge_is_an_adjudicated_success(
+    database_url: str, settings: Settings
+):
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester="0x" + "1" * 40)
+        await challenge(pool, settings, tasks[0], upheld=False, t="1")
+        assert await outcomes(pool, tasks) == {}  # adjudicated, but not paid yet: wait for the release
+        await released(pool, settings, tasks[0], "2")
+        got = await outcomes(pool, tasks)
+        assert list(got) == [tasks[0]]
+        assert got[tasks[0]]["success"] is True
+        assert got[tasks[0]]["position"] == await ledger_id(pool, tasks[0], "task.released")
+
+    run(database_url, body)
+
+
+def test_a_challenge_rejected_after_an_unaudited_release_counts_from_the_rejection(
+    database_url: str, settings: Settings
+):
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester="0x" + "1" * 40)
+        await released(pool, settings, tasks[0], "1")
+        await challenge(pool, settings, tasks[0], upheld=False, t="2")
+        got = (await outcomes(pool, tasks))[tasks[0]]
+        assert got["success"] is True
+        # The later of the two events is the one that made it count.
+        assert got["position"] == await ledger_id(pool, tasks[0], "challenge.resolved")
+
+    run(database_url, body)
+
+
+def test_the_audited_cases_keep_their_outcome_and_position(database_url: str, settings: Settings):
+    """Regression for the adjudication cases above: every audited case reads exactly as before."""
+
+    async def body(pool: Pool) -> None:
+        _, _, tasks = await seed_plan(pool, requester="0x" + "1" * 40, n_tasks=7)
+        fail, invalid, passed, upheld, rejected, fail_upheld, pass_unreleased = tasks
+        await verdict(pool, settings, fail, "fail", "1")
+        await verdict(pool, settings, invalid, "invalid", "2")
+        await verdict(pool, settings, passed, "pass", "3")
+        await released(pool, settings, passed, "4")
+        await verdict(pool, settings, upheld, "pass", "5")
+        await released(pool, settings, upheld, "6")
+        await challenge(pool, settings, upheld, upheld=True, t="7")
+        await verdict(pool, settings, rejected, "pass", "8")
+        await released(pool, settings, rejected, "9")
+        await challenge(pool, settings, rejected, upheld=False, t="a")
+        await verdict(pool, settings, fail_upheld, "fail", "e")
+        await challenge(pool, settings, fail_upheld, upheld=True, t="c")
+        await verdict(pool, settings, pass_unreleased, "pass", "d")  # a verdict with no release
+
+        got = {t: (r["success"], r["position"]) for t, r in (await outcomes(pool, tasks)).items()}
+        assert got == {
+            fail: (False, await ledger_id(pool, fail, "verdict.recorded")),
+            invalid: (False, await ledger_id(pool, invalid, "verdict.recorded")),
+            passed: (True, await ledger_id(pool, passed, "task.released")),
+            upheld: (False, await ledger_id(pool, upheld, "task.released")),
+            rejected: (True, await ledger_id(pool, rejected, "task.released")),
+            fail_upheld: (False, await ledger_id(pool, fail_upheld, "verdict.recorded")),
+        }
+
+    run(database_url, body)
