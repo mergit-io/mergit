@@ -144,7 +144,7 @@ async def create_plan(
         async with pool.connection() as conn:
             chosen = (await user_settings.load(conn, principal.user_id)).planner_model
         if (
-            chosen in settings.model_choices
+            chosen is not None and chosen in settings.model_choices
         ):  # a model the operator has since withdrawn falls back to the default
             model = chosen
     budget = int(body.budget_usdc_units)

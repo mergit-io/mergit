@@ -33,6 +33,9 @@ class Settings(BaseSettings):
 
     planner_model: str
     """The planner's model (HLD D18 is open, so this is a deployment choice, not a code default)."""
+    planner_models: Annotated[list[str], NoDecode] = []
+    """Other planner models a user may choose in their settings (comma-separated). Each must be priced, like
+    ``planner_model``. Empty: everyone gets ``planner_model``. See ``model_choices``."""
     prices_file: str = "prices.toml"
     planner_max_tasks: int = Field(default=8, ge=1, le=32)
     plans_per_hour: int = Field(default=10, ge=1)
@@ -115,6 +118,7 @@ class Settings(BaseSettings):
         # the model that really answers (mergit_worker/providers.py). Unchanged whenever Anthropic is the
         # provider.
         self.planner_model = effective_model(self.planner_model)
+        self.planner_models = [effective_model(m) for m in self.planner_models]
         return self
 
     @model_validator(mode="before")
@@ -130,6 +134,11 @@ class Settings(BaseSettings):
     def sign_in_domains(self) -> list[str]:
         """Every hostname a wallet may sign in for."""
         return [self.app_domain, *self.extra_domains]
+
+    @property
+    def model_choices(self) -> list[str]:
+        """The planner models a user may choose: ``planner_model``, then ``planner_models``, once each."""
+        return list(dict.fromkeys([self.planner_model, *self.planner_models]))
 
     @property
     def public_origin(self) -> str:
@@ -149,7 +158,7 @@ class Settings(BaseSettings):
     def email_enabled(self) -> bool:
         return bool(self.smtp_host and self.smtp_from)
 
-    @field_validator("cors_origins", "repo_hosts", "extra_domains", mode="before")
+    @field_validator("cors_origins", "repo_hosts", "extra_domains", "planner_models", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
         if isinstance(value, str):
