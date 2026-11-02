@@ -297,3 +297,19 @@ test.describe("opening the pull request", () => {
     await expect(page.getByRole("region", { name: "Open a pull request" })).toHaveCount(0);
   });
 });
+
+test("a credits plan over the free-credit cap cannot be approved, and says why", async ({ page }) => {
+  await mockBackend(page, {
+    credits: { granted: "5000000", spent: "0", remaining: "5000000", plans_today: 0, plan_cap: "1000000" },
+  });
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await page.getByRole("radio", { name: "Free credits" }).click();
+  await expect(page.getByText("Free credits cover up to 1.00 USDC per plan; this plan is 1.50 USDC")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve plan" })).toBeDisabled();
+
+  await page.getByRole("radio", { name: "Wallet" }).click(); // a wallet has no such cap
+  await expect(page.getByRole("button", { name: "Approve plan" })).toBeEnabled();
+  expect(only(calls, "POST", "/approve")).toEqual([]);
+});

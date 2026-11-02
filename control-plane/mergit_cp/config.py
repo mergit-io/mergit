@@ -60,10 +60,25 @@ class Settings(BaseSettings):
     event_timeout_s: float = Field(default=10.0, gt=0)
     outcome_poll_s: float = Field(default=1.0, gt=0)
     """How often finished jobs are checked for a retry, an escalation or plan completion (plan O6)."""
+    reputation_poll_s: float = Field(default=5.0, gt=0)
+    """How often finished tasks' costs are read from the gateway and the posteriors refreshed."""
+    routing_epsilon: float = Field(default=0.1, ge=0)
+    """Slack on the task budget when a suggestion skips an agent whose cost would not fit (paper §9.3)."""
+    routing_min_observations: int = Field(default=5, ge=1)
+    """Counted outcomes below which a suggested agent is called unproven."""
+    reputation_cost_prior_micros: int = Field(default=500_000, ge=1)
+    """The cost prior's mean for an agent with no history, in USDC micros. Configuration, not a measurement:
+    it only matters until an agent has a few validated outcomes."""
 
     chain_id: int = BASE_SEPOLIA_CHAIN_ID
     nonce_ttl_s: int = Field(default=600, gt=0)
-    session_ttl_s: int = Field(default=12 * 3600, gt=0)
+    session_ttl_s: int = Field(default=30 * 86400, gt=0)
+    """How long a session lives after sign-in or after its last renewal. A session in use is slid forward
+    once less than half of this remains (accounts.renew_session), so someone who keeps using the app stays
+    signed in; one who stops is signed out after this long."""
+    session_max_age_s: int = Field(default=90 * 86400, gt=0)
+    """Hard cap from sign-in: sliding never extends a session past this, so everyone signs in again at least
+    this often."""
     db_pool_max: int = Field(default=10, gt=0)
 
     github_client_id: str | None = None

@@ -80,11 +80,39 @@ async def create_session(conn: Conn, settings: Settings, user_id: UUID, address:
     return token
 
 
-def set_session_cookie(response: Response, settings: Settings, token: str) -> None:
+async def renew_session(conn: Conn, settings: Settings, hashed: bytes) -> int | None:
+    """Slides a live session's expiry forward when less than half of its lifetime is left.
+
+    The new expiry is ``now + session_ttl_s`` but never later than ``created_at + session_max_age_s``. Returns
+    the seconds the cookie should now live, or None when nothing changed (not due yet, already at the cap,
+    revoked or expired). At most one write per half lifetime, so a busy session does not write on every call.
+    """
+    cur = await conn.execute(
+        "UPDATE sessions SET expires_at ="
+        " LEAST(now() + %(ttl)s::float8 * interval '1 second',"
+        "       created_at + %(cap)s::float8 * interval '1 second')"
+        " WHERE token_hash = %(hash)s AND revoked_at IS NULL AND expires_at > now()"
+        " AND expires_at < now() + %(half)s::float8 * interval '1 second'"
+        " AND expires_at < created_at + %(cap)s::float8 * interval '1 second'"
+        " RETURNING (extract(epoch FROM expires_at - now()))::int",
+        {
+            "ttl": settings.session_ttl_s,
+            "cap": settings.session_max_age_s,
+            "half": settings.session_ttl_s / 2,
+            "hash": hashed,
+        },
+    )
+    row = await cur.fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def set_session_cookie(
+    response: Response, settings: Settings, token: str, max_age: int | None = None
+) -> None:
     response.set_cookie(
         COOKIE,
         token,
-        max_age=settings.session_ttl_s,
+        max_age=settings.session_ttl_s if max_age is None else max_age,
         httponly=True,
         secure=True,
         samesite="lax",

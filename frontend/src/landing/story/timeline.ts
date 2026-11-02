@@ -57,7 +57,7 @@ export function mountStory(root: HTMLElement, artSvg: SVGSVGElement, variant: Va
     syncMid(STORY_START);
 
     // Scrolling drives a 0 to 1 progress through the track. Most of it scrubs the timeline; on the two flows (team and
-    // settlement) the page rests while the flow plays by itself on its own clock, 2x the timeline's speed.
+    // settlement) the page rests while the flow plays by itself on its own clock (FLOW_RATE).
     const track = variantTrack(variant);
     const plan = snapPlan(variant, track);
     const flows = flowsFor(variant);
@@ -146,13 +146,15 @@ export function mountStory(root: HTMLElement, artSvg: SVGSVGElement, variant: Va
       trigger: root,
       start: "top top",
       end: "bottom bottom",
-      scrub: variant === "full" ? 2 : 1,
+      // Scroll catches up over 1.5 s, and a snap to the next resting point takes up to 4 s: one flick of the wheel plays
+      // the scene at about the speed it was drawn at, instead of rushing it.
+      scrub: 1.5,
       animation: scrub,
       snap: {
         snapTo: (value: number, self?: ScrollTrigger) => snapTarget(value, self?.direction ?? 1, plan.stops, plan.free),
         inertia: false,
-        delay: variant === "full" ? 0.15 : 0.12,
-        duration: variant === "full" ? { min: 1, max: 3.4 } : { min: 0.6, max: 2 },
+        delay: 0.2,
+        duration: variant === "full" ? { min: 1, max: 3.4 } : { min: 1.4, max: 4 },
         ease: "power2.inOut",
       },
     });

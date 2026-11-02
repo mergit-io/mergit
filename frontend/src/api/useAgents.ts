@@ -10,7 +10,8 @@ export function useAgents() {
     let active = true;
     listAgents().then(
       (list) => {
-        if (active) setAgents(list);
+        // Anything but a list is not the agents service answering; names then fall back to ids.
+        if (active) setAgents(Array.isArray(list) ? list : null);
       },
       (e: unknown) => {
         if (active) setError(errorMessage(e));

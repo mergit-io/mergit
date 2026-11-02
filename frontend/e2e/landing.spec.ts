@@ -154,7 +154,7 @@ test.describe("scroll story", () => {
   const exerciseControls = async (page: import("@playwright/test").Page, scene: string) => {
     const pn = page.locator(`${scene} .pn`);
     await expect(pn).toHaveText("01");
-    await expect(pn).not.toHaveText("01", { timeout: 10_000 }); // it moves on by itself, with no scrolling
+    await expect(pn).not.toHaveText("01", { timeout: 15_000 }); // it moves on by itself (a step is ~4.5 s), no scrolling
 
     await page.locator(scene).getByRole("button", { name: "Pause the animation" }).click();
     const held = await pn.textContent();
@@ -169,7 +169,7 @@ test.describe("scroll story", () => {
   };
 
   test("the lean story: hero, the problem, one settlement flow that plays itself, and the closer", async ({ page }) => {
-    // The splash, then real playback of a flow (about 14 s from its first step to its last) at its own pace.
+    // The splash, then real playback of a flow (about 17 s from its first step to its last) at its own pace.
     test.slow();
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
@@ -188,7 +188,7 @@ test.describe("scroll story", () => {
     await jump(await anchorTop("how-it-works"));
     await expect(page.locator("#ss")).toBeVisible({ timeout: 15_000 });
     await exerciseControls(page, "#ss");
-    await expect(page.locator("#ss .pn")).toHaveText("05", { timeout: 25_000 }); // plays through to its last step
+    await expect(page.locator("#ss .pn")).toHaveText("05", { timeout: 35_000 }); // plays through to its last step
 
     // The closer is the last scene, and the scenes the lean story skips are never on screen.
     await jump(await page.evaluate(() => document.querySelector(".story")?.getBoundingClientRect().height ?? 0));
@@ -206,7 +206,7 @@ test.describe("scroll story", () => {
   });
 
   test("the flows story is still there: both flows play themselves", async ({ page }) => {
-    // The splash, then real playback of a flow (about 14 s from its first step to its last) at its own pace.
+    // The splash, then real playback of a flow (about 17 s from its first step to its last) at its own pace.
     test.slow();
     await page.goto("/?story=flows");
     await expect(page.locator(".story")).toHaveAttribute("data-variant", "flows");
@@ -219,7 +219,7 @@ test.describe("scroll story", () => {
 
     await jump(await anchorTop("proofs"));
     await expect(page.locator("#ss")).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator("#ss .pn")).toHaveText("05", { timeout: 25_000 });
+    await expect(page.locator("#ss .pn")).toHaveText("05", { timeout: 35_000 });
   });
 
   test("each story is shorter to scroll than the one before it", async ({ page }) => {
@@ -230,7 +230,8 @@ test.describe("scroll story", () => {
       heights.push(await page.evaluate(() => document.documentElement.scrollHeight));
     }
     const [lean = 0, flows = 0, full = 0] = heights;
-    expect(lean).toBeLessThan(flows * 0.5);
+    // The lean story scrolls more slowly than the others so its scenes have time to be seen; it is still the shortest.
+    expect(lean).toBeLessThan(flows * 0.6);
     expect(flows).toBeLessThan(full * 0.5);
   });
 

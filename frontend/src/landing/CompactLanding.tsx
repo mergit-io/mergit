@@ -5,7 +5,7 @@ import { LIcon } from "./LIcon";
 import { LandingNav } from "./sections/LandingNav";
 import { Faq } from "./sections/Faq";
 import { Footer } from "./sections/Cta";
-import { navFor } from "./story/storyConfig";
+import { footerFor, navFor } from "./story/storyConfig";
 import { storyCopy as c } from "./story/copy";
 import "../styles/landing/compact.css";
 
@@ -149,7 +149,7 @@ export function CompactLanding() {
 
           <Faq />
         </main>
-        <Footer />
+        <Footer columns={footerFor("lean")} />
       </div>
     </div>
   );

@@ -9,7 +9,16 @@ import re
 from fnmatch import fnmatch
 from pathlib import Path
 
-from mergit_cp import auth, oauth, otp, routes_plans, routes_runs, wallet_interest
+from mergit_cp import (
+    auth,
+    oauth,
+    otp,
+    routes_plans,
+    routes_reputation,
+    routes_routing,
+    routes_runs,
+    wallet_interest,
+)
 
 CADDYFILE = Path(__file__).resolve().parents[2] / "deploy" / "Caddyfile"
 
@@ -34,6 +43,8 @@ def _browser_paths() -> list[str]:
         routes_plans.router,
         routes_runs.router,
         routes_runs.agents_router,
+        routes_reputation.router,
+        routes_routing.router,
     ]
     paths = {
         re.sub(r"\{[^}]+\}", "x", r.path) for router in routers for r in router.routes if hasattr(r, "path")
