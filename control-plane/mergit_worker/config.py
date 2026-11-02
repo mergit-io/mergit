@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -16,6 +16,16 @@ _AGENT_KEY = re.compile(r"^0x[0-9a-fA-F]{64}$")
 
 class ConfigError(Exception):
     """Configuration is missing or malformed. The worker refuses to start."""
+
+
+def describe_invalid_settings(exc: ValidationError) -> str:
+    """Which settings are missing or malformed, by name and reason only. Pydantic's own message carries the
+    input values, and the input is the environment: secrets, partly shown, in a log (the deploy preflight's
+    goes to a public GitHub Actions log)."""
+    return "; ".join(
+        f"{'.'.join(str(p) for p in e['loc']).upper() or 'settings'}: {e['msg']}"
+        for e in exc.errors(include_url=False, include_input=False, include_context=False)
+    )
 
 
 class WorkerConfig(BaseSettings):
@@ -97,6 +107,8 @@ class WorkerConfig(BaseSettings):
 def load_config() -> WorkerConfig:
     try:
         return WorkerConfig()  # type: ignore[call-arg]  # fields come from the environment
+    except ValidationError as exc:
+        raise ConfigError(describe_invalid_settings(exc)) from None
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 

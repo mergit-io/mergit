@@ -11,7 +11,7 @@ import pytest
 from mergit_worker.agents import load_agent_spec, validate_agents_are_priced
 from mergit_worker.config import ConfigError
 from mergit_worker.meter import PriceTable
-from mergit_worker.providers import ProviderSpec, load_providers, provider_key
+from mergit_worker.providers import ProviderSpec, load_providers, provider_key, stale_settings
 from tests.support import KEY, KEY_ADDRESS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -232,3 +232,32 @@ def test_start_up_price_check_uses_the_configured_model(tmp_path: Path):
     validate_agents_are_priced(chain, config, PriceTable.load(priced))
     with pytest.raises(ConfigError, match="no price"):
         validate_agents_are_priced(chain, config, PriceTable({}))
+
+
+GROQ = ProviderSpec("groq", "openai_chat", "https://api.groq.com/openai/v1", "GROQ_API_KEY")
+
+
+def test_removed_settings_still_set_are_named_for_a_warning():
+    env = {"GROQ_MODEL": "x", "LLM_PROVIDER": "groq", "GROQ_API_KEY": "k"}
+    assert stale_settings({"groq": GROQ}, {"groq"}, env) == ["GROQ_MODEL", "LLM_PROVIDER"]
+    assert stale_settings({"groq": GROQ}, {"groq"}, {}) == []
+
+
+def test_a_keyrelay_env_file_cannot_send_its_proxy_token_to_groq_itself():
+    """An env file written for keyrelay holds its proxy token in GROQ_API_KEY and keyrelay's address in
+    GROQ_BASE_URL. That variable is ignored now, so a provider in use would send the token to agents.toml's
+    endpoint instead: refused, not warned about."""
+    env = {"GROQ_BASE_URL": "http://keyrelay:8787/v1", "GROQ_API_KEY": "proxy-token"}
+    with pytest.raises(ConfigError, match="GROQ_BASE_URL"):
+        stale_settings({"groq": GROQ}, {"groq"}, env)
+
+
+def test_a_stale_groq_base_url_only_warns_when_no_provider_in_use_reads_groq_api_key():
+    env = {"GROQ_BASE_URL": "http://keyrelay:8787/v1"}
+    assert stale_settings({"groq": GROQ}, {"anthropic"}, env) == ["GROQ_BASE_URL"]
+
+
+def test_a_stale_groq_base_url_that_agrees_with_agents_toml_only_warns():
+    relay = ProviderSpec("groq", "openai_chat", "http://keyrelay:8787/v1", "GROQ_API_KEY")
+    env = {"GROQ_BASE_URL": "http://keyrelay:8787/v1/"}
+    assert stale_settings({"groq": relay}, {"groq"}, env) == ["GROQ_BASE_URL"]

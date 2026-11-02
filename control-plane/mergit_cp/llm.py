@@ -248,6 +248,11 @@ class _UnavailableLLM:
         raise LLMUnavailable(f"no model key is configured for provider {self._name!r}")
 
 
+def planner_unavailable(llm: LLM) -> bool:
+    """True for the stand-in `build_planner_llm` returns when its provider has no key."""
+    return isinstance(llm, _UnavailableLLM)
+
+
 def build_planner_llm(
     providers: dict[str, ProviderSpec],
     name: str,

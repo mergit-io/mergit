@@ -18,7 +18,16 @@ sync_repo ../mergit-contracts   # deployments/base-sepolia.json lives there
 
 case "$what" in
   all|services)
-    compose up -d --build
+    compose build
+    # Before anything running is replaced: run the API's and the worker's own start-up configuration checks
+    # in the images just built, against the real env files (mergit_cp/preflight.py, mergit_worker/preflight.py).
+    # A setting the new code needs and deploy/secrets/*.env lacks (PLANNER_PROVIDER, a deployed agent's model
+    # key) then fails the deploy here, with `set -e`, and the old containers keep serving, instead of `up`
+    # leaving a new api restart-looping or a new worker that refuses to start. Neither check touches the
+    # database or the network.
+    compose run --rm --no-deps -T api python -m mergit_cp.preflight
+    compose run --rm --no-deps -T worker python -m mergit_worker.preflight
+    compose up -d
     # `git pull` replaces the Caddyfile with a new file, and a single-file bind mount keeps pointing at the old one,
     # so neither `up` nor `caddy reload` (which re-reads the stale copy and still succeeds) applies a changed
     # Caddyfile. Compare what the container sees with the file on disk; if they differ, or the container cannot be
@@ -34,8 +43,10 @@ case "$what" in all) deploy/server/build-sites.sh all ;; web|app) deploy/server/
 
 compose ps
 for h in gateway store; do printf '%s: ' "$h"; curl -fsS "https://$h.mergit.site/healthz"; echo; done
-# The control-plane API has no /healthz; GET /v0/agents is public and answers 200 once Settings parses and
-# the app starts (deploy/server/README.md, "Upgrading an existing deployment"). `-f` makes curl fail (and,
-# with `set -e` above, this whole script fail) on a non-2xx or unreachable api, instead of `compose up`
-# quietly leaving it restart-looping while this script still exits 0.
-printf 'api: '; curl -fsS -o /dev/null -w '%{http_code}\n' "https://app.mergit.site/v0/agents"
+# The control-plane API has no /healthz; GET /v0/agents is public and answers 200 once the app has started.
+# A just-recreated api takes a while (migrations, the healthcheck's start_period), so retry for up to about
+# 90 s before calling it down. `-f` then makes curl, and with `set -e` this script, fail on a non-2xx or an
+# unreachable api, instead of exiting 0 over one that never came up.
+printf 'api: '
+curl -fsS --retry 30 --retry-delay 3 --retry-max-time 90 --retry-all-errors -o /dev/null -w '%{http_code}\n' \
+  "https://app.mergit.site/v0/agents"

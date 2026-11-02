@@ -111,3 +111,33 @@ def provider_key(spec: ProviderSpec, environ: Mapping[str, str]) -> str | None:
     if spec.kind == "anthropic":
         return environ.get("ANTHROPIC_API_KEY") or environ.get("ANTHROPIC_AUTH_TOKEN")
     return None
+
+
+# Read by earlier versions, ignored now: a provider's endpoint and model are in `agents.toml`, and each agent
+# and the planner name their provider there (or in `PLANNER_PROVIDER`). Still set, they mislead whoever
+# reads the env file, so start-up names them.
+REMOVED_SETTINGS = ("GROQ_BASE_URL", "GROQ_MODEL", "LLM_PROVIDER")
+
+
+def stale_settings(
+    providers: Mapping[str, ProviderSpec], in_use: set[str], environ: Mapping[str, str]
+) -> list[str]:
+    """The removed settings still set in `environ`, for start-up to warn about.
+
+    One of them is refused instead: `GROQ_BASE_URL` naming another endpoint than the one `agents.toml` gives
+    a provider in use that reads `GROQ_API_KEY`. That env file was written for keyrelay, so `GROQ_API_KEY`
+    holds keyrelay's proxy token, and with `GROQ_BASE_URL` ignored the token would now go to the endpoint in
+    `agents.toml` instead."""
+    stale = [name for name in REMOVED_SETTINGS if environ.get(name)]
+    old_url = (environ.get("GROQ_BASE_URL") or "").rstrip("/")
+    for name in sorted(in_use):
+        spec = providers.get(name)
+        if spec is None or spec.api_key_env != "GROQ_API_KEY" or not old_url or not spec.base_url:
+            continue
+        if old_url != spec.base_url.rstrip("/"):
+            raise ConfigError(
+                f"GROQ_BASE_URL is set but no longer read, and provider {name!r} now sends GROQ_API_KEY to "
+                f"{spec.base_url} (agents.toml) instead. Set that provider's base_url in agents.toml to the "
+                "endpoint you meant (http://keyrelay:8787/v1 for keyrelay), then remove GROQ_BASE_URL"
+            )
+    return stale

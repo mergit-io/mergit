@@ -2,15 +2,12 @@
 hosts build it the same way."""
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from mergit_worker.meter import PriceTable
-from mergit_worker.providers import load_providers
 
 from . import (
     auth,
@@ -26,17 +23,18 @@ from . import (
     routes_runs,
     wallet_interest,
 )
-from .agents import load_agents
 from .config import Settings
 from .db import migrate, open_pool
 from .events import EventDeliverer
-from .llm import LLM, build_planner_llm
+from .llm import LLM
 from .outcomes import OutcomeProcessor
 from .planner import PgCostSink
 from .pr_store import PgPrStore
+from .preflight import check_config, planner_llm
 from .reputation import GatewayCosts, ReputationUpdater
-from .spec import require_schemas
 from .stream import PlanBroadcaster
+
+log = logging.getLogger(__name__)
 
 
 def create_app(
@@ -54,21 +52,19 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        # Fail at start, not on the first request, when configuration is wrong.
-        app.state.agents = load_agents(settings.agents_file, settings.agents_config)
-        require_schemas()  # the plan checks and events are validated against spec/schemas
-        prices = PriceTable.load(Path(settings.prices_file))
-        for model in settings.model_choices:  # every planner model a user may choose must have a price
-            prices.model_call_cost(model, 0, 0, 0)
+        # Fail at start, not on the first request, when configuration is wrong. The deploy runs the same
+        # checks first (mergit_cp/preflight.py), before it swaps the running container.
+        checked = check_config(settings)
+        app.state.agents, prices = checked.agents, checked.prices
+        if checked.stale:
+            log.warning("no longer read, remove from the env file: %s", ", ".join(checked.stale))
         pool = await open_pool(settings.database_url, settings.db_pool_max)
         async with pool.connection() as conn:
             await migrate(conn)
         app.state.pool = pool
         # The pull-request routes share the worker's queue table; the API holds no GitHub token (see README).
         app.state.pr_store = PgPrStore.connect(settings.database_url, "api")
-        app.state.llm = llm or build_planner_llm(
-            load_providers(Path(settings.agents_config)), settings.planner_provider
-        )
+        app.state.llm = llm or planner_llm(settings)
         app.state.costs = PgCostSink(pool, prices)
         app.state.broadcaster = PlanBroadcaster()
         app.state.mailer = mailer or (otp.SmtpMailer(settings) if settings.email_enabled else None)
