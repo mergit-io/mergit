@@ -148,7 +148,49 @@ export function attempt(index: number, n: number, over: Partial<FakeAttempt> = {
   };
 }
 
-export type ApiCall = { method: string; path: string; body: unknown };
+/** `query` is the URL's search string ("?explore=true"), or "" without one. */
+export type ApiCall = { method: string; path: string; query: string; body: unknown };
+
+export type FakeSuggestion = {
+  agent_id: string;
+  name: string;
+  score_per_usdc: number;
+  assumed_success: number;
+  assumed_cost_micros: number;
+  counted_outcomes: number;
+  unproven: boolean;
+};
+
+export type FakeTaskSuggestions = {
+  index: number;
+  budget_usdc_units: string;
+  picks: FakeSuggestion[];
+  ineligible: Array<{ agent_id: string; name: string; reason: string }>;
+  reason?: string;
+};
+
+/** The control plane's note, word for word (`routes_routing.NOTE`). */
+export const SUGGESTIONS_NOTE =
+  "A suggestion, not an assignment: you still choose the agents when you approve. It ranks agents by " +
+  "validated success per unit cost in this category, from outcomes the platform recorded; free-credit work " +
+  "is not counted. An agent with few counted outcomes is marked unproven, and the platform does not yet " +
+  "cover the cost of an unproven agent that fails, so choosing one can cost you.";
+
+export const suggestion = (over: Partial<FakeSuggestion> = {}): FakeSuggestion => ({
+  agent_id: "1",
+  name: "coder-a",
+  score_per_usdc: 4.8,
+  assumed_success: 0.72,
+  assumed_cost_micros: 150_000,
+  counted_outcomes: 12,
+  unproven: false,
+  ...over,
+});
+
+/** `GET /v0/plans/{uuid}/suggestions` for `draftPlan()`, as the control plane answers it in `mode`. */
+export function suggestionsFor(mode: "greedy" | "explore", tasks: FakeTaskSuggestions[]) {
+  return { plan_id: PLAN_ID, mode, seed: mode === "explore" ? 424242 : null, note: SUGGESTIONS_NOTE, tasks };
+}
 
 const sseBody = (events: FakeEvent[]) =>
   // A long retry, so the browser does not reconnect while a test is still asserting.
@@ -166,6 +208,11 @@ export async function mockPlanApi(
     events?: FakeEvent[];
     /** The pull-request step. `after` is what the worker reports on each poll once the request is queued. */
     pr?: { after: Array<"running" | "done" | "error"> };
+    /**
+     * What `GET .../suggestions` answers, per `explore`: a body, or a status to fail with. Without it the
+     * route is unknown (404), as against a control plane that has no suggestions.
+     */
+    suggestions?: { greedy: unknown; explore?: unknown } | { status: number };
   } = {},
 ) {
   let prState: "none" | "queued" | "running" | "done" | "error" = "none";
@@ -187,10 +234,11 @@ export async function mockPlanApi(
     const request = route.request();
     const method = request.method();
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers: CORS(route) });
-    const path = new URL(request.url()).pathname;
+    const url = new URL(request.url());
+    const path = url.pathname;
     if (path.startsWith("/v0/auth/") || path.startsWith("/v0/account/")) return route.fallback();
     const body: unknown = request.postData() ? request.postDataJSON() : null;
-    calls.push({ method, path, body });
+    calls.push({ method, path, query: url.search, body });
 
     if (path === "/v0/agents") return json(route, AGENTS);
     if (path === "/v0/plans" && method === "GET") return json(route, [...plans.values()]);
@@ -212,6 +260,15 @@ export async function mockPlanApi(
       });
     }
     if (method === "GET" && !action) return json(route, plan);
+    if (method === "GET" && action === "suggestions" && opts.suggestions) {
+      const s = opts.suggestions;
+      if ("status" in s) return json(route, { detail: "suggestions are unavailable" }, s.status);
+      if (plan.state !== "draft") {
+        return json(route, { detail: `the plan is ${plan.state}; suggestions are for drafts` }, 409);
+      }
+      const explore = url.searchParams.get("explore") === "true";
+      return json(route, explore ? (s.explore ?? s.greedy) : s.greedy);
+    }
     if (method === "PATCH" && !action) {
       const { tasks } = body as { tasks: Array<Omit<FakeTask, "index" | "phi_hash" | "agents">> };
       plan.tasks = tasks.map((t, index) => ({ ...t, index, phi_hash: null, agents: null }));

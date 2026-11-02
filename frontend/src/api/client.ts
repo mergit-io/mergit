@@ -9,6 +9,7 @@ import type {
   Plan,
   PlanDetail,
   PlanSummary,
+  SuggestionsResponse,
   TaskEdit,
 } from "./types";
 
@@ -101,6 +102,14 @@ export const listPlans = () => request<PlanSummary[]>("GET", "/v0/plans");
 export const getPlan = (planUuid: string) => request<PlanDetail>("GET", planPath(planUuid));
 
 export const listAgents = () => request<AgentInfo[]>("GET", "/v0/agents");
+
+/**
+ * The agents the control plane suggests for each task of a draft. `explore=false` is a plain read;
+ * `explore=true` records a random draw and is limited per hour (429 past it), so call it only when the
+ * requester asks for one.
+ */
+export const getSuggestions = (planUuid: string, explore: boolean) =>
+  request<SuggestionsResponse>("GET", `${planPath(planUuid)}/suggestions?explore=${String(explore)}`);
 
 /** Server-Sent Events for one plan. Open with `withCredentials: true`, or the session cookie is not sent. */
 export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid)}/events`;

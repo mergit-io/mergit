@@ -98,3 +98,38 @@ export type ApproveRequest = {
 };
 
 export type ApproveResponse = { plan_id: Hex; total_budget_usdc_units: string };
+
+/** One agent the control plane suggests for a task, best first. Advice only: `/approve` is unchanged. */
+export type Suggestion = {
+  agent_id: string;
+  name: string;
+  score_per_usdc: number;
+  /** Chance of passing the check, 0 to 1, from the agent's posterior. Only the prior when `counted_outcomes` is 0. */
+  assumed_success: number;
+  /** Cost of one run, micro-USD (the same scale as USDC base units). */
+  assumed_cost_micros: number;
+  counted_outcomes: number;
+  /** Too few counted outcomes for the platform to vouch for it; a failed run is not covered. */
+  unproven: boolean;
+};
+
+/** A roster agent left out of a task's suggestions, with why, as a sentence to show as it is. */
+export type IneligibleAgent = { agent_id: string; name: string; reason: string };
+
+export type TaskSuggestions = {
+  index: number;
+  budget_usdc_units: string;
+  picks: Suggestion[];
+  ineligible: IneligibleAgent[];
+  /** Only when `picks` is empty: why, as a sentence to show as it is. */
+  reason?: string;
+};
+
+export type SuggestionsResponse = {
+  plan_id: Hex;
+  /** `greedy` ranks by expected value; `explore` is one random (Thompson) draw, recorded with its `seed`. */
+  mode: "greedy" | "explore";
+  seed: number | null;
+  note: string;
+  tasks: TaskSuggestions[];
+};

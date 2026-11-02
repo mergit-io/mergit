@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Plan } from "../../../api/types";
-import { editProblems, hasEdits, pickProblems, toApproval, toEdits, toForms, totalBudget } from "./draft";
+import {
+  editProblems,
+  hasEdits,
+  pickProblems,
+  suggestedPicks,
+  toApproval,
+  toEdits,
+  toForms,
+  totalBudget,
+} from "./draft";
 
 const PHI = { kind: "exec/0", command: ["pytest", "-q"], expected_exit: 0 };
 
@@ -83,5 +92,37 @@ describe("draft forms", () => {
     expect([...editProblems(forms), ...pickProblems(forms)]).toEqual([]);
     expect(toApproval(forms, "credits")).toEqual({ agents: { "0": ["2", "1"], "1": ["1"] }, funding: "credits" });
     expect(totalBudget(forms)).toBe(1_333_333n);
+  });
+});
+
+describe("suggested picks", () => {
+  const roster = ["1", "2", "3", "4"].map((agent_id) => ({ agent_id, name: `coder-${agent_id}`, model: "m" }));
+  const suggestion = (picks: string[], ineligible: string[] = []) => ({
+    index: 0,
+    budget_usdc_units: "500000",
+    picks: picks.map((agent_id) => ({
+      agent_id,
+      name: `coder-${agent_id}`,
+      score_per_usdc: 1,
+      assumed_success: 0.5,
+      assumed_cost_micros: 100_000,
+      counted_outcomes: 3,
+      unproven: false,
+    })),
+    ineligible: ineligible.map((agent_id) => ({
+      agent_id,
+      name: `coder-${agent_id}`,
+      reason: "operator in probation",
+    })),
+  });
+
+  it("keeps the suggested order, at most MAX_PICKS of it, and passes the pick check", () => {
+    const picks = suggestedPicks(suggestion(["4", "2", "1", "3"]), roster);
+    expect(picks).toEqual(["4", "2", "1"]);
+    expect(pickProblems(toForms(plan).map((f) => ({ ...f, agents: picks })))).toEqual([]);
+  });
+
+  it("drops an agent listed as left out, one picked twice, and one the roster does not list", () => {
+    expect(suggestedPicks(suggestion(["9", "2", "2", "3", "1"], ["3"]), roster)).toEqual(["2", "1"]);
   });
 });
