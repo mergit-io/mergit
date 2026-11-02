@@ -33,10 +33,11 @@ rule lives. An outcome counts if it was audited or was challenged and adjudicate
 | verdict `pass` and `task.released`, no upheld challenge | a success, at the release |
 | verdict `pass`, released, then a challenge **upheld** | one failure (the adjudicated outcome replaces the audit's), placed where the release was |
 | no verdict, and a challenge **upheld** (before or after a release) | a failure, at the upheld resolution |
+| verdict `pass`, no release, and a challenge **upheld** | a failure, at the upheld resolution |
 | no verdict, a challenge **rejected**, and released | a success, at whichever of the release and the rejection came later |
 | released with no verdict and no challenge resolved (unaudited) | nothing |
 | returned at the deadline | nothing |
-| a receipt, a verdict with no release, or a rejected challenge with no release yet | nothing |
+| a receipt, a verdict with no release (and no upheld challenge), or a rejected challenge with no release yet | nothing |
 | Φ results from the worker | nothing, ever |
 
 A task that never delivered (deadline) is therefore not penalised. That is the paper's rule (only audited or
@@ -53,8 +54,9 @@ The flag is the plan's funding, not the address shape: a wallet user may also fu
 - **Cost:** the receipt's metered cost, as committed on chain, read from the gateway
   (`GET /v0/commitments?task_id=`) and copied once into `task_costs` (write-once). A cost that cannot be read yet
   leaves the outcome out of the posterior until it can; it is never taken as zero. A commitment that really says
-  zero is recorded as it is, but the cost model needs a positive cost (paper §8.3), so that outcome is left out
-  of the posterior too rather than folded with an invented cost.
+  zero is recorded as it is, and the outcome's success or failure counts like any other; but the cost model needs
+  a positive cost (paper §8.3), so that outcome leaves the cost posterior (κ, τ) unchanged rather than adding an
+  invented cost.
 - **Posteriors:** `agent_posteriors` is a cache. It is rebuilt from the two sources above on every pass, so it
   cannot disagree with a rebuild, and a challenge that is upheld later changes it correctly.
 

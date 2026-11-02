@@ -367,20 +367,40 @@ def test_a_commitment_that_is_not_an_object_does_not_skip_the_refresh(database_u
     run(database_url, body)
 
 
-def test_a_zero_cost_outcome_is_left_out_of_the_fold_and_does_not_stop_it(
+def test_a_zero_cost_outcome_still_counts_as_a_success_or_failure_but_not_as_a_cost(
     database_url: str, settings: Settings
 ):
-    """The commitment really said 0, so it is recorded as it is; but the cost model needs c > 0 (paper §8.3),
-    so the outcome is left out, like one whose cost is unknown, instead of failing every refresh."""
+    """Paper §8.3's c > 0 constrains only the cost (Gamma) update; the success (Beta) update of §8.2 has no
+    cost precondition. A validated failure whose receipt metered 0 (say, a run that died before its first
+    billed call) is still a failure, so it moves beta and n; it says nothing about cost, so kappa and tau skip
+    it. A positive cost folds as before; free-credit work and outcomes whose cost is pending stay out."""
 
     async def body(pool: Pool) -> None:
-        _, _, tasks = await seed_plan(pool, requester=REQUESTER)
-        await verdict(pool, settings, tasks[0], "fail", "1")
-        await verdict(pool, settings, tasks[1], "fail", "2")
-        assert await record_missing_costs(pool, gateway({tasks[0]: "0", tasks[1]: "300000"})) == 2
+        _, _, tasks = await seed_plan(pool, requester=REQUESTER, n_tasks=4)
+        zero, paid, pending, free_zero = tasks
+        await fail_each(pool, settings, [zero, paid, pending])
+        credits_uuid, _, credit_tasks = await seed_plan(pool, requester=REQUESTER, n_tasks=1)
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE plans SET funding = 'credits' WHERE plan_uuid = %s", (credits_uuid,))
+        await receive(
+            pool,
+            settings,
+            "verdict.recorded",
+            {"task_id": credit_tasks[0], "verdict": "fail", "tx": f"0x{99:064x}"},
+        )
+        del free_zero  # never validated: no row at all
+        costs = gateway({zero: "0", paid: "300000", credit_tasks[0]: "0"})  # `pending` is not known yet
+        assert await record_missing_costs(pool, costs) == 3
         assert await refresh_posteriors(pool, settings) == 1
+
         got = (await posteriors(pool))[("1", "test-repair")]
-        expected = prior(settings).observe(False, 300000.0)
-        assert (got["n"], got["tau"]) == (1, pytest.approx(expected.tau))
+        expected = prior(settings).observe(False, None).observe(False, 300000.0)  # in ledger order
+        assert got["n"] == 2  # the zero-cost failure counts; the pending one and the credits one do not
+        for name in ("alpha", "beta", "kappa", "tau"):
+            assert got[name] == pytest.approx(getattr(expected, name))
+        # beta saw two failures; kappa and tau saw one cost (and one decay before it, from the prior only)
+        assert got["beta"] == pytest.approx(0.95 * (0.95 * 1 + 1) + 1)
+        assert got["kappa"] == pytest.approx(0.95 * 1 + 1)
+        assert got["tau"] == pytest.approx(0.95 * settings.reputation_cost_prior_micros + 300000)
 
     run(database_url, body)

@@ -141,17 +141,17 @@ async def refresh_posteriors(pool: Pool, settings: Settings) -> int:
     prior = Posterior.prior(Params(tau0=float(settings.reputation_cost_prior_micros)))
     async with pool.connection() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('reputation'))")
-        # A recorded cost of 0 is a true copy of the commitment, but outside the cost model (paper §8.3,
-        # c > 0), so that outcome is left out like one whose cost is not known yet; it is never folded with a
-        # made-up cost.
+        # An outcome whose cost is still pending waits (it is never taken as zero). A recorded cost of 0 is a
+        # true copy of the commitment: the outcome's success or failure counts like any other, but the cost
+        # model needs c > 0 (paper §8.3), so it adds nothing to the cost posterior rather than a made-up cost.
         cur = await conn.execute(
             "SELECT agent_id, category, success, cost_micros FROM task_outcomes"
-            " WHERE funding = 'wallet' AND cost_micros > 0 ORDER BY position, task_id"
+            " WHERE funding = 'wallet' AND cost_micros IS NOT NULL ORDER BY position, task_id"
         )
         folded: dict[tuple[str, str], Posterior] = {}
         for agent_id, category, success, cost in await cur.fetchall():
             key = (agent_id, category)
-            folded[key] = folded.get(key, prior).observe(bool(success), float(cost))
+            folded[key] = folded.get(key, prior).observe(bool(success), float(cost) if cost > 0 else None)
         await conn.execute("DELETE FROM agent_posteriors")
         for (agent_id, category), p in sorted(folded.items()):
             await conn.execute(

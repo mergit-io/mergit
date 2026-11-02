@@ -73,7 +73,7 @@ def test_old_evidence_fades() -> None:
 
 
 @pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf")])
-def test_a_cost_that_is_not_a_finite_non_negative_number_is_refused(bad: float) -> None:
+def test_a_cost_that_is_not_a_finite_positive_number_is_refused(bad: float) -> None:
     with pytest.raises(ValueError, match="cost"):
         Posterior.prior(PARAMS).observe(True, cost=bad)
 
@@ -105,3 +105,12 @@ def test_a_zero_cost_is_refused() -> None:
     # overflows to inf after ~14,000 of them (which JSON cannot carry: the reputation endpoint would 500).
     with pytest.raises(ValueError, match="cost"):
         Posterior.prior(PARAMS).observe(True, cost=0.0)
+
+
+def test_an_outcome_without_a_usable_cost_moves_only_the_success_posterior() -> None:
+    # cost=None: the outcome is validated, so the Beta pair decays and increments as always (paper §8.2), and
+    # n counts it; the Gamma pair is untouched, neither decayed nor incremented (no cost evidence, §8.3).
+    p = Posterior.prior(PARAMS).observe(True, 4.0)  # alpha 1.95, beta 0.95, kappa 1.95, tau 5.9
+    q = p.observe(False, None)
+    assert (q.alpha, q.beta) == (pytest.approx(0.95 * 1.95), pytest.approx(0.95 * 0.95 + 1))
+    assert (q.kappa, q.tau, q.n) == (p.kappa, p.tau, 2)
