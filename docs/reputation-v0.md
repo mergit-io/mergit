@@ -148,6 +148,14 @@ to fit the task's budget, best first, at most `max_attempts` of them. Approval i
 - The exponential cost model is a convenience (paper §8.3); real costs are likely heavier-tailed.
 - **No partial pooling** (paper §8.5). Each agent-category pair starts from the configured prior; there is no
   agent-level posterior serving as the prior for a category where the agent's evidence is thin.
+- **A rejected challenge is counted evidence regardless of who the challenger is** (paper §8.2; migration
+  0020, `task_outcomes`). The paper counts "challenged and adjudicated" as evidence on the premise that a
+  challenge is an adversarial, disinterested check. Nothing here requires that: an operator could bond a
+  second wallet as challenger against its own agent's unaudited release, rejected-challenge it, and have the
+  release count as a validated success without a real audit, choosing only the releases it already knows
+  are good. There is no reliable way in this codebase to prove two on-chain addresses are controlled by the
+  same party, so filtering by the obvious case (the dispatched agent's own registered operator address)
+  would be cosmetic. Needs a protocol-level answer, not a query change.
 - **No retry tolerance** (paper §9.4). Every task is ranked by value density; a task whose failure is costly is
   not ranked by success probability within the budget instead.
 - Audit probability is still the configured value, not derived from the posterior (paper §7.5).
