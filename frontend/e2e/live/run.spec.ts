@@ -506,3 +506,38 @@ test("a credits plan over the free-credit cap cannot be approved, and says why",
   await expect(page.getByRole("button", { name: "Approve plan" })).toBeEnabled();
   expect(only(calls, "POST", "/approve")).toEqual([]);
 });
+
+test("double-clicking Draft the plan asks for one plan, under one key", async ({ page }) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page);
+  await page.goto("/app/runs/new");
+  await page.getByLabel("Goal").fill("The refund test in payments/ passes again");
+  await page.getByLabel("Repository").fill("https://github.com/acme/widgets");
+  const draft = page.getByRole("button", { name: "Draft the plan" });
+  await draft.dblclick();
+
+  await expect(page).toHaveURL(new RegExp(`/app/runs/${draftPlan().plan_uuid}$`));
+  const posts = only(calls, "POST", "/v0/plans");
+  expect(posts).toHaveLength(1);
+  expect(posts[0]?.key).toMatch(/^[A-Za-z0-9._:-]{1,100}$/);
+});
+
+test("a draft can be discarded, after one more confirmation, and the list no longer has it", async ({ page }) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await page.getByRole("button", { name: "Discard draft" }).click();
+  expect(only(calls, "DELETE", draftPlan().plan_uuid)).toEqual([]); // asked, not yet done
+  await page.getByRole("button", { name: "Yes, discard it" }).click();
+
+  await expect(page).toHaveURL(/\/app\/runs$/);
+  expect(only(calls, "DELETE", draftPlan().plan_uuid)).toHaveLength(1);
+});
+
+test("an approved plan offers Close, not Discard", async ({ page }) => {
+  await mockBackend(page);
+  await mockPlanApi(page, { plans: [{ ...draftPlan(), state: "approved", funding: "wallet" }] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+  await expect(page.getByRole("button", { name: "Discard draft" })).toHaveCount(0);
+});

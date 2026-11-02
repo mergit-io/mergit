@@ -106,8 +106,8 @@ def create_app(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+        allow_headers=["Content-Type", "Idempotency-Key"],
         expose_headers=["Retry-After"],  # the app says how long to wait after a 429 (redeem codes)
     )
     app.include_router(auth.router)

@@ -26,7 +26,7 @@ prior and says so (`basis: "prior (no counted outcomes)"`).
 
 ## What counts as an outcome (invariant 4)
 
-One row per task, in the view `task_outcomes` (migration 0015, replaced by 0019), which is the only place the
+One row per task, in the view `task_outcomes` (migration 0015, replaced by 0020), which is the only place the
 rule lives. An outcome counts if it was audited or was challenged and adjudicated (paper §8.2):
 
 | Ledger | Counts as |

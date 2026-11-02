@@ -292,7 +292,7 @@ def test_sessions_lists_this_one_as_current(client: TestClient) -> None:
     assert set(listed[0]) == {"created_at", "expires_at", "address", "current"}
 
 
-def test_signing_out_other_devices_keeps_this_one(client: TestClient, configured: Settings) -> None:
+def test_signing_out_other_devices_keeps_this_one(client: TestClient) -> None:
     github_login(client)
     this = client.cookies.get("mergit_session")
     client.cookies.clear()  # a second device: signing in again while already signed in links, not re-sessions

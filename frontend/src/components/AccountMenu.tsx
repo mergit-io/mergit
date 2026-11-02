@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { paths } from "../app/paths";
 import { useAuth } from "../auth/context";
 import { useIdentity } from "../auth/useIdentity";
+import { DATA_MODE } from "../config/live";
 import { Icon } from "./Icon";
 
 /** Avatar button with the signed-in address and Sign out. */
@@ -50,6 +53,19 @@ export function AccountMenu() {
               <span className="mono-s c3">{identity.address}</span>
             )}
           </div>
+          {DATA_MODE === "live" && (
+            <Link
+              to={paths.settings}
+              role="menuitem"
+              className="account-item"
+              onClick={() => {
+                setOpen(false);
+              }}
+            >
+              <Icon name="shield" size={14} />
+              Settings
+            </Link>
+          )}
           <button type="button" role="menuitem" className="account-item" onClick={signOut}>
             <Icon name="external" size={14} />
             Sign out

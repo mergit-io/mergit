@@ -148,8 +148,11 @@ export function attempt(index: number, n: number, over: Partial<FakeAttempt> = {
   };
 }
 
-/** `query` is the URL's search string ("?explore=true"), or "" without one. */
-export type ApiCall = { method: string; path: string; query: string; body: unknown };
+/**
+ * `query` is the URL's search string ("?explore=true"), or "" without one. `key` is the request's
+ * Idempotency-Key header, if it sent one.
+ */
+export type ApiCall = { method: string; path: string; query: string; body: unknown; key?: string };
 
 export type FakeSuggestion = {
   agent_id: string;
@@ -241,7 +244,7 @@ export async function mockPlanApi(
     const path = url.pathname;
     if (path.startsWith("/v0/auth/") || path.startsWith("/v0/account/")) return route.fallback();
     const body: unknown = request.postData() ? request.postDataJSON() : null;
-    calls.push({ method, path, query: url.search, body });
+    calls.push({ method, path, query: url.search, body, key: request.headers()["idempotency-key"] });
 
     if (path === "/v0/agents") return json(route, AGENTS);
     if (path === "/v0/plans" && method === "GET") return json(route, [...plans.values()]);
@@ -254,6 +257,13 @@ export async function mockPlanApi(
     const [, , , uuid = "", action] = path.split("/");
     const plan = plans.get(uuid);
     if (!plan) return json(route, { detail: "no such plan" }, 404);
+
+    if (method === "DELETE" && !action) {
+      if (plan.state !== "draft")
+        return json(route, { detail: `the plan is ${plan.state}; only a draft can change` }, 409);
+      plans.delete(uuid);
+      return route.fulfill({ status: 204, headers: CORS(route) });
+    }
 
     if (action === "events") {
       return route.fulfill({

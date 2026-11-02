@@ -66,26 +66,38 @@ async function toError(response: Response): Promise<ApiError> {
 /** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal. */
 const base = () => (LIVE.apiUrl ? apiBase() : "");
 
-async function request<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${base()}${path}`, {
       method,
       credentials: "include",
-      ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+      ...(body === undefined
+        ? { headers }
+        : { headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
   } catch {
     throw new ApiError(0, "Mergit is unreachable. Check your connection and try again.");
   }
   if (response.status === 401) sessionEnded?.();
   if (!response.ok) throw await toError(response);
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
 const planPath = (planUuid: string) => `/v0/plans/${encodeURIComponent(planUuid)}`;
 
 /** Drafts a plan from a goal. The planner model runs during this call, so it takes a few seconds. */
-export const createPlan = (body: NewPlanRequest) => request<Plan>("POST", "/v0/plans", body);
+export const createPlan = (body: NewPlanRequest, idempotencyKey?: string) =>
+  request<Plan>("POST", "/v0/plans", body, idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey });
+
+/** Throws a draft away, with its tasks. Only a draft: anything approved is closed with `abandonPlan` instead. */
+export const discardPlan = (planUuid: string) => request<undefined>("DELETE", planPath(planUuid));
 
 /** Replaces a draft's tasks. The API checks them exactly as it checks a planner answer. */
 export const editPlan = (planUuid: string, tasks: TaskEdit[]) => request<Plan>("PATCH", planPath(planUuid), { tasks });
