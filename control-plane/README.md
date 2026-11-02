@@ -399,6 +399,14 @@ its key. Each `[agents.<name>]` table then names which provider it uses by `prov
 names its own by `Settings.planner_provider` (`PLANNER_PROVIDER`) — a deployment choice, same as
 `PLANNER_MODEL`, not derived from which keys happen to be set.
 
+The provider key goes to `base_url` as a Bearer token, and `agents.toml` ships with every push to main, so
+`load_providers` refuses a provider that could send a key somewhere new. `base_url` must be https on the
+default port to a host in `_PROVIDER_HOSTS` (`api.groq.com`, `openrouter.ai`), or exactly
+`http://keyrelay:8787` (the compose-internal key rotator, deploy/server/README.md); a URL with credentials
+in it is refused. `api_key_env` must be `<PROVIDER>_API_KEY` in capitals and not start with `MERGIT_`, so it
+cannot name one of Mergit's own secrets (`*_TOKEN`, `*_SECRET`, `*_KEY`, `DATABASE_URL`). An `anthropic`
+provider may not set `base_url`. Adding a provider host is a change to `_PROVIDER_HOSTS`, reviewed as code.
+
 `load_providers` (`mergit_worker/providers.py`) reads every `[providers.*]` table once at start-up; the
 worker builds one client per provider actually used by a *deployed* agent (`ModelClients.build`), so an
 unused provider's key is never required. A run never changes provider or model halfway: the choice is made

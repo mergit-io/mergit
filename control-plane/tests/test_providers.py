@@ -100,6 +100,101 @@ def test_a_malformed_provider_entry_is_a_clear_config_error_not_a_bare_attribute
         load_providers(config)
 
 
+def _openai_chat(tmp_path: Path, base_url: object, api_key_env: object = "OPENROUTER_API_KEY") -> Path:
+    def toml(v: object) -> str:
+        return f'"{v}"' if isinstance(v, str) else str(v).lower()
+
+    config = tmp_path / "agents.toml"
+    config.write_text(
+        '[providers.p]\nkind = "openai_chat"\n'
+        f"base_url = {toml(base_url)}\napi_key_env = {toml(api_key_env)}\n"
+    )
+    return config
+
+
+def test_the_repo_agents_toml_passes_its_own_checks():
+    assert set(load_providers(ROOT / "agents.toml")) >= {"anthropic", "groq", "openrouter"}
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://openrouter.ai/api/v1", "https://api.groq.com/openai/v1", "http://keyrelay:8787/v1"],
+)
+def test_a_known_provider_endpoint_is_accepted(tmp_path: Path, base_url: str):
+    assert load_providers(_openai_chat(tmp_path, base_url))["p"].base_url == base_url
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://attacker.example/v1",  # any host: the key goes out as a Bearer token
+        "https://openrouter.ai.attacker.example/v1",  # a suffix is not the host
+        "https://attacker.example@openrouter.ai/v1",  # credentials in the URL
+        "http://openrouter.ai/api/v1",  # cleartext to a real provider
+        "https://openrouter.ai:8443/api/v1",  # a non-default port
+        "http://keyrelay:9999/v1",  # keyrelay on another port
+        "https://keyrelay:8787/v1",  # keyrelay is http inside compose, not https
+        "file:///etc/passwd",
+        "openrouter.ai/api/v1",  # no scheme
+    ],
+)
+def test_a_base_url_outside_the_allowlist_is_refused(tmp_path: Path, base_url: str):
+    """`OpenAIChatLLM` sends the provider key to `base_url` as a Bearer token, and `agents.toml` ships with
+    every push to main, so an edit to it must not be able to point a key at an arbitrary host."""
+    with pytest.raises(ConfigError, match="base_url"):
+        load_providers(_openai_chat(tmp_path, base_url))
+
+
+@pytest.mark.parametrize(
+    "api_key_env",
+    [
+        "STORE_WRITE_TOKEN",
+        "GITHUB_TOKEN",
+        "WORKER_TOKEN",
+        "SESSION_SECRET",
+        "DATABASE_URL",
+        "TREASURY_KEY",
+        "MERGIT_AGENT_KEY_1",
+        "MERGIT_EXTRA_API_KEY",  # the MERGIT_ namespace is never a model provider's key
+        "openrouter_api_key",
+        "API_KEY",
+        "",
+    ],
+)
+def test_api_key_env_must_name_a_model_provider_key_not_a_mergit_secret(tmp_path: Path, api_key_env: str):
+    """Whatever `api_key_env` names is read from the worker's or the API's environment and sent to the
+    provider, so it must not be able to name one of Mergit's own secrets."""
+    with pytest.raises(ConfigError, match="api_key_env"):
+        load_providers(_openai_chat(tmp_path, "https://openrouter.ai/api/v1", api_key_env))
+
+
+def test_an_anthropic_provider_may_not_set_a_base_url_it_would_ignore(tmp_path: Path):
+    config = tmp_path / "agents.toml"
+    config.write_text('[providers.a]\nkind = "anthropic"\nbase_url = "https://attacker.example"\n')
+    with pytest.raises(ConfigError, match="base_url"):
+        load_providers(config)
+
+
+def test_an_anthropic_provider_key_env_follows_the_same_rule(tmp_path: Path):
+    config = tmp_path / "agents.toml"
+    config.write_text('[providers.a]\nkind = "anthropic"\napi_key_env = "GITHUB_TOKEN"\n')
+    with pytest.raises(ConfigError, match="api_key_env"):
+        load_providers(config)
+    config.write_text('[providers.a]\nkind = "anthropic"\napi_key_env = "SECOND_ANTHROPIC_API_KEY"\n')
+    assert load_providers(config)["a"].api_key_env == "SECOND_ANTHROPIC_API_KEY"
+
+
+@pytest.mark.parametrize("field", ["base_url", "api_key_env"])
+def test_a_non_string_field_is_a_config_error_not_an_attribute_error(tmp_path: Path, field: str):
+    values: dict[str, object] = {
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+    }
+    values[field] = 42
+    with pytest.raises(ConfigError, match=field):
+        load_providers(_openai_chat(tmp_path, values["base_url"], values["api_key_env"]))
+
+
 def _agent_files(tmp_path: Path) -> tuple[Path, Path]:
     chain = tmp_path / "agents.json"
     chain.write_text(

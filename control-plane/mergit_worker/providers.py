@@ -10,15 +10,56 @@ start-up, and a receipt names the model that produced it.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 from .config import ConfigError
 
 _KINDS = ("anthropic", "openai_chat")
+
+# The provider key is sent to `base_url` as a Bearer token, and `agents.toml` ships with every push to main,
+# so an edit to that file alone must not be able to send a key, or any other secret in the worker's or the
+# API's environment, somewhere new. A provider endpoint is therefore one of these hosts over https on the
+# default port, or keyrelay (deploy/server/README.md), which is plain http on the compose network and
+# publishes no port. A new provider host is a change to this list, reviewed as code.
+_PROVIDER_HOSTS = frozenset({"api.groq.com", "openrouter.ai"})
+_KEYRELAY = ("http", "keyrelay", 8787)
+# Every model provider's key is named `<SOMETHING>_API_KEY`, and none of Mergit's own secrets is: they are
+# `*_TOKEN`, `*_SECRET`, `*_KEY`, `DATABASE_URL` or `MERGIT_AGENT_KEY_<id>`. `MERGIT_` is refused outright
+# so a future Mergit secret cannot match by accident.
+_API_KEY_ENV = re.compile(r"[A-Z][A-Z0-9_]*_API_KEY")
+
+
+def _check_base_url(name: str, base_url: str) -> None:
+    try:
+        url = urlsplit(base_url)
+        port = url.port
+    except ValueError as exc:
+        raise ConfigError(f"provider {name!r} has an unreadable base_url {base_url!r}: {exc}") from exc
+    if url.username is not None or url.password is not None:
+        raise ConfigError(f"provider {name!r} base_url must not carry credentials")
+    host = (url.hostname or "").lower()
+    if (url.scheme, host, port) == _KEYRELAY:
+        return
+    if url.scheme != "https" or host not in _PROVIDER_HOSTS or port not in (None, 443):
+        raise ConfigError(
+            f"provider {name!r} base_url {base_url!r} is not an allowed provider endpoint: it must be https "
+            f"on one of {', '.join(sorted(_PROVIDER_HOSTS))}, or http://keyrelay:8787. A new provider host "
+            "is added to _PROVIDER_HOSTS in mergit_worker/providers.py"
+        )
+
+
+def _check_api_key_env(name: str, api_key_env: str) -> None:
+    if not _API_KEY_ENV.fullmatch(api_key_env) or api_key_env.startswith("MERGIT_"):
+        raise ConfigError(
+            f"provider {name!r} api_key_env {api_key_env!r} must name a model provider's key, "
+            "<PROVIDER>_API_KEY in capitals, and never one of Mergit's own secrets"
+        )
 
 
 @dataclass(frozen=True)
@@ -32,7 +73,8 @@ class ProviderSpec:
 def load_providers(agents_config: Path) -> dict[str, ProviderSpec]:
     """Every `[providers.<name>]` table in `agents_config`. An `openai_chat` provider must give `base_url`
     and `api_key_env`; `anthropic` needs neither (`provider_key` falls back to the SDK's own environment
-    variables)."""
+    variables) and may not give a `base_url`, which its client would ignore. Both fields are checked
+    against the rules above, so the file cannot point a key at a new host or name a Mergit secret."""
     tables: dict[str, Any] = tomllib.loads(agents_config.read_text()).get("providers", {})
     providers: dict[str, ProviderSpec] = {}
     for name, table in tables.items():
@@ -44,8 +86,17 @@ def load_providers(agents_config: Path) -> dict[str, ProviderSpec]:
             raise ConfigError(f"provider {name!r} has kind {kind!r}, must be one of {', '.join(_KINDS)}")
         base_url = table.get("base_url")
         api_key_env = table.get("api_key_env")
+        for field, value in (("base_url", base_url), ("api_key_env", api_key_env)):
+            if value is not None and not isinstance(value, str):
+                raise ConfigError(f"provider {name!r} {field} must be a string, got {value!r}")
         if kind == "openai_chat" and (not base_url or not api_key_env):
             raise ConfigError(f"provider {name!r} needs base_url and api_key_env for kind openai_chat")
+        if kind == "anthropic" and base_url is not None:
+            raise ConfigError(f"provider {name!r} of kind anthropic does not use base_url; remove it")
+        if base_url is not None:
+            _check_base_url(str(name), base_url)
+        if api_key_env is not None:
+            _check_api_key_env(str(name), api_key_env)
         providers[str(name)] = ProviderSpec(
             name=str(name), kind=kind, base_url=base_url, api_key_env=api_key_env
         )
