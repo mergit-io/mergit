@@ -1,13 +1,12 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
-import { useSuggestions } from "../../../api/useSuggestions";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
 import { useNavigate } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { creditProblem } from "../../../chain/creditLimits";
-import { formatUsdc, parseUsdc } from "../../../chain/funding";
+import { formatUsdc } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon } from "../../../components/Icon";
 import { Segmented } from "../../../components/Segmented";
@@ -22,7 +21,8 @@ import {
   type TaskForm,
 } from "./draft";
 import { Problems } from "./Problems";
-import { SuggestionsPanel } from "./SuggestionsPanel";
+import { SuggestAgents } from "./SuggestAgents";
+import { applySuggestions } from "./suggest";
 import { TaskDraftCard } from "./TaskDraftCard";
 import { DiscardDraft } from "./DiscardDraft";
 import { useSubmit } from "./useSubmit";
@@ -59,13 +59,6 @@ export function DraftPlanEditor({
   const total = totalBudget(forms);
   // The API refuses an over-limit credits plan too; saying so here keeps the button from inviting a refusal.
   const creditLimit = funding === "Free credits" ? creditProblem(credits, total) : null;
-  // Advice only: the suggestions can fill the pick slots, and approval still sends whatever the slots hold.
-  const saved = plan.tasks.map((t) => t.budget_usdc_units).join(",");
-  const advice = useSuggestions(plan.plan_uuid, saved);
-  const budgetsEdited = forms.some(
-    (f) => parseUsdc(f.budget)?.toString() !== plan.tasks.find((t) => t.index === f.index)?.budget_usdc_units,
-  );
-  const noteId = useId();
 
   const update = (next: TaskForm) => {
     setForms((list) => list.map((f) => (f.index === next.index ? next : f)));
@@ -99,24 +92,8 @@ export function DraftPlanEditor({
   return (
     <section className="lr-draft">
       <div className="col g16 min0">
-        <SuggestionsPanel
-          suggestions={advice.suggestions}
-          error={advice.error}
-          loading={advice.loading}
-          stale={budgetsEdited}
-          noteId={noteId}
-          onExplore={advice.setExplore}
-        />
         {forms.map((form) => (
-          <TaskDraftCard
-            key={form.index}
-            form={form}
-            agents={agents ?? []}
-            onChange={update}
-            suggestion={advice.suggestions?.tasks.find((t) => t.index === form.index)}
-            mode={advice.suggestions?.mode}
-            noteId={noteId}
-          />
+          <TaskDraftCard key={form.index} form={form} agents={agents ?? []} onChange={update} />
         ))}
       </div>
       <aside className="card pad24 col g16 lr-approve" aria-label="Approve the plan">
@@ -128,6 +105,12 @@ export function DraftPlanEditor({
           </span>
           <span className="small c3">of {formatUsdc(BigInt(plan.budget_usdc_units))} USDC you offered</span>
         </div>
+        <SuggestAgents
+          planUuid={plan.plan_uuid}
+          onUse={(suggestions) => {
+            setForms((list) => applySuggestions(list, suggestions));
+          }}
+        />
         <div className="col g8">
           <span className="cap">Pay with</span>
           <Segmented

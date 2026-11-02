@@ -1,4 +1,4 @@
-import type { AgentInfo, ApproveRequest, Funding, Phi, Plan, TaskEdit, TaskSuggestions } from "../../../api/types";
+import type { ApproveRequest, Funding, Phi, Plan, TaskEdit } from "../../../api/types";
 import { parseUsdc, usdcText } from "../../../chain/funding";
 
 /** The requester's picks per task: the agent that runs, then the retries in order (plan task O3). */
@@ -89,18 +89,6 @@ export function hasEdits(plan: Plan, forms: TaskForm[]): boolean {
 
 export function toApproval(forms: TaskForm[], funding: Funding): ApproveRequest {
   return { agents: Object.fromEntries(forms.map((f) => [String(f.index), f.agents])), funding };
-}
-
-/**
- * What "Use suggestion" puts in a task's pick slots: the suggested order, at most MAX_PICKS of it. The API
- * already caps it and never suggests an agent it lists as left out; this holds either way, and also skips an
- * agent the pick list could not show (one missing from the roster), so the slots match what is filled.
- */
-export function suggestedPicks(suggestion: TaskSuggestions, agents: AgentInfo[]): string[] {
-  const leftOut = new Set(suggestion.ineligible.map((a) => a.agent_id));
-  const listed = new Set(agents.map((a) => a.agent_id));
-  const ids = suggestion.picks.map((p) => p.agent_id).filter((id) => listed.has(id) && !leftOut.has(id));
-  return [...new Set(ids)].slice(0, MAX_PICKS);
 }
 
 export function totalBudget(forms: TaskForm[]): bigint {

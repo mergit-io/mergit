@@ -62,6 +62,46 @@ export const AGENTS = [
   { agent_id: "2", name: "coder-b", model: "claude-opus-5-5" },
 ];
 
+/** What GET /v0/agents/reputation answers (written out here, as the API's contract, not imported from the app). */
+export const REPUTATION_NOTE =
+  "Derived from validated outcomes only. Work funded from free credits is not counted. Where no outcome is counted the figures are the prior, which is configuration, not a measurement.";
+
+export type FakeReputation = {
+  agent_id: string;
+  name: string;
+  category: string;
+  basis: string;
+  counted_outcomes: number;
+  uncounted_credit_outcomes: number;
+  success_mean: number;
+  cost_mean_micros: number;
+  value_density_per_usdc: number;
+  effective_sample_size: number;
+};
+
+export const SEASONED: FakeReputation = {
+  agent_id: "2",
+  name: "coder-b",
+  category: "test-repair",
+  basis: "validated outcomes",
+  counted_outcomes: 7,
+  uncounted_credit_outcomes: 2,
+  success_mean: 0.8,
+  cost_mean_micros: 400_000,
+  value_density_per_usdc: 2,
+  effective_sample_size: 9.1,
+};
+
+const suggestedPick = (agent_id: string, name: string, counted: number, unproven: boolean) => ({
+  agent_id,
+  name,
+  score_per_usdc: 2,
+  assumed_success: 0.8,
+  assumed_cost_micros: 400_000,
+  counted_outcomes: counted,
+  unproven,
+});
+
 export const PHI = {
   kind: "exec/0",
   command: ["pytest", "tests/test_refund.py", "-q"],
@@ -148,55 +188,7 @@ export function attempt(index: number, n: number, over: Partial<FakeAttempt> = {
   };
 }
 
-/**
- * `query` is the URL's search string ("?explore=true"), or "" without one. `key` is the request's
- * Idempotency-Key header, if it sent one.
- */
-export type ApiCall = { method: string; path: string; query: string; body: unknown; key?: string };
-
-export type FakeSuggestion = {
-  agent_id: string;
-  name: string;
-  score_per_usdc: number;
-  assumed_success: number;
-  assumed_cost_micros: number;
-  counted_outcomes: number;
-  unproven: boolean;
-  /** No cost recorded yet: `assumed_cost_micros` is only the configured prior. Absent from older answers. */
-  cost_is_prior?: boolean;
-};
-
-export type FakeTaskSuggestions = {
-  index: number;
-  budget_usdc_units: string;
-  picks: FakeSuggestion[];
-  ineligible: Array<{ agent_id: string; name: string; reason: string }>;
-  reason?: string;
-};
-
-/** The control plane's note, word for word (`routes_routing.NOTE`). */
-export const SUGGESTIONS_NOTE =
-  "A suggestion, not an assignment: you still choose the agents when you approve. It ranks agents by " +
-  "validated success per unit cost in this category, from outcomes the platform recorded; free-credit work " +
-  "is not counted. An agent with few counted outcomes is marked unproven, and the platform does not yet " +
-  "cover the cost of an unproven agent that fails, so choosing one can cost you.";
-
-export const suggestion = (over: Partial<FakeSuggestion> = {}): FakeSuggestion => ({
-  agent_id: "1",
-  name: "coder-a",
-  score_per_usdc: 4.8,
-  assumed_success: 0.72,
-  assumed_cost_micros: 150_000,
-  counted_outcomes: 12,
-  unproven: false,
-  cost_is_prior: false,
-  ...over,
-});
-
-/** `GET /v0/plans/{uuid}/suggestions` for `draftPlan()`, as the control plane answers it in `mode`. */
-export function suggestionsFor(mode: "greedy" | "explore", tasks: FakeTaskSuggestions[]) {
-  return { plan_id: PLAN_ID, mode, seed: mode === "explore" ? 424242 : null, note: SUGGESTIONS_NOTE, tasks };
-}
+export type ApiCall = { method: string; path: string; body: unknown; key?: string };
 
 const sseBody = (events: FakeEvent[]) =>
   // A long retry, so the browser does not reconnect while a test is still asserting.
@@ -214,11 +206,8 @@ export async function mockPlanApi(
     events?: FakeEvent[];
     /** The pull-request step. `after` is what the worker reports on each poll once the request is queued. */
     pr?: { after: Array<"running" | "done" | "error"> };
-    /**
-     * What `GET .../suggestions` answers, per `explore`: a body, or a status to fail with. Without it the
-     * route is unknown (404), as against a control plane that has no suggestions.
-     */
-    suggestions?: { greedy: unknown; explore?: unknown } | { status: number };
+    /** What GET /v0/agents/reputation lists. Default: nothing validated yet. */
+    reputation?: FakeReputation[];
   } = {},
 ) {
   let prState: "none" | "queued" | "running" | "done" | "error" = "none";
@@ -240,13 +229,13 @@ export async function mockPlanApi(
     const request = route.request();
     const method = request.method();
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers: CORS(route) });
-    const url = new URL(request.url());
-    const path = url.pathname;
+    const path = new URL(request.url()).pathname;
     if (path.startsWith("/v0/auth/") || path.startsWith("/v0/account/")) return route.fallback();
     const body: unknown = request.postData() ? request.postDataJSON() : null;
-    calls.push({ method, path, query: url.search, body, key: request.headers()["idempotency-key"] });
+    calls.push({ method, path, body, key: request.headers()["idempotency-key"] });
 
     if (path === "/v0/agents") return json(route, AGENTS);
+    if (path === "/v0/agents/reputation") return json(route, { note: REPUTATION_NOTE, agents: opts.reputation ?? [] });
     if (path === "/v0/plans" && method === "GET") return json(route, [...plans.values()]);
     if (path === "/v0/plans" && method === "POST") {
       const created = structuredClone(opts.created ?? draftPlan());
@@ -272,16 +261,23 @@ export async function mockPlanApi(
         body: sseBody([{ event: "plan.state", data: { state: plan.state } }, ...(opts.events ?? [])]),
       });
     }
-    if (method === "GET" && !action) return json(route, plan);
-    if (method === "GET" && action === "suggestions" && opts.suggestions) {
-      const s = opts.suggestions;
-      if ("status" in s) return json(route, { detail: "suggestions are unavailable" }, s.status);
-      if (plan.state !== "draft") {
+    if (method === "GET" && action === "suggestions") {
+      const explore = new URL(request.url()).searchParams.get("explore") === "true";
+      if (plan.state !== "draft")
         return json(route, { detail: `the plan is ${plan.state}; suggestions are for drafts` }, 409);
-      }
-      const explore = url.searchParams.get("explore") === "true";
-      return json(route, explore ? (s.explore ?? s.greedy) : s.greedy);
+      // Greedy: the seasoned agent first. Exploring: the same, plus an unproven agent as the retry.
+      const picks = explore
+        ? [suggestedPick("2", "coder-b", 7, false), suggestedPick("1", "coder-a", 0, true)]
+        : [suggestedPick("2", "coder-b", 7, false)];
+      return json(route, {
+        plan_id: plan.plan_id,
+        mode: explore ? "explore" : "greedy",
+        seed: explore ? 12345 : null,
+        note: "A suggestion, not an assignment: you still choose the agents when you approve.",
+        tasks: plan.tasks.map((t) => ({ index: t.index, budget_usdc_units: t.budget_usdc_units, picks })),
+      });
     }
+    if (method === "GET" && !action) return json(route, plan);
     if (method === "PATCH" && !action) {
       const { tasks } = body as { tasks: Array<Omit<FakeTask, "index" | "phi_hash" | "agents">> };
       plan.tasks = tasks.map((t, index) => ({ ...t, index, phi_hash: null, agents: null }));

@@ -54,19 +54,30 @@ export function parseAccount(body: unknown): Account | null {
 /** What the server says about the session cookie: `expired` when there is none, `unknown` when it cannot be asked. */
 export type AccountCheck = { status: "valid"; account: Account } | { status: "expired" } | { status: "unknown" };
 
-const askServer = () => fetch(`${apiBase()}/v0/auth/me`, { credentials: "include" });
+/**
+ * Asks who is signed in. `/v0/auth/session` answers `200 null` for nobody, where `/v0/auth/me` answers 401, and a
+ * 401 is printed in red in the console of every signed-out visitor on every page load. An API from before that route
+ * existed answers 404, and is asked the strict way instead.
+ */
+export async function askServer(request: typeof fetch = fetch): Promise<Response> {
+  const base = apiBase();
+  const response = await request(`${base}/v0/auth/session`, { credentials: "include" });
+  return response.status === 404 ? request(`${base}/v0/auth/me`, { credentials: "include" }) : response;
+}
 
 /**
- * The browser remembers a session in localStorage, but the real one is a cookie that expires (12 hours) and does not
- * survive the API losing its database. A server that cannot be reached leaves the remembered session alone: an outage
- * must not sign people out.
+ * The browser remembers a session in localStorage, but the real one is a cookie that expires and does not survive the
+ * API losing its database. A server that cannot be reached leaves the remembered session alone: an outage must not
+ * sign people out.
  */
 export async function fetchAccount(fetchMe: () => Promise<Response> = askServer): Promise<AccountCheck> {
   try {
     const response = await fetchMe();
     if (response.status === 401) return { status: "expired" };
     if (!response.ok) return { status: "unknown" };
-    const account = parseAccount(await response.json());
+    const body: unknown = await response.json();
+    if (body === null) return { status: "expired" }; // the quiet probe's "nobody is signed in"
+    const account = parseAccount(body);
     return account ? { status: "valid", account } : { status: "unknown" };
   } catch {
     return { status: "unknown" };

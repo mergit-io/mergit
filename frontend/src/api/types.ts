@@ -69,6 +69,52 @@ export type PlanSummary = Pick<
 
 export type AgentInfo = { agent_id: string; name: string; model: string };
 
+/** One agent in one category, as `GET /v0/agents/reputation` reports it. Costs are USDC base units (micros). */
+export type AgentReputation = {
+  agent_id: string;
+  name: string;
+  category: string;
+  /** "validated outcomes", or "prior (no counted outcomes)" when the figures are only configuration. */
+  basis: string;
+  counted_outcomes: number;
+  /** Outcomes funded from free credits: shown, never counted. */
+  uncounted_credit_outcomes: number;
+  success_mean: number;
+  cost_mean_micros: number;
+  /** Success per USDC. */
+  value_density_per_usdc: number;
+  effective_sample_size: number;
+};
+
+export type ReputationResponse = { note: string; agents: AgentReputation[] };
+
+export type SuggestedPick = {
+  agent_id: string;
+  name: string;
+  score_per_usdc: number;
+  assumed_success: number;
+  assumed_cost_micros: number;
+  counted_outcomes: number;
+  /** Too few counted outcomes to trust. The platform does not yet cover the cost if an unproven agent fails. */
+  unproven: boolean;
+};
+
+export type TaskSuggestion = {
+  index: number;
+  budget_usdc_units: string;
+  picks: SuggestedPick[];
+  /** Why there are no picks, when there are none. */
+  reason?: string;
+};
+
+export type Suggestions = {
+  plan_id: string;
+  mode: "greedy" | "explore";
+  seed: number | null;
+  note: string;
+  tasks: TaskSuggestion[];
+};
+
 export type StepCost = {
   model: string | null;
   input_tokens: number;
@@ -98,47 +144,3 @@ export type ApproveRequest = {
 };
 
 export type ApproveResponse = { plan_id: Hex; total_budget_usdc_units: string };
-
-/** One agent the control plane suggests for a task, best first. Advice only: `/approve` is unchanged. */
-export type Suggestion = {
-  agent_id: string;
-  name: string;
-  score_per_usdc: number;
-  /**
-   * Chance of passing the check, 0 to 1: the posterior mean in `greedy` mode, one random draw in `explore`
-   * mode. Only the prior when `counted_outcomes` is 0.
-   */
-  assumed_success: number;
-  /** Cost of one run, micro-USD (the same scale as USDC base units); a mean or one draw, as above. */
-  assumed_cost_micros: number;
-  counted_outcomes: number;
-  /** Too few counted outcomes for the platform to vouch for it; a failed run is not covered. */
-  unproven: boolean;
-  /**
-   * No cost recorded for this agent yet (even with counted outcomes, if all metered 0), so
-   * `assumed_cost_micros` is only the configured prior. Older control planes omit it, and the client then
-   * reads it as `null`: unknown, neither measured nor only the prior.
-   */
-  cost_is_prior: boolean | null;
-};
-
-/** A roster agent left out of a task's suggestions, with why, as a sentence to show as it is. */
-export type IneligibleAgent = { agent_id: string; name: string; reason: string };
-
-export type TaskSuggestions = {
-  index: number;
-  budget_usdc_units: string;
-  picks: Suggestion[];
-  ineligible: IneligibleAgent[];
-  /** Only when `picks` is empty: why, as a sentence to show as it is. */
-  reason?: string;
-};
-
-export type SuggestionsResponse = {
-  plan_id: Hex;
-  /** `greedy` ranks by expected value; `explore` is one random (Thompson) draw, recorded with its `seed`. */
-  mode: "greedy" | "explore";
-  seed: number | null;
-  note: string;
-  tasks: TaskSuggestions[];
-};

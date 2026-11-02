@@ -1,26 +1,17 @@
-import type { AgentInfo, SuggestionsResponse, TaskSuggestions } from "../../../api/types";
+import type { AgentInfo } from "../../../api/types";
 import { AgentPicks } from "./AgentPicks";
 import type { TaskForm } from "./draft";
 import { TextAreaField, TextField } from "./fields";
 
-/**
- * One drafted task, editable: what the agent is told, the check that decides it is done, its budget, and the
- * agents, with the control plane's suggestions for this task under the picks when they have loaded.
- */
+/** One drafted task, editable: what the agent is told, the check that decides it is done, its budget. */
 export function TaskDraftCard({
   form,
   agents,
   onChange,
-  suggestion,
-  mode,
-  noteId,
 }: {
   form: TaskForm;
   agents: AgentInfo[];
   onChange: (form: TaskForm) => void;
-  suggestion?: TaskSuggestions;
-  mode?: SuggestionsResponse["mode"];
-  noteId?: string;
 }) {
   const name = `Task ${String(form.index + 1)}`;
   const set =
@@ -47,15 +38,7 @@ export function TaskDraftCard({
       </span>
       <div className="lr-task-foot">
         <TextField label="Budget (USDC)" value={form.budget} onChange={set("budget")} inputMode="decimal" />
-        <AgentPicks
-          task={name}
-          agents={agents}
-          picks={form.agents}
-          onChange={set("agents")}
-          suggestion={suggestion}
-          mode={mode}
-          noteId={noteId}
-        />
+        <AgentPicks task={name} agents={agents} picks={form.agents} onChange={set("agents")} />
       </div>
     </fieldset>
   );

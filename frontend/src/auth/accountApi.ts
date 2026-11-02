@@ -2,16 +2,33 @@ import { apiBase, authBase } from "../chain/wallet";
 import { NoAccountError, type Intent } from "./intent";
 import type { Providers } from "./signInOptions";
 
-/** The sign-in methods the server has set up, or null when it cannot be asked. */
-export async function fetchProviders(): Promise<Providers | null> {
-  try {
-    const response = await fetch(`${apiBase()}/v0/auth/providers`, { credentials: "include" });
-    if (!response.ok) return null;
-    const b = (await response.json()) as Record<string, unknown>;
-    return { wallet: true, github: b.github === true, google: b.google === true, email: b.email === true };
-  } catch {
-    return null;
-  }
+let providers: Promise<Providers | null> | null = null;
+
+/** Forgets the remembered answer (tests; a failed answer forgets itself). */
+export function resetProvidersCache(): void {
+  providers = null;
+}
+
+/**
+ * The sign-in methods the server has set up, or null when it cannot be asked. Asked once per page and shared: the
+ * Connect window, the sign-in page, Settings and New run all want it, and each used to ask again. A failure is not
+ * remembered, so the next one to ask tries again.
+ */
+export function fetchProviders(): Promise<Providers | null> {
+  providers ??= (async (): Promise<Providers | null> => {
+    try {
+      const response = await fetch(`${apiBase()}/v0/auth/providers`, { credentials: "include" });
+      if (!response.ok) return null;
+      const b = (await response.json()) as Record<string, unknown>;
+      return { wallet: true, github: b.github === true, google: b.google === true, email: b.email === true };
+    } catch {
+      return null;
+    }
+  })().then((answer) => {
+    if (answer === null) providers = null;
+    return answer;
+  });
+  return providers;
 }
 
 /** Where the browser goes to sign in with GitHub or Google. A full-page navigation: the provider redirects back. */

@@ -89,16 +89,6 @@
   position: sticky;
   top: 16px;
 }
-/* Suggested agents under a task's picks: advice, set apart from the slots by a hairline. */
-.lr-suggested {
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.lr-suggested ol,
-.lr-suggested ul {
-  list-style: none;
-}
 
 /* Funding and the run view */
 .lr-funding {
