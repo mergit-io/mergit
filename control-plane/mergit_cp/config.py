@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     """Slack on the task budget when a suggestion skips an agent whose cost would not fit (paper §9.3)."""
     routing_min_observations: int = Field(default=5, ge=1)
     """Counted outcomes below which a suggested agent is called unproven."""
+    routing_probation_s: int = Field(default=604800, gt=0)
+    """How long, in seconds, an operator's agents are left out of suggestions after a proven falsification on
+    any of their tasks (an invalid verdict or an upheld challenge, whatever the plan's funding). Paper §7.5
+    iii sets ``p = 1`` for a probationary period without fixing its length, and audits rather than excludes;
+    exclusion and seven days are our parameterisation, not the paper's."""
+    routing_operator_concurrency_cap: int = Field(default=5, ge=1)
+    """Unresolved dispatches (no release or return yet) an operator's agents may hold between them before
+    its agents are left out of suggestions. Paper §7.5 ii caps concurrent exposure per operator and sizes
+    the audit rate for the cap; nothing here sizes an audit rate yet. The value 5 (one column of the paper's
+    table) and counting from dispatch rather than from execution are our parameterisation, not the paper's."""
     suggestions_per_hour: int = Field(default=60, ge=1)
     """Exploring suggestions per requester per hour. Each one appends a replay record per task to
     ``routing_decisions``, which is append-only; greedy suggestions write nothing and are not limited."""
