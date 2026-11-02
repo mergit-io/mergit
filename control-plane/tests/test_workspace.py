@@ -219,6 +219,31 @@ def test_list_files_does_not_crash_on_a_very_deep_directory_tree(sandbox: Proces
     sandbox.workspace.list_files(".")  # must return, not raise RecursionError
 
 
+def test_list_files_on_a_wide_tree_does_not_run_out_of_descriptors(sandbox: ProcessSandbox):
+    """Descriptors must grow with depth, not with the number of directories: holding one per directory
+    made a normal checkout fail under a 1024 soft limit. Run it under a limit far below the count."""
+    import resource
+
+    for i in range(300):
+        (sandbox.workspace.work / f"d{i:03d}").mkdir()
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    in_use = len(os.listdir("/proc/self/fd"))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (in_use + 64, hard))
+    try:
+        listing = sandbox.workspace.list_files(".")
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert "d000/" in listing and "d299/" in listing
+
+
+def test_list_files_closes_every_descriptor_it_opened(sandbox: ProcessSandbox):
+    (sandbox.workspace.work / "a" / "b").mkdir(parents=True)
+    (sandbox.workspace.work / "c").mkdir()
+    before = len(os.listdir("/proc/self/fd"))
+    sandbox.workspace.list_files(".")
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
 def test_opening_a_fifo_does_not_hang(sandbox: ProcessSandbox):
     """An agent-made named pipe must fail the open fast, not block the worker waiting for a reader or
     writer that will never come."""

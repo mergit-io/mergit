@@ -5,8 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-TRUNCATION_MARKER = b"\n[mergit: output truncated at 1048576 bytes]\n"
 OUTPUT_CAP_BYTES = 1_048_576
+
+
+def truncation_marker(cap: int) -> bytes:
+    """The line that ends truncated output. It names the cutoff actually applied, so a deployment that sets
+    `MAX_OUTPUT_BYTES` does not ship a receipt that claims a different one."""
+    return f"\n[mergit: output truncated at {cap} bytes]\n".encode()
+
+
+# spec/receipt-v0.md fixes this literal for the default 1 MiB cap.
+TRUNCATION_MARKER = truncation_marker(OUTPUT_CAP_BYTES)
 
 
 def cap_output(data: bytes, cap: int = OUTPUT_CAP_BYTES) -> bytes:
@@ -14,7 +23,7 @@ def cap_output(data: bytes, cap: int = OUTPUT_CAP_BYTES) -> bytes:
     The digest of the step covers exactly the returned bytes."""
     if len(data) <= cap:
         return data
-    return data[:cap] + TRUNCATION_MARKER
+    return data[:cap] + truncation_marker(cap)
 
 
 @dataclass(frozen=True, slots=True)

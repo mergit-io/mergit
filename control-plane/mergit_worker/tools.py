@@ -16,7 +16,7 @@ from typing import Any, cast
 from .llm import ToolCall
 from .meter import Cost, tool_cost
 from .models import cap_output
-from .sandbox import SandboxPort
+from .sandbox import SandboxError, SandboxPort
 from .workspace import WorkspaceError
 
 Recorder = Callable[[str, bytes, bytes, int | None, Cost], int]
@@ -115,7 +115,7 @@ class ToolBox:
             step_type, output, exit_status, outcome = handler(self, call.input)
             is_error, finished = outcome.is_error, outcome.finished
             shown = outcome.content
-        except (_BadCall, WorkspaceError, OSError) as exc:
+        except (_BadCall, WorkspaceError, SandboxError, OSError) as exc:
             output = str(exc).encode()
             is_error, finished, shown = True, False, str(exc)
         wall_ms = int((time.monotonic() - started) * 1000)
