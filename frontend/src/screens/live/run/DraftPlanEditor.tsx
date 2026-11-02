@@ -21,6 +21,8 @@ import {
   type TaskForm,
 } from "./draft";
 import { Problems } from "./Problems";
+import { SuggestAgents } from "./SuggestAgents";
+import { applySuggestions } from "./suggest";
 import { TaskDraftCard } from "./TaskDraftCard";
 import { DiscardDraft } from "./DiscardDraft";
 import { useSubmit } from "./useSubmit";
@@ -103,6 +105,12 @@ export function DraftPlanEditor({
           </span>
           <span className="small c3">of {formatUsdc(BigInt(plan.budget_usdc_units))} USDC you offered</span>
         </div>
+        <SuggestAgents
+          planUuid={plan.plan_uuid}
+          onUse={(suggestions) => {
+            setForms((list) => applySuggestions(list, suggestions));
+          }}
+        />
         <div className="col g8">
           <span className="cap">Pay with</span>
           <Segmented

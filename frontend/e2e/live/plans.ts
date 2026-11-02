@@ -62,6 +62,46 @@ export const AGENTS = [
   { agent_id: "2", name: "coder-b", model: "claude-opus-5-5" },
 ];
 
+/** What GET /v0/agents/reputation answers (written out here, as the API's contract, not imported from the app). */
+export const REPUTATION_NOTE =
+  "Derived from validated outcomes only. Work funded from free credits is not counted. Where no outcome is counted the figures are the prior, which is configuration, not a measurement.";
+
+export type FakeReputation = {
+  agent_id: string;
+  name: string;
+  category: string;
+  basis: string;
+  counted_outcomes: number;
+  uncounted_credit_outcomes: number;
+  success_mean: number;
+  cost_mean_micros: number;
+  value_density_per_usdc: number;
+  effective_sample_size: number;
+};
+
+export const SEASONED: FakeReputation = {
+  agent_id: "2",
+  name: "coder-b",
+  category: "test-repair",
+  basis: "validated outcomes",
+  counted_outcomes: 7,
+  uncounted_credit_outcomes: 2,
+  success_mean: 0.8,
+  cost_mean_micros: 400_000,
+  value_density_per_usdc: 2,
+  effective_sample_size: 9.1,
+};
+
+const suggestedPick = (agent_id: string, name: string, counted: number, unproven: boolean) => ({
+  agent_id,
+  name,
+  score_per_usdc: 2,
+  assumed_success: 0.8,
+  assumed_cost_micros: 400_000,
+  counted_outcomes: counted,
+  unproven,
+});
+
 export const PHI = {
   kind: "exec/0",
   command: ["pytest", "tests/test_refund.py", "-q"],
@@ -166,6 +206,8 @@ export async function mockPlanApi(
     events?: FakeEvent[];
     /** The pull-request step. `after` is what the worker reports on each poll once the request is queued. */
     pr?: { after: Array<"running" | "done" | "error"> };
+    /** What GET /v0/agents/reputation lists. Default: nothing validated yet. */
+    reputation?: FakeReputation[];
   } = {},
 ) {
   let prState: "none" | "queued" | "running" | "done" | "error" = "none";
@@ -193,6 +235,7 @@ export async function mockPlanApi(
     calls.push({ method, path, body, key: request.headers()["idempotency-key"] });
 
     if (path === "/v0/agents") return json(route, AGENTS);
+    if (path === "/v0/agents/reputation") return json(route, { note: REPUTATION_NOTE, agents: opts.reputation ?? [] });
     if (path === "/v0/plans" && method === "GET") return json(route, [...plans.values()]);
     if (path === "/v0/plans" && method === "POST") {
       const created = structuredClone(opts.created ?? draftPlan());
@@ -216,6 +259,22 @@ export async function mockPlanApi(
         status: 200,
         headers: { ...CORS(route), "content-type": "text/event-stream", "cache-control": "no-cache" },
         body: sseBody([{ event: "plan.state", data: { state: plan.state } }, ...(opts.events ?? [])]),
+      });
+    }
+    if (method === "GET" && action === "suggestions") {
+      const explore = new URL(request.url()).searchParams.get("explore") === "true";
+      if (plan.state !== "draft")
+        return json(route, { detail: `the plan is ${plan.state}; suggestions are for drafts` }, 409);
+      // Greedy: the seasoned agent first. Exploring: the same, plus an unproven agent as the retry.
+      const picks = explore
+        ? [suggestedPick("2", "coder-b", 7, false), suggestedPick("1", "coder-a", 0, true)]
+        : [suggestedPick("2", "coder-b", 7, false)];
+      return json(route, {
+        plan_id: plan.plan_id,
+        mode: explore ? "explore" : "greedy",
+        seed: explore ? 12345 : null,
+        note: "A suggestion, not an assignment: you still choose the agents when you approve.",
+        tasks: plan.tasks.map((t) => ({ index: t.index, budget_usdc_units: t.budget_usdc_units, picks })),
       });
     }
     if (method === "GET" && !action) return json(route, plan);

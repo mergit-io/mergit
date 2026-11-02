@@ -9,6 +9,8 @@ import type {
   Plan,
   PlanDetail,
   PlanSummary,
+  ReputationResponse,
+  Suggestions,
   TaskEdit,
 } from "./types";
 
@@ -113,6 +115,13 @@ export const listPlans = () => request<PlanSummary[]>("GET", "/v0/plans");
 export const getPlan = (planUuid: string) => request<PlanDetail>("GET", planPath(planUuid));
 
 export const listAgents = () => request<AgentInfo[]>("GET", "/v0/agents");
+
+/** Every agent-category pair with validated outcomes. Until there are any, the list is empty. */
+export const getReputation = () => request<ReputationResponse>("GET", "/v0/agents/reputation");
+
+/** Advice for a draft plan's agent picks. `explore` asks for a seeded Thompson draw instead of the greedy ranking. */
+export const getSuggestions = (planUuid: string, explore: boolean) =>
+  request<Suggestions>("GET", `${planPath(planUuid)}/suggestions${explore ? "?explore=true" : ""}`);
 
 /** Server-Sent Events for one plan. Open with `withCredentials: true`, or the session cookie is not sent. */
 export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid)}/events`;
