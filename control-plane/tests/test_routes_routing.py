@@ -7,20 +7,30 @@ Run with `pytest -m postgres`.
 # (the imported fixtures are used by name, so their parameters look like redefinitions)
 from __future__ import annotations
 
+import json
 import random
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from mergit_cp.agents import Agent
 from mergit_cp.app import create_app
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool
+from mergit_cp.eligibility import AT_CAP, IN_PROBATION
 from mergit_cp.reputation import record_missing_costs, refresh_posteriors
 from mergit_cp.reputation_model import Posterior
-from mergit_cp.routing import rank
+from mergit_cp.routes_routing import ALL_LEFT_OUT, NO_FIT, NO_FIT_ON_PRIOR_ALONE
+from mergit_cp.routing import BELOW_MAX_ATTEMPTS, OVER_BUDGET, OVER_BUDGET_IN_THIS_DRAW, rank
 from tests.cp_fakes import FakeLLM
 from tests.test_api import seed_plan
+from tests.test_eligibility import dispatch, invalid_verdict
 from tests.test_plans import app_client, create, llm, settings, sign_in  # noqa: F401  (fixtures)
 from tests.test_reputation import gateway, run
 from tests.test_reputation_outcomes import verdict
@@ -92,15 +102,17 @@ def test_an_exploring_answer_is_recorded_and_can_be_replayed(app_client: TestCli
         candidates = {
             c["agent_id"]: Posterior(c["alpha"], c["beta"], c["kappa"], c["tau"], c["n"]) for c in snapshot
         }  # type: ignore[arg-type]
-        replay = rank(
+        replay, _ = rank(
             candidates,
             500_000.0,
             explore=True,
             epsilon=settings.routing_epsilon,
             min_observations=settings.routing_min_observations,
+            min_feasible_probability=settings.routing_min_feasible_probability,
             rng=random.Random(f"{seed}/{index}"),
-        )[: settings.max_attempts]
-        assert [p.agent_id for p in replay] == [p["agent_id"] for p in got["tasks"][index]["picks"]]
+        )
+        picked = [p.agent_id for p in replay[: settings.max_attempts]]
+        assert picked == [p["agent_id"] for p in got["tasks"][index]["picks"]]
 
 
 def test_free_credit_work_does_not_change_a_suggestion(
@@ -158,3 +170,255 @@ def test_exploring_suggestions_are_rate_limited_per_requester(settings: Settings
         other = create(c)
         theirs = f"/v0/plans/{other['plan_uuid']}/suggestions"
         assert c.get(theirs, params={"explore": "true"}).status_code == 200
+
+
+# Why each agent is left out: every roster agent is in a task's picks or in its ineligible list, once.
+
+OPERATORS = {str(i): "0x" + c * 40 for i, c in zip(range(1, 6), "abcde", strict=True)}
+PRICEY = Posterior(8.0, 3.0, 10.0, 20_000_000.0, 10)  # mean cost 2M against a 500k task, on evidence
+EXCELLENT = Posterior(18.0, 2.0, 15.0, 3_000_000.0, 20)  # mean cost 200k, passes nine in ten
+PICK_FIELDS = {
+    "agent_id",
+    "name",
+    "score_per_usdc",
+    "assumed_success",
+    "assumed_cost_micros",
+    "counted_outcomes",
+    "unproven",
+}
+
+
+def roster_agent(agent_id: str) -> Agent:
+    return Agent(
+        agent_id=agent_id,
+        name=f"agent-{agent_id}",
+        operator=OPERATORS[agent_id],
+        runtime_key="0x" + "2" * 40,
+        model="m",
+        system_prompt="p",
+    )
+
+
+@pytest.fixture
+def roster(settings: Settings, tmp_path: Path) -> Settings:
+    """Five agents, each with its own operator, so probation or the cap on one leaves the others alone."""
+    chain = tmp_path / "five-agents.json"
+    chain.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {"agent_id": i, "name": f"agent-{i}", "operator": op, "runtime_key": "0x" + "2" * 40}
+                    for i, op in OPERATORS.items()
+                ]
+            }
+        )
+    )
+    config = tmp_path / "five-agents.toml"
+    config.write_text("".join(f'[agents.agent-{i}]\nmodel = "m"\nsystem_prompt = "p"\n' for i in OPERATORS))
+    return settings.model_copy(update={"agents_file": str(chain), "agents_config": str(config)})
+
+
+@contextmanager
+def suggesting(settings: Settings, llm: FakeLLM, **update: Any) -> Iterator[TestClient]:
+    """A signed-in requester. The reputation updater is off, since these tests write ``agent_posteriors``
+    directly and a refresh would rebuild it from the (empty) ledger."""
+    app = create_app(
+        settings.model_copy(update=update),
+        llm=llm,
+        deliver_events=False,
+        process_outcomes=False,
+        update_reputation=False,
+    )
+    with TestClient(app, base_url="https://testserver") as c:
+        sign_in(c)
+        yield c
+    with psycopg.connect(settings.database_url) as conn:
+        conn.execute(
+            "TRUNCATE plans, outbox, planning_attempts, planner_costs, sessions, auth_nonces CASCADE"
+        )
+
+
+def history(
+    database_url: str,
+    *,
+    posteriors: dict[str, Posterior] | None = None,
+    probation: tuple[str, ...] = (),
+    in_flight: tuple[str, ...] = (),
+) -> None:
+    """Posteriors in the plan's category; a falsification an hour ago for each agent in ``probation``; one
+    running dispatch for each agent in ``in_flight`` (at cap when ``routing_operator_concurrency_cap`` is
+    1)."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn:
+            for agent_id, p in (posteriors or {}).items():
+                await conn.execute(
+                    "INSERT INTO agent_posteriors (agent_id, category, alpha, beta, kappa, tau, n)"
+                    " VALUES (%s, 'test-repair', %s, %s, %s, %s, %s)",
+                    (agent_id, p.alpha, p.beta, p.kappa, p.tau, p.n),
+                )
+        now = datetime.now(UTC)
+        for agent_id in probation:
+            plan_uuid, task_id = await dispatch(pool, roster_agent(agent_id), at=now - timedelta(days=1))
+            await invalid_verdict(pool, plan_uuid, task_id, now - timedelta(hours=1))
+        for agent_id in in_flight:
+            await dispatch(pool, roster_agent(agent_id), at=now)
+
+    run(database_url, body)
+
+
+def suggest(c: TestClient, explore: bool = False) -> dict[str, Any]:
+    plan = create(c)
+    got = c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": str(explore).lower()})
+    assert got.status_code == 200, got.text
+    return got.json()
+
+
+def why(task: dict[str, Any]) -> dict[str, str]:
+    return {e["agent_id"]: e["reason"] for e in task["ineligible"]}
+
+
+def picked(task: dict[str, Any]) -> list[str]:
+    return [p["agent_id"] for p in task["picks"]]
+
+
+def test_greedy_lists_over_budget_agents_with_reason(roster: Settings, llm: FakeLLM, database_url: str):
+    history(database_url, posteriors={"1": PRICEY})
+    with suggesting(roster, llm) as c:
+        body = suggest(c)
+    for task in body["tasks"]:
+        assert "1" not in picked(task)
+        assert {"agent_id": "1", "name": "agent-1", "reason": OVER_BUDGET} in task["ineligible"]
+
+
+def test_probation_or_cap_reason_wins_over_over_budget(roster: Settings, llm: FakeLLM, database_url: str):
+    """1 and 2 would be over budget anyway, but probation and the cap are the more fundamental reasons. 3 is
+    the best agent on the roster by its record, and probation still keeps it out of the ranking."""
+    history(
+        database_url,
+        posteriors={"1": PRICEY, "2": PRICEY, "3": EXCELLENT},
+        probation=("1", "3"),
+        in_flight=("2",),
+    )
+    with suggesting(roster, llm, routing_operator_concurrency_cap=1) as c:
+        greedy, explored = suggest(c), suggest(c, explore=True)
+    for task in greedy["tasks"]:
+        assert picked(task) == ["4", "5"]
+        assert why(task) == {"1": IN_PROBATION, "2": AT_CAP, "3": IN_PROBATION}
+    for task in explored["tasks"]:
+        assert set(picked(task)) <= {"4", "5"}
+        assert {a: r for a, r in why(task).items() if a in "123"} == {
+            "1": IN_PROBATION,
+            "2": AT_CAP,
+            "3": IN_PROBATION,
+        }
+
+
+def test_max_attempts_cut_agents_are_listed(roster: Settings, llm: FakeLLM):
+    with suggesting(roster, llm) as c:
+        body = suggest(c)
+    for task in body["tasks"]:  # five equal priors, ties by agent id
+        assert picked(task) == ["1", "2", "3"]
+        assert task["ineligible"] == [
+            {"agent_id": "4", "name": "agent-4", "reason": BELOW_MAX_ATTEMPTS},
+            {"agent_id": "5", "name": "agent-5", "reason": BELOW_MAX_ATTEMPTS},
+        ]
+
+
+def test_every_roster_agent_is_in_picks_or_ineligible(roster: Settings, llm: FakeLLM, database_url: str):
+    history(database_url, posteriors={"1": PRICEY, "3": EXCELLENT}, probation=("2",))
+    reasons = {IN_PROBATION, AT_CAP, OVER_BUDGET, OVER_BUDGET_IN_THIS_DRAW, BELOW_MAX_ATTEMPTS}
+    with suggesting(roster, llm) as c:
+        bodies = [suggest(c)] + [suggest(c, explore=True) for _ in range(6)]
+    for body in bodies:
+        for task in body["tasks"]:
+            ids = picked(task) + [e["agent_id"] for e in task["ineligible"]]
+            assert sorted(ids) == sorted(OPERATORS)  # each exactly once
+            assert set(why(task).values()) <= reasons
+            assert {e["name"] for e in task["ineligible"]} == {f"agent-{a}" for a in why(task)}
+            assert why(task)["2"] == IN_PROBATION and why(task)["1"] == OVER_BUDGET
+
+
+@pytest.mark.parametrize("explore", [False, True])
+def test_existing_response_fields_unchanged(roster: Settings, llm: FakeLLM, explore: bool):
+    with suggesting(roster, llm) as c:
+        body = suggest(c, explore=explore)
+    assert set(body) == {"plan_id", "mode", "seed", "note", "tasks"}
+    assert isinstance(body["plan_id"], str) and body["mode"] == ("explore" if explore else "greedy")
+    assert isinstance(body["seed"], int) if explore else body["seed"] is None
+    assert "not an assignment" in body["note"]
+    assert [t["index"] for t in body["tasks"]] == [0, 1]
+    for task in body["tasks"]:
+        # "ineligible" is the one new field; "reason" is there exactly when "picks" is empty, as before.
+        reason = set() if task["picks"] else {"reason"}
+        assert set(task) == {"index", "budget_usdc_units", "picks", "ineligible"} | reason
+        assert task["budget_usdc_units"] == "500000"
+        for pick in task["picks"]:
+            assert set(pick) == PICK_FIELDS
+            assert isinstance(pick["agent_id"], str) and pick["name"] == f"agent-{pick['agent_id']}"
+            assert all(isinstance(pick[k], float) for k in ("score_per_usdc", "assumed_success"))
+            assert isinstance(pick["assumed_cost_micros"], float)
+            assert (pick["counted_outcomes"], pick["unproven"]) == (0, True)
+        if not explore:  # the prior's own means, exactly as before
+            assert task["picks"][0] == {
+                "agent_id": "1",
+                "name": "agent-1",
+                "score_per_usdc": 1.0,
+                "assumed_success": 0.5,
+                "assumed_cost_micros": 500_000.0,
+                "counted_outcomes": 0,
+                "unproven": True,
+            }
+
+
+@pytest.mark.parametrize("explore", [False, True])
+def test_an_empty_answer_says_when_it_rests_on_the_prior_alone(
+    roster: Settings, llm: FakeLLM, database_url: str, explore: bool
+):
+    """No agent has a recorded cost, and the configured prior's mean (5M) is ten times the task's budget:
+    the answer is still empty, but it says the expectation is an assumption, not what anyone was seen to do.
+    One agent in probation does not change that."""
+    history(database_url, probation=("1",))
+    with suggesting(roster, llm, reputation_cost_prior_micros=5_000_000) as c:
+        body = suggest(c, explore=explore)
+    for task in body["tasks"]:
+        assert task["picks"] == []
+        assert why(task) == {"1": IN_PROBATION} | {a: OVER_BUDGET for a in "2345"}
+        assert task["reason"] == NO_FIT_ON_PRIOR_ALONE != NO_FIT
+        assert "not evidence" in task["reason"] and "starting" in task["reason"]
+
+
+def test_an_empty_answer_backed_by_evidence_says_so_plainly(
+    roster: Settings, llm: FakeLLM, database_url: str
+):
+    history(database_url, posteriors=dict.fromkeys(OPERATORS, PRICEY))
+    with suggesting(roster, llm) as c:
+        body = suggest(c)
+    for task in body["tasks"]:
+        assert task["picks"] == [] and set(why(task).values()) == {OVER_BUDGET}
+        assert task["reason"] == NO_FIT
+
+
+def test_an_agent_with_outcomes_but_no_recorded_cost_still_rests_on_the_prior(
+    roster: Settings, llm: FakeLLM, database_url: str
+):
+    """Outcomes whose receipts metered 0 count toward success but leave the cost posterior at the prior
+    (``Posterior.observe``), so a budget call on it is still only the assumption."""
+    prior = Posterior(1.0, 1.0, 1.0, 5_000_000.0)
+    no_cost = prior.observe(True, None).observe(False, None).observe(True, None)
+    history(database_url, posteriors=dict.fromkeys(OPERATORS, no_cost))
+    with suggesting(roster, llm, reputation_cost_prior_micros=5_000_000) as c:
+        body = suggest(c)
+    for task in body["tasks"]:
+        assert task["picks"] == [] and task["reason"] == NO_FIT_ON_PRIOR_ALONE
+
+
+def test_an_empty_answer_when_every_agent_is_left_out_for_now(
+    roster: Settings, llm: FakeLLM, database_url: str
+):
+    history(database_url, probation=tuple(OPERATORS))
+    with suggesting(roster, llm) as c:
+        body = suggest(c)
+    for task in body["tasks"]:
+        assert task["picks"] == [] and set(why(task).values()) == {IN_PROBATION}
+        assert task["reason"] == ALL_LEFT_OUT

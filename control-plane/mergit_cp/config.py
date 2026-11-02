@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     its agents are left out of suggestions. Paper §7.5 ii caps concurrent exposure per operator and sizes
     the audit rate for the cap; nothing here sizes an audit rate yet. The value 5 (one column of the paper's
     table) and counting from dispatch rather than from execution are our parameterisation, not the paper's."""
+    routing_min_feasible_probability: float = Field(default=0.01, gt=0, le=0.25)
+    """The smallest chance that one Thompson draw of an agent's cost fits a task's budget (with
+    ``routing_epsilon``) for an exploring suggestion to draw that agent at all; below it the agent is listed
+    as over budget for that task. The chance is computed from the agent's cost posterior (the upper
+    regularized incomplete gamma), once per agent and task, not per draw, so a lucky draw cannot bring such an
+    agent back. Capped at 0.25 because an agent whose mean cost fits always has at least 1/e, so the cap
+    keeps exploring from leaving out anything greedy would suggest. Paper §9.3 screens only each draw on
+    budget (so an agent whose cost is merely uncertain is not shut out for good) and has no such floor; the
+    floor and its value are our parameterisation, not the paper's."""
     suggestions_per_hour: int = Field(default=60, ge=1)
     """Exploring suggestions per requester per hour. Each one appends a replay record per task to
     ``routing_decisions``, which is append-only; greedy suggestions write nothing and are not limited."""
