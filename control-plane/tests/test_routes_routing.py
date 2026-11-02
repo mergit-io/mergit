@@ -29,9 +29,13 @@ pytestmark = pytest.mark.postgres
 @pytest.fixture(autouse=True)
 def _no_history(database_url: str) -> None:
     """The posteriors are global and the database is shared, so outcomes other tests left behind would
-    otherwise already be in them."""
-    with psycopg.connect(database_url) as conn:
-        conn.execute("TRUNCATE plans, agent_posteriors, task_costs CASCADE")
+    otherwise already be in them. ``run`` migrates before it empties the tables, like every other ledger
+    test, so this file also passes when it is the first (or only) one to touch a fresh database."""
+
+    async def nothing(_: Pool) -> None:
+        return None
+
+    run(database_url, nothing)
 
 
 def decisions(settings: Settings, plan_uuid: str) -> list[tuple[int, int, list[dict[str, float | str]]]]:
