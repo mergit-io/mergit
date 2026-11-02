@@ -8,6 +8,13 @@
 # The API and the worker get separate secret files so each holds only what it needs: neither has the gateway or
 # treasury key, and only the worker has an agent runtime key and the Docker socket.
 
+# Pinned so deploy/postgres/pg_hba.conf can match it by an exact CIDR instead of `samenet`, which can be widened by
+# how a given host's Docker handles published ports (see the comment there). Change both together.
+networks:
+  default:
+    ipam:
+      config: [{ subnet: 172.30.9.0/24 }]
+
 services:
   cp_postgres:
     image: postgres:16
@@ -34,7 +41,10 @@ services:
     image: mergit-api:local
     restart: unless-stopped
     env_file: secrets/api.env
-    ports: ["8000:8000"]
+    # Loopback only: on the server, compose.server.yaml resets this to nothing and Caddy reaches `api` by name
+    # instead (deploy/Caddyfile). Published to all interfaces this would be the unproxied API, open to the
+    # internet and skipping the Caddy lockdown, for a run without compose.server.yaml.
+    ports: ["127.0.0.1:8000:8000"]
     depends_on:
       cp_postgres: { condition: service_healthy }
     volumes:

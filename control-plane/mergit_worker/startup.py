@@ -96,7 +96,9 @@ class WorkerIdLock:
 
     @classmethod
     def acquire(cls, database_url: str, worker_id: str) -> WorkerIdLock | None:
-        conn = psycopg.connect(database_url, autocommit=True)  # pyright: ignore[reportArgumentType]
+        # Without a timeout, a database that is down or unreachable (a dead host, a network partition) hangs
+        # this call forever instead of letting start-up fail and Docker's restart policy retry it.
+        conn = psycopg.connect(database_url, autocommit=True, connect_timeout=10)  # pyright: ignore[reportArgumentType]
         row = conn.execute(
             "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (f"mergit_worker:{worker_id}",)
         ).fetchone()

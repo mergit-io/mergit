@@ -125,9 +125,15 @@ class PgPrStore:
 
     @staticmethod
     def _open(database_url: str) -> psycopg.Connection[dict[str, Any]]:
+        # connect_timeout: a database that is down or unreachable must not hang this reconnect forever.
         return cast(
             "psycopg.Connection[dict[str, Any]]",
-            psycopg.connect(database_url, autocommit=True, row_factory=dict_row),  # pyright: ignore[reportArgumentType]
+            psycopg.connect(
+                database_url,
+                autocommit=True,
+                row_factory=dict_row,  # pyright: ignore[reportArgumentType]
+                connect_timeout=10,
+            ),
         )
 
     def _retrying(self, fn: Callable[[], _T]) -> _T:

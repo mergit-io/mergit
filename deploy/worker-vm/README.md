@@ -17,9 +17,11 @@ model keys and one restricted database role. It has no gateway key, no treasury 
 2. `deploy/.env` (git-ignored; compose reads it): `CP_DB_BIND=<server private ip>` and `WORKER_VM_IP=<worker VM public ip>`.
    Leave `CP_DB_BIND` unset and Postgres stays on loopback. Never set it to `0.0.0.0`: Docker's published ports skip the host firewall.
    Through that port only `mergit_worker` can log in (`deploy/postgres/pg_hba.conf`); the `postgres` superuser cannot.
-3. Make the role (prints its URL once): `deploy/worker-vm/create-db-role.sh`. It grants only `jobs`, `pr_requests`
-   (read and update) and `plans`, `tasks` (read). No sessions, users, wallets or email addresses.
-4. `docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml up -d`.
+3. `docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml up -d`.
+4. Make the role (prints its URL once): `deploy/worker-vm/create-db-role.sh`. It needs `cp_postgres` up and the
+   control plane's tables already created, which is why it comes after step 3, not before. It grants only
+   `jobs`, `pr_requests` (read and update) and `plans`, `tasks` (read). No sessions, users, wallets or email
+   addresses.
 5. DNS: an A record for `api` to the server (it exists today). The Hetzner firewall stays 22, 80, 443; the private network is not filtered by it.
 
 ## 2. On the worker VM
