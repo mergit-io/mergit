@@ -247,6 +247,25 @@ def test_operator_at_cap_is_ineligible(database_url: str, settings: Settings):
     run(database_url, body)
 
 
+def test_free_credit_dispatches_do_not_count_toward_the_cap(database_url: str, settings: Settings):
+    """Invariant 6: free-credit work must not influence routing. Otherwise anyone with a credits grant could
+    send a few cheap plans to a rival operator's agents and have its whole roster shown as "at cap" to
+    everyone. Only wallet-funded dispatches, where someone has paid to hold the operator's capacity, count."""
+
+    async def body(pool: Pool) -> None:
+        s = settings.model_copy(update={"routing_operator_concurrency_cap": 2})
+        a = agent(OPERATOR_A)
+        for _ in range(5):
+            await dispatch(pool, a, funding="credits")
+        assert await excluded(pool, [a], s) == {}
+        await dispatch(pool, a, funding="wallet")
+        assert await excluded(pool, [a], s) == {}  # one paid dispatch, still under the cap of 2
+        await dispatch(pool, a, funding="wallet")
+        assert await excluded(pool, [a], s) == {a.agent_id: AT_CAP}
+
+    run(database_url, body)
+
+
 def test_released_and_returned_dispatches_are_resolved(database_url: str, settings: Settings):
     async def body(pool: Pool) -> None:
         s = settings.model_copy(update={"routing_operator_concurrency_cap": 2})

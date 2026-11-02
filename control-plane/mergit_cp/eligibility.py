@@ -14,8 +14,12 @@ across all of them at once:
   where they are highest. A validated failure (``verdict = 'fail'``) is not a falsification: it is a
   capability signal, and the posteriors already carry it.
 * **The concurrency cap** (``AT_CAP``). An operator is at cap while its agents hold, between them, at least
-  ``routing_operator_concurrency_cap`` unresolved dispatches. Unresolved means a ``task_dispatches`` row
-  with no ``task.released`` or ``task.returned`` row yet, except:
+  ``routing_operator_concurrency_cap`` unresolved wallet-funded dispatches. Only wallet-funded ones count,
+  unlike probation: invariant 6 says free-credit work must not influence routing, and here it could do so
+  cheaply and on purpose, since anyone with a credits grant could send a few plans to a rival operator's
+  agents and have its whole roster shown as at cap to everyone. A paid dispatch costs its requester the
+  escrow, so holding an operator's capacity is not free. Unresolved means a ``task_dispatches`` row with no
+  ``task.released`` or ``task.returned`` row yet, except:
 
   - a dispatch whose ``jobs`` row has ``status = 'error' AND receipt_root IS NULL``: nothing was sealed for
     that attempt, so there is nothing to forge and nothing in flight, though its escrow only comes back
@@ -64,12 +68,13 @@ WHERE d.agent_id = ANY(%(agent_ids)s)
   ) > %(since)s
 """
 
-# Unresolved dispatches per agent; `ineligible` sums them per operator. `jobs.task_id` is its primary key, so
-# the join adds at most one row per dispatch, and `j.status IS NULL` is only true when no `jobs` row exists
-# at all (a dispatch that did escrow always has one, whatever its later status).
+# Unresolved wallet-funded dispatches per agent; `ineligible` sums them per operator. `jobs.task_id` is its
+# primary key, so the join adds at most one row per dispatch, and `j.status IS NULL` is only true when no
+# `jobs` row exists at all (a dispatch that did escrow always has one, whatever its later status).
 _UNRESOLVED_BY_AGENT = """
 SELECT d.agent_id, count(*)
 FROM task_dispatches d
+JOIN plans p ON p.plan_uuid = d.plan_uuid AND p.funding = 'wallet'
 LEFT JOIN jobs j ON j.task_id = d.task_id
 WHERE d.agent_id = ANY(%(agent_ids)s)
   AND NOT EXISTS (

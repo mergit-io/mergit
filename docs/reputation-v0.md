@@ -95,7 +95,9 @@ to fit the task's budget, best first, at most `max_attempts` of them. Approval i
   probation for `ROUTING_PROBATION_S` (default seven days) after a proven falsification (an `invalid` verdict or an
   upheld challenge) on any task dispatched to any of its agents, whatever the plan's funding: free-credit work earns
   no reputation, but a proven false receipt is evidence of fraud. An operator is at cap while its agents hold
-  `ROUTING_OPERATOR_CONCURRENCY_CAP` (default 5) unresolved dispatches between them. Their agents are left out before
+  `ROUTING_OPERATOR_CONCURRENCY_CAP` (default 5) unresolved wallet-funded dispatches between them. Free-credit
+  dispatches do not count (invariant 6): otherwise a credits grant would be enough to show a rival operator's
+  whole roster as at cap. Their agents are left out before
   ranking. The paper audits a probationary operator at `p = 1` rather than excluding it, and sizes the audit rate for
   the cap; exclusion, both values and counting from dispatch are our parameterisation.
 - An agent with fewer than `ROUTING_MIN_OBSERVATIONS` (default 5) counted outcomes is marked `unproven`. **The platform
