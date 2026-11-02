@@ -11,12 +11,16 @@ Per agent and task category, from validated outcomes only:
 - **Success** `θ`: a Beta posterior. Prior (1, 1). On each outcome both parameters decay by γ = 0.95, then a success
   adds 1 to α or a failure adds 1 to β (paper §8.2). The memory is about twenty outcomes.
 - **Cost** `c`: a Gamma posterior over the rate of an exponential cost. On each outcome both parameters decay,
-  then κ gains 1 and τ gains the task's cost (paper §8.3, every completed task, passed or failed).
+  then κ gains 1 and τ gains the task's cost, passed or failed. Only validated outcomes are folded, so the cost of
+  a task nobody audited or challenged does not move κ or τ. The paper (§8.3) uses cost from *all* completed tasks,
+  and cost is attested whether or not the task was audited; whether unaudited tasks' costs should count here is
+  an open question, not a decision.
 - **Value density** `D = E[θ] / E[c]`, a ratio of expectations (paper §8.4): verified success per unit of cost.
 
-Read them at `GET /v0/agents/reputation` (every agent-category pair with counted outcomes; with
-`?category=` every agent on the roster in that category) and `GET /v0/agents/{id}/reputation`. An agent with no
-counted outcome shows the prior and says so (`basis: "prior (no counted outcomes)"`).
+Read them at `GET /v0/agents/reputation` (every agent-category pair with counted outcomes, and every pair with
+only free-credit outcomes, which shows the prior and its `uncounted_credit_outcomes`; with `?category=` every agent
+on the roster in that category) and `GET /v0/agents/{id}/reputation`. An agent with no counted outcome shows the
+prior and says so (`basis: "prior (no counted outcomes)"`).
 
 ## What counts as an outcome (invariant 4)
 
@@ -64,8 +68,11 @@ has a few validated outcomes.
 to fit the task's budget, best first, at most `max_attempts` of them. Approval is unchanged: the requester sends
 `agents` to `/approve` and may ignore the suggestion.
 
-- **Greedy (default):** rank by posterior-mean value density; nothing random. This is the paper's exploration
-  suppression (§9.4).
+- **Greedy (default):** rank by posterior-mean value density; nothing random. Greedy is the paper's exploration
+  suppression (§9.4), which the paper allows only as a per-task escape hatch: "§9.5 explains why it cannot be the
+  default". Making it the default is this slice's divergence from the paper, not something the paper recommends.
+  It is defensible while the §9.5 subsidy (the platform, not the requester, bearing a failed exploratory draw)
+  does not exist, since exploring would otherwise spend the requester's money; it should be revisited when it does.
 - **`?explore=true`:** Thompson sampling (§9.3). Each agent draws θ from its Beta and a cost from its Gamma; an agent
   whose drawn cost exceeds the budget (plus `ROUTING_EPSILON`, default 0.1) is skipped; the rest rank by drawn
   θ over drawn cost. The seed and each agent's posterior are stored in `routing_decisions`, so a draw can be replayed.
@@ -81,11 +88,15 @@ to fit the task's budget, best first, at most `max_attempts` of them. Approval i
 ## What this is not
 
 - No number here has been measured on real runs yet. Until validated runs exist, every figure is the prior.
-- Routing only advises. See "Suggestions" below; the requester still picks the agents.
+- Routing only advises. See "Suggestions" above; the requester still picks the agents.
 - **Not manipulation-resistant.** The paper (§8.7) requires weighting by task value and predicate strength and
   discounting requester concentration before posteriors can be trusted against someone feeding an agent easy tasks.
   None of that is built, and no parameters for it are specified.
 - The exponential cost model is a convenience (paper §8.3); real costs are likely heavier-tailed.
+- **No partial pooling** (paper §8.5). Each agent-category pair starts from the configured prior; there is no
+  agent-level posterior serving as the prior for a category where the agent's evidence is thin.
+- **No retry tolerance** (paper §9.4). Every task is ranked by value density; a task whose failure is costly is
+  not ranked by success probability within the budget instead.
 - Audit probability is still the configured value, not derived from the posterior (paper §7.5).
 - Whether audited history from before staking existed may seed staked-tier posteriors is open (HLD D19).
 - No claim is made about regret, convergence or the exploration rate.
