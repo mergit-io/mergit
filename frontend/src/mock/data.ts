@@ -737,22 +737,6 @@ export const wallet = {
   ] satisfies { agent: AgentKind; task: string; block: string; tx: string; settled: boolean; when: string }[],
 };
 
-/* ---------- Sign in ---------- */
-
-export const signInPitch = {
-  receipt: {
-    agent: "Coder",
-    title: "PR #134, fix auth flow",
-    tx: "0x30af…1c77",
-    block: "18,431,201",
-  } satisfies { agent: AgentKind; title: string; tx: string; block: string },
-  stats: [
-    ["0%", "silent failures"],
-    ["42", "tools, 4 apps"],
-    ["859", "tests"],
-  ] satisfies [value: string, label: string][],
-};
-
 /** Looks a run up by id. Only `runDetail.id` has a full trace; the rest have their list entry. */
 export function findRun(id: string) {
   return runs.find((r) => r.id === id);

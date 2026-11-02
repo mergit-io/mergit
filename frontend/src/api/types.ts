@@ -69,6 +69,52 @@ export type PlanSummary = Pick<
 
 export type AgentInfo = { agent_id: string; name: string; model: string };
 
+/** One agent in one category, as `GET /v0/agents/reputation` reports it. Costs are USDC base units (micros). */
+export type AgentReputation = {
+  agent_id: string;
+  name: string;
+  category: string;
+  /** "validated outcomes", or "prior (no counted outcomes)" when the figures are only configuration. */
+  basis: string;
+  counted_outcomes: number;
+  /** Outcomes funded from free credits: shown, never counted. */
+  uncounted_credit_outcomes: number;
+  success_mean: number;
+  cost_mean_micros: number;
+  /** Success per USDC. */
+  value_density_per_usdc: number;
+  effective_sample_size: number;
+};
+
+export type ReputationResponse = { note: string; agents: AgentReputation[] };
+
+export type SuggestedPick = {
+  agent_id: string;
+  name: string;
+  score_per_usdc: number;
+  assumed_success: number;
+  assumed_cost_micros: number;
+  counted_outcomes: number;
+  /** Too few counted outcomes to trust. The platform does not yet cover the cost if an unproven agent fails. */
+  unproven: boolean;
+};
+
+export type TaskSuggestion = {
+  index: number;
+  budget_usdc_units: string;
+  picks: SuggestedPick[];
+  /** Why there are no picks, when there are none. */
+  reason?: string;
+};
+
+export type Suggestions = {
+  plan_id: string;
+  mode: "greedy" | "explore";
+  seed: number | null;
+  note: string;
+  tasks: TaskSuggestion[];
+};
+
 export type StepCost = {
   model: string | null;
   input_tokens: number;

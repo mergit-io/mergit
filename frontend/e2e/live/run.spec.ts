@@ -3,7 +3,7 @@ import { toFunctionSelector } from "viem";
 import { LIVE_ENV } from "../../playwright.config";
 import { seedSession } from "../fixtures";
 import { installWallet, ME, mockBackend } from "./fake";
-import { approvedPlan, attempt, draftPlan, mockPlanApi, PHI, PLAN_ID, taskId, type ApiCall } from "./plans";
+import { approvedPlan, attempt, draftPlan, mockPlanApi, PHI, PLAN_ID, SEASONED, taskId, type ApiCall } from "./plans";
 
 /** Live run screens (plan task O8): draft, review, approve, fund, and watch a run, against a faked API. */
 
@@ -347,4 +347,68 @@ test("an approved plan offers Close, not Discard", async ({ page }) => {
   await mockPlanApi(page, { plans: [{ ...draftPlan(), state: "approved", funding: "wallet" }] });
   await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
   await expect(page.getByRole("button", { name: "Discard draft" })).toHaveCount(0);
+});
+
+test("suggested agents only advise: nothing changes until the picks are used, and approving sends what is shown", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await page.getByRole("button", { name: "Suggest agents" }).click();
+  const advice = page.getByTestId("suggestions");
+  await expect(advice).toContainText("Task 1");
+  await expect(advice).toContainText("coder-b");
+  await expect(advice).toContainText("80% pass");
+  await expect(advice).toContainText("7 validated");
+  expect(only(calls, "GET", "/suggestions")[0]?.path).toContain(draftPlan().plan_uuid);
+
+  // Asking changed nothing: the pickers are still empty.
+  await expect(page.getByLabel("Task 1: runs it")).toHaveValue("");
+
+  await page.getByRole("button", { name: "Use these picks" }).click();
+  await expect(page.getByLabel("Task 1: runs it")).toHaveValue("2");
+  await expect(page.getByLabel("Task 2: runs it")).toHaveValue("2");
+
+  // The requester may still override a suggestion before approving.
+  await page.getByLabel("Task 2: runs it").selectOption("1");
+  await page.getByRole("button", { name: "Approve plan" }).click();
+  await expect(page.getByRole("heading", { name: "Fund 1.50 USDC" })).toBeVisible();
+  expect(only(calls, "POST", "/approve")[0]?.body).toEqual({
+    agents: { "0": ["2"], "1": ["1"] },
+    funding: "wallet",
+  });
+});
+
+test("exploring warns that an unproven agent's failure is not covered, and marks the unproven pick", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await expect(page.getByText("the platform does not yet cover that cost")).toHaveCount(0);
+  await page.getByLabel("Also try less-proven agents").check();
+  await expect(page.getByText("the platform does not yet cover that cost")).toBeVisible();
+
+  await page.getByRole("button", { name: "Suggest agents" }).click();
+  const advice = page.getByTestId("suggestions");
+  await expect(advice).toContainText("no validated outcomes yet");
+  await expect(advice).toContainText("unproven");
+  expect(only(calls, "GET", "/suggestions")[0]?.path).toBe(`/v0/plans/${draftPlan().plan_uuid}/suggestions`);
+});
+
+test("the agents list shows a validated record only where there is one, and says what the figures are", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  await mockPlanApi(page, { reputation: [SEASONED] });
+  await page.goto("/app/agents");
+
+  await expect(page.getByTestId("record-2")).toContainText("test-repair");
+  await expect(page.getByTestId("record-2")).toContainText("80% pass");
+  await expect(page.getByTestId("record-2")).toContainText("7 validated");
+  await expect(page.getByTestId("record-1")).toHaveText("No validated outcomes yet");
+  await expect(page.getByText("configuration, not a measurement")).toBeVisible();
 });
