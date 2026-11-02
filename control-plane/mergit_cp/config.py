@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     goal_max_chars: int = Field(default=8000, ge=1)
     repo_hosts: Annotated[list[str], NoDecode] = ["github.com"]
     """Hosts a plan's repository may live on. The worker clones it, so anything else is refused here."""
+    verify_repos: bool = True
+    """Ask GitHub whether the repository and branch exist (publicly) before a plan is drafted."""
     max_attempts: int = Field(default=3, ge=1)
     """Agents a requester may list per task: the pick plus the retries (plan O6: at most 3 attempts)."""
 

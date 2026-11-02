@@ -3,6 +3,8 @@ import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
+import { useNavigate } from "react-router-dom";
+import { paths } from "../../../app/paths";
 import { creditProblem } from "../../../chain/creditLimits";
 import { formatUsdc } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
@@ -20,6 +22,7 @@ import {
 } from "./draft";
 import { Problems } from "./Problems";
 import { TaskDraftCard } from "./TaskDraftCard";
+import { DiscardDraft } from "./DiscardDraft";
 import { useSubmit } from "./useSubmit";
 
 const FUNDING_OPTIONS = ["Wallet", "Free credits"] as const;
@@ -41,6 +44,7 @@ export function DraftPlanEditor({
   agents: AgentInfo[] | null;
   onChanged: () => void;
 }) {
+  const navigate = useNavigate();
   const { session, account } = useAuth();
   const { credits, error: creditsError } = useCredits(session !== null);
   // A free-trial account has no wallet: its plans can only be paid from credits, and the API refuses anything else.
@@ -135,6 +139,12 @@ export function DraftPlanEditor({
             Save changes
           </button>
           <span className="small c3">Approving locks the tasks, their checks and your agent picks.</span>
+          <DiscardDraft
+            planUuid={plan.plan_uuid}
+            onDiscarded={() => {
+              void navigate(paths.runs);
+            }}
+          />
         </div>
       </aside>
     </section>

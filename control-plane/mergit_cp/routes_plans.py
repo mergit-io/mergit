@@ -13,10 +13,11 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import mergit_receipt
-from fastapi import APIRouter, Depends, HTTPException, Request
+import psycopg.errors
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from . import accounts, outcomes, plans, redeem, user_settings
+from . import accounts, outcomes, plans, redeem, repo_check, user_settings
 from .agents import Agent
 from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .events import enqueue
@@ -113,7 +114,14 @@ async def create_plan(
     pool: PoolDep,
     llm: Annotated[LLM, Depends(get_llm)],
     costs: Annotated[CostSink, Depends(get_costs)],
+    idempotency_key: Annotated[str | None, Header(pattern=r"^[A-Za-z0-9._:-]{1,100}$")] = None,
 ) -> dict[str, Any]:
+    """Drafts a plan. ``Idempotency-Key`` makes a retry (or a second click) return the first draft."""
+    if idempotency_key is not None:
+        async with pool.connection() as conn:
+            earlier = await plans.by_key(conn, principal.address, idempotency_key)
+        if earlier is not None:
+            return plans.view(earlier)
     problems = _check_repo(body.repo_url, settings.repo_hosts)
     if not _REF.match(body.ref):
         problems.append("ref must be a branch, tag or commit name")
@@ -121,6 +129,8 @@ async def create_plan(
         problems.append(f"goal is longer than {settings.goal_max_chars} characters")
     if not body.goal.strip():
         problems.append("goal is empty")
+    if not problems and settings.verify_repos:
+        problems = await repo_check.check(body.repo_url, body.ref)
     if problems:
         raise _problems(422, problems)
 
@@ -167,23 +177,41 @@ async def create_plan(
         log.warning("planner model unavailable: %s", down)
         raise HTTPException(status_code=502, detail="the planner model is unavailable") from down
 
-    async with pool.connection() as conn, conn.transaction():
-        await plans.insert_draft(
-            conn,
-            plan_uuid=draft.plan_uuid,
-            plan_id=mergit_receipt.plan_id(draft.plan_uuid),
-            requester=address,
-            goal=body.goal,
-            repo_url=body.repo_url,
-            ref=body.ref,
-            category=body.category,
-            budget_usdc_units=budget,
-            planner_model=model,
-            tasks=draft.tasks,
-        )
-        stored = await plans.load(conn, uuid.UUID(draft.plan_uuid))
+    try:
+        async with pool.connection() as conn, conn.transaction():
+            await plans.insert_draft(
+                conn,
+                plan_uuid=draft.plan_uuid,
+                plan_id=mergit_receipt.plan_id(draft.plan_uuid),
+                requester=address,
+                goal=body.goal,
+                repo_url=body.repo_url,
+                ref=body.ref,
+                category=body.category,
+                budget_usdc_units=budget,
+                planner_model=model,
+                tasks=draft.tasks,
+                idempotency_key=idempotency_key,
+            )
+            stored = await plans.load(conn, uuid.UUID(draft.plan_uuid))
+    except psycopg.errors.UniqueViolation:
+        # A concurrent request with the same key finished first: its draft is the answer.
+        if idempotency_key is None:
+            raise
+        async with pool.connection() as conn:
+            stored = await plans.by_key(conn, address, idempotency_key)
     assert stored is not None
     return plans.view(stored)
+
+
+@router.delete("/{plan_uuid}", status_code=204)
+async def discard_plan(plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep) -> Response:
+    """Throws a draft away, with its tasks. Nothing was approved or paid, so nothing else refers to it; a plan
+    past draft is a record and is closed or abandoned instead."""
+    async with pool.connection() as conn, conn.transaction():
+        plan = await _owned_draft(conn, plan_uuid, principal)
+        await conn.execute("DELETE FROM plans WHERE plan_uuid = %s", (plan.plan_uuid,))
+    return Response(status_code=204)
 
 
 @router.patch("/{plan_uuid}")

@@ -166,7 +166,7 @@ export async function installWallet(
 export const CORS = (route: Route) => ({
   "access-control-allow-origin": route.request().headers()["origin"] ?? "*",
   "access-control-allow-credentials": "true",
-  "access-control-allow-headers": "content-type",
+  "access-control-allow-headers": "content-type, idempotency-key",
   "access-control-expose-headers": "retry-after",
   "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
 });

@@ -52,11 +52,23 @@ async def insert_draft(
     budget_usdc_units: int,
     planner_model: str,
     tasks: list[TaskDraft],
+    idempotency_key: str | None = None,
 ) -> None:
     await conn.execute(
         "INSERT INTO plans (plan_uuid, plan_id, requester, goal, repo_url, ref, category,"
-        " budget_usdc_units, planner_model) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-        (plan_uuid, plan_id, requester, goal, repo_url, ref, category, budget_usdc_units, planner_model),
+        " budget_usdc_units, planner_model, idempotency_key) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            plan_uuid,
+            plan_id,
+            requester,
+            goal,
+            repo_url,
+            ref,
+            category,
+            budget_usdc_units,
+            planner_model,
+            idempotency_key,
+        ),
     )
     await _insert_tasks(conn, plan_uuid, tasks)
 
@@ -68,6 +80,15 @@ async def _insert_tasks(conn: AsyncConnection[TupleRow], plan_uuid: str, tasks: 
             " VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (plan_uuid, t.index, t.title, t.instructions, Jsonb(t.phi), t.budget_usdc_units, t.depends_on),
         )
+
+
+async def by_key(conn: AsyncConnection[TupleRow], requester: str, key: str) -> StoredPlan | None:
+    """The plan this requester already made under ``key``, if any."""
+    cur = await conn.execute(
+        "SELECT plan_uuid FROM plans WHERE requester = %s AND idempotency_key = %s", (requester, key)
+    )
+    row = await cur.fetchone()
+    return None if row is None else await load(conn, row[0])
 
 
 async def load(

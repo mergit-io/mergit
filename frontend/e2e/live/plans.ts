@@ -148,7 +148,7 @@ export function attempt(index: number, n: number, over: Partial<FakeAttempt> = {
   };
 }
 
-export type ApiCall = { method: string; path: string; body: unknown };
+export type ApiCall = { method: string; path: string; body: unknown; key?: string };
 
 const sseBody = (events: FakeEvent[]) =>
   // A long retry, so the browser does not reconnect while a test is still asserting.
@@ -190,7 +190,7 @@ export async function mockPlanApi(
     const path = new URL(request.url()).pathname;
     if (path.startsWith("/v0/auth/") || path.startsWith("/v0/account/")) return route.fallback();
     const body: unknown = request.postData() ? request.postDataJSON() : null;
-    calls.push({ method, path, body });
+    calls.push({ method, path, body, key: request.headers()["idempotency-key"] });
 
     if (path === "/v0/agents") return json(route, AGENTS);
     if (path === "/v0/plans" && method === "GET") return json(route, [...plans.values()]);
@@ -203,6 +203,13 @@ export async function mockPlanApi(
     const [, , , uuid = "", action] = path.split("/");
     const plan = plans.get(uuid);
     if (!plan) return json(route, { detail: "no such plan" }, 404);
+
+    if (method === "DELETE" && !action) {
+      if (plan.state !== "draft")
+        return json(route, { detail: `the plan is ${plan.state}; only a draft can change` }, 409);
+      plans.delete(uuid);
+      return route.fulfill({ status: 204, headers: CORS(route) });
+    }
 
     if (action === "events") {
       return route.fulfill({
