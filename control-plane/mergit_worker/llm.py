@@ -13,7 +13,7 @@ import anthropic
 import httpx
 
 from .config import ConfigError
-from .openai_chat import BadReply, parse_reply, to_openai_messages, to_openai_tools
+from .openai_chat import BadReply, body_error, parse_reply, scrub, to_openai_messages, to_openai_tools
 from .providers import ProviderSpec, provider_key
 
 
@@ -127,6 +127,7 @@ class OpenAIChatLLM:
         timeout_s: float = 600.0,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._http = client or httpx.Client(timeout=timeout_s)
@@ -143,17 +144,19 @@ class OpenAIChatLLM:
                 continue
             if response.status_code == 200:
                 try:
-                    data = cast("dict[str, Any]", response.json())
+                    data: object = response.json()
                 except ValueError as exc:
                     raise LLMError("model call failed: the answer is not JSON") from exc
-                error = data.get("error")
-                if isinstance(error, dict):
-                    raise LLMError(f"model call failed: {cast('dict[str, Any]', error).get('message')}")
-                if error:
-                    raise LLMError(f"model call failed: {error}")
-                return data
+                problem = body_error(data)  # shared with the planner's client (mergit_cp/llm.py)
+                if problem is None:
+                    return cast("dict[str, Any]", data)
+                if not problem.retryable or attempt == _ATTEMPTS:
+                    raise LLMError(f"model call failed: {scrub(problem.message, self._key)[:300]}")
+                self._sleep(float(attempt))
+                continue
             if response.status_code not in _RETRY_STATUSES or attempt == _ATTEMPTS:
-                raise LLMError(f"model call failed: HTTP {response.status_code}: {response.text[:200]}")
+                detail = scrub(response.text, self._key)[:200]
+                raise LLMError(f"model call failed: HTTP {response.status_code}: {detail}")
             self._sleep(retry_wait(response, attempt))
         raise AssertionError("unreachable")  # pragma: no cover
 

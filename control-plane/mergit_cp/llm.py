@@ -21,7 +21,14 @@ from anthropic.types import Message, MessageParam, ToolParam
 
 from mergit_worker.config import ConfigError
 from mergit_worker.llm import retry_wait
-from mergit_worker.openai_chat import BadReply, parse_reply, to_openai_messages, to_openai_tools
+from mergit_worker.openai_chat import (
+    BadReply,
+    body_error,
+    parse_reply,
+    scrub,
+    to_openai_messages,
+    to_openai_tools,
+)
 from mergit_worker.providers import ProviderSpec, provider_key
 
 
@@ -147,6 +154,7 @@ class OpenAIChatLLM:
         sleep: Callable[[float], Any] = asyncio.sleep,
         max_tokens: int = 16000,
     ) -> None:
+        self._key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._http = client or httpx.AsyncClient(timeout=timeout_s)
@@ -169,20 +177,18 @@ class OpenAIChatLLM:
                 continue
             if response.status_code == 200:
                 try:
-                    data = cast("dict[str, Any]", response.json())
+                    data: object = response.json()
                 except ValueError as exc:
                     raise LLMUnavailable("the answer is not JSON") from exc
-                # Some OpenAI-compatible providers (OpenRouter among them) answer a routing failure with
-                # HTTP 200 and an `error` object in the body instead of a non-200 status; mirrors the
-                # worker's own check in `mergit_worker.llm.OpenAIChatLLM._post`.
-                error = data.get("error")
-                if isinstance(error, dict):
-                    raise LLMUnavailable(str(cast("dict[str, Any]", error).get("message")))
-                if error:
-                    raise LLMUnavailable(str(error))
-                return data
+                problem = body_error(data)  # shared with the worker's client (mergit_worker/openai_chat.py)
+                if problem is None:
+                    return cast("dict[str, Any]", data)
+                if not problem.retryable or attempt == _ATTEMPTS:
+                    raise LLMUnavailable(scrub(problem.message, self._key)[:300])
+                await self._wait(float(attempt))
+                continue
             if response.status_code not in _RETRY_STATUSES or attempt == _ATTEMPTS:
-                raise LLMUnavailable(f"HTTP {response.status_code}: {response.text[:200]}")
+                raise LLMUnavailable(f"HTTP {response.status_code}: {scrub(response.text, self._key)[:200]}")
             await self._wait(retry_wait(response, attempt))
         raise AssertionError("unreachable")  # pragma: no cover
 

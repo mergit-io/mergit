@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import respx
 from pydantic import SecretStr
 
 from mergit_cp import llm_check
@@ -243,3 +244,28 @@ def test_the_agents_scope_checks_only_the_deployed_agents(tmp_path: Path, monkey
 def test_an_unknown_scope_prints_the_usage(argv: list[str], capsys: pytest.CaptureFixture[str]):
     assert llm_check.main(argv) == 2
     assert "planner|agents|all" in capsys.readouterr().err
+
+
+@respx.mock
+def test_a_refused_key_is_reported_and_never_printed_even_when_the_provider_echoes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """The real client, not a fake: llm_check's output is read on a terminal and pasted into issues."""
+    key = "sk-or-v1-feedfacefeedfacefeedfacefeedface"
+    monkeypatch.setenv("OPENROUTER_API_KEY", key)
+    respx.post("https://openrouter.ai/api/v1/chat/completions").respond(401, text=f"invalid key {key}")
+    agents_files = _write_agents(
+        tmp_path,
+        {
+            "openrouter": {
+                "kind": "openai_chat",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+            }
+        },
+        [],
+    )
+    settings = _settings(agents_files, "openrouter", planner_model="model-a")
+    assert asyncio.run(llm_check.check_planner(settings)) is False
+    out = capsys.readouterr().out
+    assert "HTTP 401" in out and key not in out

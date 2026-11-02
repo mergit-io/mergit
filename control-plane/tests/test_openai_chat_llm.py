@@ -296,3 +296,86 @@ def test_an_unknown_planner_provider_is_a_clear_config_error_not_a_bare_key_erro
         cp_llm.build_planner_llm(_ANTHROPIC, "antropic", environ={"ANTHROPIC_API_KEY": "a"})
     assert "antropic" in str(caught.value)
     assert "anthropic" in str(caught.value)
+
+
+# -- both clients: what a 200 body or an error body may contain ------------------------------------
+
+KEY = "sk-or-v1-0123456789abcdef0123456789abcdef"
+
+
+def _worker(**k: Any) -> Any:
+    return worker_llm.OpenAIChatLLM(KEY, base_url=BASE_URL, sleep=lambda _s: None).complete(
+        [{"role": "user", "content": "x"}], None, "m", **k
+    )
+
+
+def _planner(**k: Any) -> Any:
+    return run(
+        cp_llm.OpenAIChatLLM(KEY, base_url=BASE_URL, sleep=lambda _s: None).complete(
+            [{"role": "user", "content": "x"}], None, "m", **k
+        )
+    )
+
+
+CLIENTS = [(_worker, worker_llm.LLMError), (_planner, cp_llm.LLMUnavailable)]
+
+
+@pytest.mark.parametrize(("call", "_error"), CLIENTS)
+@respx.mock
+def test_a_rate_limit_reported_inside_a_200_is_retried(call: Any, _error: type[Exception]):
+    """OpenRouter reports an upstream 429 or 5xx as HTTP 200 with `{"error": {"code": 429}}`. That is the
+    same condition as a bare 429 and gets the same retries."""
+    route = respx.post(URL).mock(
+        side_effect=[
+            httpx.Response(200, json={"error": {"code": 429, "message": "Rate limit exceeded"}}),
+            httpx.Response(200, json=reply({"content": "ok"})),
+        ]
+    )
+    assert call().text == "ok"
+    assert route.call_count == 2
+
+
+@pytest.mark.parametrize(("call", "error"), CLIENTS)
+@respx.mock
+def test_a_non_retryable_error_inside_a_200_is_not_retried(call: Any, error: type[Exception]):
+    route = respx.post(URL).respond(200, json={"error": {"code": 400, "message": "bad model"}})
+    with pytest.raises(error, match="bad model"):
+        call()
+    assert route.call_count == 1
+
+
+@pytest.mark.parametrize(("call", "error"), CLIENTS)
+@respx.mock
+def test_an_error_with_no_message_says_so_and_never_none(call: Any, error: type[Exception]):
+    respx.post(URL).respond(200, json={"error": {"code": 418}})
+    with pytest.raises(error) as caught:
+        call()
+    assert "None" not in str(caught.value) and "418" in str(caught.value)
+
+
+@pytest.mark.parametrize("body", [[1, 2], "text", 7])
+@pytest.mark.parametrize(("call", "error"), CLIENTS)
+@respx.mock
+def test_a_body_that_is_json_but_not_an_object_is_a_clear_error(call: Any, error: type[Exception], body: Any):
+    """Before, `data.get("error")` on a list or a string raised a bare AttributeError."""
+    respx.post(URL).respond(200, json=body)
+    with pytest.raises(error, match="not a JSON object"):
+        call()
+
+
+@pytest.mark.parametrize(("call", "error"), CLIENTS)
+@respx.mock
+def test_a_provider_that_echoes_the_rejected_key_does_not_get_it_logged(call: Any, error: type[Exception]):
+    respx.post(URL).respond(401, text=f'{{"error": "invalid key {KEY}"}}')
+    with pytest.raises(error) as caught:
+        call()
+    assert "401" in str(caught.value) and KEY not in str(caught.value) and KEY[:20] not in str(caught.value)
+
+
+@pytest.mark.parametrize(("call", "error"), CLIENTS)
+@respx.mock
+def test_an_echoed_key_inside_a_200_error_is_scrubbed_too(call: Any, error: type[Exception]):
+    respx.post(URL).respond(200, json={"error": {"code": 401, "message": f"No auth credentials {KEY}"}})
+    with pytest.raises(error) as caught:
+        call()
+    assert KEY not in str(caught.value)
