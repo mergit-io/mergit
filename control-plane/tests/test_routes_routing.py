@@ -130,6 +130,33 @@ def test_an_exploring_answer_is_recorded_and_can_be_replayed(app_client: TestCli
         assert picked == [p["agent_id"] for p in got["tasks"][index]["picks"]]
 
 
+def test_a_draft_with_a_recorded_draw_can_still_be_discarded_and_the_draw_outlives_it(
+    app_client: TestClient, settings: Settings
+):
+    """A draw is the first thing that can point at a still-draft plan, and discarding a draft really deletes
+    it. The replay record is an audit log, so it stays, and it must not block the discard (migration 0022)."""
+    sign_in(app_client)
+    plan = create(app_client)
+    url = f"/v0/plans/{plan['plan_uuid']}"
+    drawn = app_client.get(f"{url}/suggestions", params={"explore": "true"})
+    assert drawn.status_code == 200, drawn.text
+    assert len(decisions(settings, plan["plan_uuid"])) == 2
+
+    assert app_client.delete(url).status_code == 204
+    assert app_client.get(url).status_code == 404
+    logged = decisions(settings, plan["plan_uuid"])
+    assert [(i, seed) for i, seed, _ in logged] == [(0, drawn.json()["seed"]), (1, drawn.json()["seed"])]
+    # Outliving the plan does not make the record editable: the append-only trigger still holds.
+    with psycopg.connect(settings.database_url) as conn:
+        for sql in (
+            "DELETE FROM routing_decisions WHERE plan_uuid = %s",
+            "UPDATE routing_decisions SET seed = 0 WHERE plan_uuid = %s",
+        ):
+            with pytest.raises(psycopg.errors.RaiseException, match="append-only"), conn.transaction():
+                conn.execute(sql, (plan["plan_uuid"],))
+    assert decisions(settings, plan["plan_uuid"]) == logged
+
+
 def test_free_credit_work_does_not_change_a_suggestion(
     app_client: TestClient, settings: Settings, database_url: str
 ):
