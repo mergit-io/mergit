@@ -8,7 +8,7 @@ signedOut.describe("pricing, signed out", () => {
     await page.goto("/pricing");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pricing");
     // Headings go h1, then an h2 for each section, then the cards' h3.
-    await expect(page.getByRole("heading", { level: 2, name: "Plans" })).toBeAttached();
+    await expect(page.getByRole("heading", { level: 2, name: "Plans", exact: true })).toBeAttached();
     for (const name of ["Free", "Premium", "Pay as you go"])
       await expect(page.getByRole("heading", { level: 3, name })).toBeVisible();
     await expect(page.getByText("5 USDC", { exact: true })).toBeVisible();
