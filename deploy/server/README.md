@@ -84,25 +84,24 @@ deploy/server/update.sh app        # only the frontend: web or app
 Render deployed on every push. The server does not by itself, so `.github/workflows/deploy.yml` runs `update.sh` over SSH
 on every push to `main` (and by hand from the Actions tab, where you can pick `services`, `web` or `app`).
 
-### Upgrading an existing deployment past per-agent providers (`PLANNER_PROVIDER`)
+### Upgrading an existing deployment past per-agent providers
 
-`PLANNER_PROVIDER` has no default, and `deploy/make-controlplane-env.sh` will not touch `deploy/secrets/api.env`
-or `worker.env` once they exist, so a server set up before this change has files the new `api` cannot start
-from. Nothing goes down because of it: `update.sh` builds the new images, then runs each service's own
-start-up checks in them against the real env files (`python -m mergit_cp.preflight` and
-`python -m mergit_worker.preflight`), and only then replaces the running containers. A missing
-`PLANNER_PROVIDER`, or a deployed agent whose provider has no key (for example a `worker.env` that still has
-only `GROQ_API_KEY`, now that `mergit-coder-0` is `provider = "anthropic"`), fails the deploy with one line
-naming the setting, never its value, and the old containers keep serving. The automatic deploy then shows
-red until the files are fixed.
+`deploy.yml` deploys every push to `main`, so this change reaches the server the moment it merges, before anyone
+can edit `deploy/secrets/*.env` by hand. That is safe by construction, not by ordering:
 
-To fix it, on the server, once:
+- `PLANNER_PROVIDER` defaults to `anthropic`, what every deployment ran before, so an `api.env` without it starts
+  as it is. Nothing needs editing for that.
+- `update.sh` builds the new images, runs each service's own start-up checks in them against the real env files
+  (`python -m mergit_cp.preflight` and `python -m mergit_worker.preflight`), and only then replaces the running
+  containers. If a check fails, the deploy stops with one line naming the setting (never its value), the old
+  containers keep serving, and the automatic deploy shows red until the files are fixed.
+- The one case that fails is a server whose env files hold only a Groq key (it ran on the old Groq fallback). The
+  planner and `mergit-coder-0` are `provider = "anthropic"` and the shipped agents stay on Anthropic, so `api.env`
+  and `worker.env` each need `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_BASE_URL`). Nothing adds
+  it for you: add it on the server, then redeploy.
 
 ```bash
 cd ~/mergit/mergit
-grep -q '^PLANNER_PROVIDER=' deploy/secrets/api.env || echo 'PLANNER_PROVIDER=anthropic' >> deploy/secrets/api.env
-# The planner and mergit-coder-0 are both provider = "anthropic": each file needs an Anthropic credential,
-# ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN with ANTHROPIC_BASE_URL. Add it by hand where this complains.
 for f in api worker; do grep -qE '^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)=' deploy/secrets/$f.env || echo "$f.env has no Anthropic credential" >&2; done
 deploy/server/update.sh services   # runs the preflight again, then deploys
 ```

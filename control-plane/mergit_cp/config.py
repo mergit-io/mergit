@@ -31,9 +31,10 @@ class Settings(BaseSettings):
 
     planner_model: str
     """The planner's model (HLD D18 is open, so this is a deployment choice, not a code default)."""
-    planner_provider: str
-    """Which `[providers.<name>]` table in `agents_config` the planner uses (HLD D18 is open, so this is a
-    deployment choice, not a code default)."""
+    planner_provider: str = "anthropic"
+    """Which `[providers.<name>]` table in `agents_config` the planner uses. Defaults to `anthropic`, what
+    every deployment ran before the provider was configurable, so an `api.env` that predates it still starts;
+    `PLANNER_MODEL` stays a deployment choice (HLD D18 is open)."""
     planner_models: Annotated[list[str], NoDecode] = []
     """Other planner models a user may choose in their settings (comma-separated), all served by
     ``planner_provider``. Empty: everyone gets ``planner_model``. See ``model_choices``."""
