@@ -10,10 +10,11 @@ because ``api.env`` rightly does not have them.
 
 For each distinct (provider, model) pair actually in use, makes two tiny calls (a plain answer, then one
 that must call a tool, because the agents work by tool calls): the planner's own provider and model, plus
-every deployed agent's provider and model. Two agents sharing a provider but naming different models each get
-their own check; two agents naming the identical pair are checked once, not twice. Prints the provider, the
-endpoint, the model, whether each call worked and its token counts; never a key or a token. Exit status 0
-only if every check worked.
+every deployed agent's provider and model. Two agents sharing a provider but naming different models (the
+shipped `claude-worker` and `second-worker`, both `openrouter` but one `anthropic/claude-sonnet-5` and the
+other `deepseek/deepseek-v4-flash`) each get their own check; two agents naming the identical pair are
+checked once, not twice. Prints the provider, the endpoint, the model, whether each call worked and its
+token counts; never a key or a token. Exit status 0 only if every check worked.
 """
 
 import asyncio
@@ -119,28 +120,19 @@ async def _check_pairs(agents_config: Path, pairs: set[tuple[str, str]]) -> bool
     return ok
 
 
-def _say_scope(scope: str) -> None:
-    """Name what this run checks, so a missing check is never read as a passing one: a container checks only
-    the keys it can resolve, and the other scope's providers are not looked at."""
-    print(f"checking {scope} only, with the keys this process can resolve")
-
-
 async def check(settings: Settings) -> bool:
     """The planner's pair and every deployed agent's: `all`, for a shell that holds every key."""
-    print("checking the planner and every deployed agent, with the keys this process can resolve")
     return await _check_pairs(Path(settings.agents_config), _providers_in_use(settings))
 
 
 async def check_planner(settings: Settings) -> bool:
     """The planner's pair only, with the api container's own keys."""
-    _say_scope("the planner (run `agents` in the worker container for the agents' keys)")
     pairs = {(settings.planner_provider, settings.planner_model)}
     return await _check_pairs(Path(settings.agents_config), pairs)
 
 
 async def check_agents(agents_file: Path, agents_config: Path) -> bool:
     """Every deployed agent's pair, with the worker container's own keys."""
-    _say_scope("the deployed agents (run `planner` in the api container for the planner's key)")
     return await _check_pairs(agents_config, _agent_pairs_in_use(agents_file, agents_config))
 
 

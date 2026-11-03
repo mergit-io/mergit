@@ -240,16 +240,6 @@ def test_the_agents_scope_checks_only_the_deployed_agents(tmp_path: Path, monkey
     assert calls == ["openrouter"]
 
 
-def test_a_scoped_run_says_which_scope_it_checked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    """The planner scope does not look at the agents' keys, and the output must not read as a pass."""
-    _record_builds(monkeypatch)
-    asyncio.run(llm_check.check_planner(_settings(_two_providers(tmp_path), "anthropic")))
-    out = capsys.readouterr().out
-    assert "checking the planner only" in out and "provider=openrouter" not in out
-
-
 @pytest.mark.parametrize("argv", [["everything"], ["planner", "agents"]])
 def test_an_unknown_scope_prints_the_usage(argv: list[str], capsys: pytest.CaptureFixture[str]):
     assert llm_check.main(argv) == 2

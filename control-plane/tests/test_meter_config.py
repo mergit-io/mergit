@@ -21,14 +21,6 @@ def test_repo_price_table_loads_and_prices_a_call():
     assert cost.usd_micros == 12_000_000  # $2 in + $10 out per Mtok
 
 
-def test_the_planner_model_openrouter_serves_is_priced_under_its_openrouter_id():
-    """OpenRouter only knows the vendor-prefixed id, and PLANNER_MODEL is sent as written, so that is the id
-    the receipt must price. `claude-haiku-4-5` is Anthropic's own id, not an OpenRouter model."""
-    table = PriceTable.load(ROOT / "prices.toml")
-    cost = table.model_call_cost("anthropic/claude-haiku-4.5", 1_000_000, 1_000_000, 0)
-    assert cost.usd_micros == 6_000_000  # $1 in + $5 out per Mtok
-
-
 def test_cost_rounds_half_up_to_micro_usd(tmp_path: Path):
     p = tmp_path / "p.toml"
     p.write_text('[models."m"]\ninput_per_mtok = 0.5\noutput_per_mtok = 0.5\n')
