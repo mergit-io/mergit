@@ -133,6 +133,11 @@ test("a new account chooses between the free trial and a wallet, and the trial h
   await page.goto("/app");
   const choice = page.getByRole("dialog", { name: "Choose your plan" });
   await expect(choice).toBeVisible();
+  // Three plans: Premium is shown but not available, Pay as you go offers a wallet, and the detail page is linked.
+  await expect(choice.getByRole("heading", { level: 3 })).toHaveText(["Free", "Premium", "Pay as you go"]);
+  await expect(choice.getByRole("button", { name: "Coming soon" })).toBeDisabled();
+  await expect(choice.getByRole("button", { name: /Connect a wallet/ })).toBeEnabled();
+  await expect(choice.getByRole("link", { name: "Compare plans in detail" })).toHaveAttribute("href", "/pricing");
   await choice.getByRole("button", { name: "Start free" }).click();
   await expect(choice).toBeHidden();
   expect(calls.some((c) => c.path === "/v0/account/trial")).toBe(true);
@@ -227,6 +232,76 @@ test("the sign-in page tells a first-time visitor they can start free without a 
   await expect(page.getByText("committed on Base Sepolia")).toBeVisible();
   // The picture is an illustration: it must not carry sample data into live mode.
   await expect(page.locator(".si-art")).not.toContainText(/PR #\d|0x30af/);
+});
+
+test("a dismissed choice stays closed on reload, and opens again on the next sign-in", async ({ page }) => {
+  test.setTimeout(90_000); // signing out plays a splash animation first, which a busy machine stretches
+  await open(page, { me: github, providers: everything });
+  const choice = page.getByRole("dialog", { name: "Choose your plan" });
+  await page.goto("/app");
+  await expect(choice).toBeVisible();
+  await page.getByRole("button", { name: "Look around first" }).click();
+  await expect(choice).toBeHidden();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expect(choice).toBeHidden();
+  await page.goto("/app/runs/new");
+  await expect(choice).toBeHidden();
+
+  // Signing out and in again is a new sign-in: the choice is asked again.
+  await page.getByRole("button", { name: /^Account, signed in as/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await expect(page).toHaveURL("/", { timeout: 30_000 });
+  await page.goto("/app");
+  await expect(choice).toBeVisible();
+});
+
+test("Escape leaves the choice for later, like Look around first", async ({ page }) => {
+  await open(page, { me: github, providers: everything });
+  const choice = page.getByRole("dialog", { name: "Choose your plan" });
+  await page.goto("/app");
+  await expect(choice).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(choice).toBeHidden();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expect(choice).toBeHidden();
+});
+
+test("the choice is never laid over the Wallet page, where a wallet is connected", async ({ page }) => {
+  await open(page, { me: github, providers: everything });
+  await page.goto("/app/wallet");
+  await expect(page.getByText("No wallet connected", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Choose your plan" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Overview" }).first().click();
+  await expect(page.getByRole("dialog", { name: "Choose your plan" })).toBeVisible();
+});
+
+test("a trial account with no wallet whose credits are spent is asked to connect one", async ({ page }) => {
+  await open(page, {
+    me: onTrial,
+    providers: everything,
+    credits: { granted: "5000000", spent: "5000000", remaining: "0", plans_today: 1 },
+  });
+  await page.goto("/app");
+  const dialog = page.getByRole("dialog", { name: "Your free credits are used up" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Free credits used" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: /Connect a wallet/ })).toBeEnabled();
+  await page.getByRole("button", { name: "Look around first" }).click();
+  await expect(dialog).toBeHidden();
+});
+
+test("a trial account that still has credits is not interrupted", async ({ page }) => {
+  await open(page, {
+    me: onTrial,
+    providers: everything,
+    credits: { granted: "5000000", spent: "1000000", remaining: "4000000", plans_today: 1 },
+  });
+  await page.goto("/app");
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
 test("an emailed code signs in", async ({ page }) => {

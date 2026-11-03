@@ -143,6 +143,10 @@
   height: 22px;
   border-radius: 50%;
   background: var(--mint-wash);
+  /* 4.8:1 on the wash (--mint is 3.0:1); dark mode keeps --mint, 7.7:1. */
+  color: #0a7a58;
+}
+:root[data-theme="dark"] .pr-yes {
   color: var(--mint);
 }
 .pr-table tbody tr:not(.pr-group) th,
@@ -154,8 +158,8 @@
   background: var(--soft);
 }
 /* The set-apart plan's column carries a faint tint, so it reads down the whole table. */
-.pr-table thead th:nth-child(4),
-.pr-table tbody tr:not(.pr-group) td:nth-child(4) {
+.pr-table thead th.is-featured-col,
+.pr-table tbody tr:not(.pr-group) td.is-featured-col {
   background: color-mix(in srgb, var(--azure) 5%, transparent);
 }
 .pr-group th::before {
@@ -197,11 +201,6 @@
 .pr-cta .btn {
   position: relative;
   overflow: hidden;
-}
-@media (prefers-reduced-motion: reduce) {
-  .pr .plan-card {
-    animation: none;
-  }
 }
 .pr-no {
   color: var(--ink3);

@@ -5,7 +5,7 @@ import { Icon } from "../components/Icon";
 import { MergitLogo } from "../components/MergitLogo";
 import { PlanCards } from "../components/PlanCards";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { COMPARISON, PLANS, type Cell } from "../pricing/plans";
+import { COMPARISON, FREE_CREDITS_LABEL, PLANS, type Cell } from "../pricing/plans";
 import "../styles/screens/pricing.css";
 
 function CellView({ cell }: { cell: Cell }) {
@@ -51,8 +51,8 @@ export function Pricing() {
         <div className="col g12 pr-head page-enter">
           <h1 className="pr-title">Pricing</h1>
           <p className="c2 pr-lede">
-            Start free with 5 USDC of test credits, no wallet needed. Connect a wallet when you want to fund your own
-            work. Every plan settles the same way: escrow first, release after verification.
+            Start free with {FREE_CREDITS_LABEL} of test credits, no wallet needed. Connect a wallet when you want to
+            fund your own work. Free and Pay as you go settle the same way: escrow first, release after verification.
           </p>
           <ul className="pr-assure small">
             {["Escrow before work starts", "Paid only after verification", "A receipt on chain for every task"].map(
@@ -66,6 +66,7 @@ export function Pricing() {
           </ul>
         </div>
 
+        <h2 className="sr-only">Plans</h2>
         <PlanCards
           action={(plan) => {
             if (plan.soon)
@@ -98,7 +99,9 @@ export function Pricing() {
         <h2 className="pr-sub" id="compare">
           Compare plans
         </h2>
-        <div className="pr-table-wrap">
+        {/* Scrolls sideways on a phone: focusable, so a keyboard can scroll it. */}
+        {/* eslint-disable-next-line jsx-a11y-x/no-noninteractive-tabindex */}
+        <div className="pr-table-wrap" tabIndex={0} role="region" aria-label="Plan comparison table">
           <table className="pr-table">
             <caption className="sr-only">What each plan includes</caption>
             <thead>
@@ -107,7 +110,7 @@ export function Pricing() {
                   <span className="sr-only">Feature</span>
                 </th>
                 {PLANS.map((plan) => (
-                  <th key={plan.id} scope="col">
+                  <th key={plan.id} scope="col" className={plan.featured ? "is-featured-col" : undefined}>
                     {plan.name}
                   </th>
                 ))}
@@ -116,7 +119,7 @@ export function Pricing() {
             {COMPARISON.map((group) => (
               <tbody key={group.title}>
                 <tr className="pr-group">
-                  <th scope="colgroup" colSpan={PLANS.length + 1}>
+                  <th scope="rowgroup" colSpan={PLANS.length + 1}>
                     {group.title}
                   </th>
                 </tr>
@@ -127,7 +130,7 @@ export function Pricing() {
                       {row.hint && <span className="pr-hint">{row.hint}</span>}
                     </th>
                     {row.cells.map((cell, i) => (
-                      <td key={PLANS[i]?.id}>
+                      <td key={PLANS[i]?.id} className={PLANS[i]?.featured ? "is-featured-col" : undefined}>
                         <CellView cell={cell} />
                       </td>
                     ))}
@@ -142,10 +145,12 @@ export function Pricing() {
           <h2 id="pr-cta-title" className="pr-cta-title">
             Start free. Pay when you are ready.
           </h2>
-          <p className="c2">5 USDC of test credits, no wallet, and every task leaves a receipt you can check.</p>
+          <p className="c2">
+            {FREE_CREDITS_LABEL} of test credits, no wallet, and every task leaves a receipt you can check.
+          </p>
           <div className="row g12 pr-cta-actions">
             <Link to={session ? paths.app : paths.signIn} className="btn primary">
-              {session ? "Open dashboard" : "Get 5 USDC free"}
+              {session ? "Open dashboard" : `Get ${FREE_CREDITS_LABEL} free`}
             </Link>
             <a href="#compare" className="btn secondary">
               Compare plans
@@ -155,7 +160,7 @@ export function Pricing() {
 
         <p className="small c3 pr-foot">
           Mergit runs on the Base Sepolia testnet. Test funds only: nothing here is real money. The free-trial limits
-          are the current settings and can change. Premium credit packs are not available yet.
+          shown here are defaults and the gateway can change them. Premium credit packs are not available yet.
         </p>
       </main>
     </div>

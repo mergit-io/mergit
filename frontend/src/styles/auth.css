@@ -230,6 +230,8 @@ button.avatarme {
   overflow-y: auto;
 }
 .plan-grid {
+  /* Room for the hover lift and shadow, so a scrolling dialog does not clip them. */
+  padding: 8px 6px 14px;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
@@ -280,17 +282,12 @@ button.avatarme {
   margin-left: auto;
   padding: 3px 10px;
   border-radius: 999px;
-  background: linear-gradient(135deg, var(--mint), var(--azure));
+  /* Deeper mint and azure than the tokens, so the 11px white text is at least 4.5:1 (5.3 and 5.6); dark mode below. */
+  background: linear-gradient(135deg, #0a7a58, #1a5ee0);
   color: #fff;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
-}
-.plan-soon {
-  background-image: linear-gradient(100deg, transparent 30%, rgb(255 255 255 / 0.55) 50%, transparent 70%);
-  background-size: 220% 100%;
-  background-repeat: no-repeat;
-  animation: plan-shimmer 3.2s ease-in-out infinite;
 }
 @keyframes plan-shimmer {
   from {
@@ -299,6 +296,13 @@ button.avatarme {
   to {
     background-position: -60% 0;
   }
+}
+:root[data-theme="dark"] .plan-ribbon {
+  background: linear-gradient(135deg, var(--mint), var(--azure));
+  color: var(--on-ink);
+}
+:root[data-theme="dark"] .plan-soon {
+  --plan-soon-ink: var(--amber);
 }
 .plan-top {
   align-items: center;
@@ -314,10 +318,16 @@ button.avatarme {
   font-weight: 500;
 }
 .plan-soon {
+  /* A deeper amber than --amber (3.8:1 on the wash): 5.8:1 in light mode. Dark mode keeps --amber, 7.4:1. */
+  --plan-soon-ink: #8a5200;
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--amber-wash);
-  color: var(--amber);
+  background-color: var(--amber-wash);
+  background-image: linear-gradient(100deg, transparent 30%, rgb(255 255 255 / 0.55) 50%, transparent 70%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: plan-shimmer 3.2s ease-in-out infinite;
+  color: var(--plan-soon-ink);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -414,7 +424,8 @@ button.avatarme {
     transition: none;
     transform: none;
   }
-  .plan-soon {
+  .plan-soon,
+  .pr .plan-card {
     animation: none;
   }
 }

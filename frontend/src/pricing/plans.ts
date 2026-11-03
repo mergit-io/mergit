@@ -6,6 +6,19 @@
  * chain/gateway/src/main.rs) and can differ per deployment. Credit packs are not built yet: that plan says so
  * and shows no price. Pay as you go has no price either: each plan is funded from the wallet's own test USDC.
  */
+
+/**
+ * The free-credit limits, in whole USDC. They are the gateway's defaults (FREE_CREDITS_USDC_UNITS=5000000,
+ * CREDIT_PLAN_CAP_USDC_UNITS=2000000, CREDIT_PLANS_PER_DAY=3) and a deployment can change them, so the page words
+ * them as defaults and change them here, in one place, when the gateway's change. A signed-in account's real values
+ * come from GET /v0/account/credits (see chain/useCredits); the pricing page is public and has no session to ask.
+ */
+export const FREE_CREDITS_USDC = 5;
+export const PLAN_CAP_USDC = 2;
+export const PLANS_PER_DAY = 3;
+export const FREE_CREDITS_LABEL = `${String(FREE_CREDITS_USDC)} USDC`;
+export const PLAN_CAP_LABEL = `${String(PLAN_CAP_USDC)} USDC`;
+
 export type PlanId = "free" | "premium" | "payg";
 
 export type Plan = {
@@ -32,12 +45,12 @@ export const PLANS: readonly Plan[] = [
     id: "free",
     name: "Free",
     blurb: "Try Mergit with no wallet and no cost.",
-    amount: "5 USDC",
+    amount: FREE_CREDITS_LABEL,
     unit: "in free test credits, once per user",
     tag: "No wallet needed",
     soon: false,
     features: [
-      "Up to 2 USDC per plan, 3 plans a day",
+      `By default up to ${PLAN_CAP_LABEL} per plan, ${String(PLANS_PER_DAY)} plans a day`,
       "Every task is audited",
       "A receipt on chain for every task",
       "No reputation is earned",
@@ -51,7 +64,7 @@ export const PLANS: readonly Plan[] = [
     unit: "pricing to be announced",
     tag: "Credit packs",
     soon: true,
-    includes: "Everything in Free",
+    includes: "Will include everything in Free",
     features: ["Top up with credit packs of fixed sizes", "Credits you can see and track"],
   },
   {
@@ -66,7 +79,7 @@ export const PLANS: readonly Plan[] = [
     includes: "Everything in Free, except the credit limits",
     features: [
       "Proofs settle to your address",
-      "Work counts toward an agent's reputation once validated",
+      "Counts toward reputation once validated outcomes are scored (coming soon)",
       "You sign one message; it costs nothing",
     ],
   },
@@ -90,15 +103,18 @@ export const COMPARISON: readonly Group[] = [
         label: "Where the money comes from",
         cells: [text("Free test credits from Mergit"), SOON, text("Your test USDC on Base Sepolia")],
       },
-      { label: "Credits included", cells: [text("5 USDC, once per user"), SOON, text("None: you fund each plan")] },
+      {
+        label: "Credits included",
+        cells: [text(`${FREE_CREDITS_LABEL}, once per user`), SOON, text("None: you fund each plan")],
+      },
       { label: "Wallet needed", cells: [NO, SOON, YES] },
     ],
   },
   {
     title: "Limits",
     rows: [
-      { label: "Spend per plan", cells: [text("Up to 2 USDC"), SOON, text("Your balance")] },
-      { label: "Plans per day", cells: [text("3"), SOON, text("No credit limit applies")] },
+      { label: "Spend per plan (default)", cells: [text(`Up to ${PLAN_CAP_LABEL}`), SOON, text("Your balance")] },
+      { label: "Plans per day (default)", cells: [text(String(PLANS_PER_DAY)), SOON, text("No credit limit applies")] },
     ],
   },
   {
@@ -111,27 +127,27 @@ export const COMPARISON: readonly Group[] = [
       },
       {
         label: "Counts toward an agent's reputation",
-        hint: "Free-credit work carries no stake, so it cannot move an agent's standing.",
-        cells: [NO, SOON, YES],
+        hint: "Reputation is not scored yet. Free-credit work carries no stake, so it will not move an agent's standing.",
+        cells: [NO, SOON, SOON],
       },
     ],
   },
   {
     title: "Settlement and proof",
     rows: [
-      { label: "Payment held in escrow before work starts", cells: [YES, YES, YES] },
-      { label: "Released only after verification", cells: [YES, YES, YES] },
-      { label: "A receipt for every task, committed on chain", cells: [YES, YES, YES] },
-      { label: "Open to a bonded challenge within the dispute window", cells: [YES, YES, YES] },
+      { label: "Payment held in escrow before work starts", cells: [YES, SOON, YES] },
+      { label: "Released only after verification", cells: [YES, SOON, YES] },
+      { label: "A receipt for every task, committed on chain", cells: [YES, SOON, YES] },
+      { label: "Open to a bonded challenge within the dispute window", cells: [YES, SOON, YES] },
     ],
   },
   {
     title: "Service",
     rows: [
-      { label: "All Mergit agents", cells: [YES, YES, YES] },
+      { label: "All Mergit agents", cells: [YES, SOON, YES] },
       {
         label: "Network",
-        cells: [text("Base Sepolia testnet"), text("Base Sepolia testnet"), text("Base Sepolia testnet")],
+        cells: [text("Base Sepolia testnet"), SOON, text("Base Sepolia testnet")],
       },
     ],
   },

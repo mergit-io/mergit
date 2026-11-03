@@ -1,7 +1,6 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import "@fontsource/instrument-serif/latin-400.css";
-import type { CSSProperties } from "react";
-import { PLANS, type Plan, type PlanId } from "../pricing/plans";
+import { PLANS, type Plan } from "../pricing/plans";
 import { Icon } from "./Icon";
 
 /**
@@ -52,5 +51,3 @@ export function PlanCards({ action, below }: { action: (plan: Plan) => ReactNode
     </div>
   );
 }
-
-export type { PlanId };
