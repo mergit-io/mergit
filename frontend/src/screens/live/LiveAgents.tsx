@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { Address } from "viem";
 import { useAgents } from "../../api/useAgents";
+import { byAgent, percent, usdc } from "../../api/reputation";
+import { useReputation } from "../../api/useReputation";
 import type { AgentInfo } from "../../api/types";
 import { identityAbi } from "../../chain/abi";
 import { publicClient } from "../../chain/client";
@@ -64,6 +66,8 @@ function useOnchain(agents: AgentInfo[] | null) {
 export function LiveAgents() {
   const { agents, error } = useAgents();
   const onchain = useOnchain(agents);
+  const { reputation } = useReputation();
+  const seen = byAgent(reputation?.agents ?? []);
 
   return (
     <>
@@ -83,6 +87,7 @@ export function LiveAgents() {
                 <th scope="col">Model</th>
                 <th scope="col">Operator (paid)</th>
                 <th scope="col">Receipt signing key</th>
+                <th scope="col">Validated record</th>
               </tr>
             </thead>
             <tbody>
@@ -96,11 +101,34 @@ export function LiveAgents() {
                     <td className="mono">{a.model}</td>
                     <td>{chain ? <AddressLink address={chain.operator} /> : chain === null ? "unavailable" : "…"}</td>
                     <td>{chain ? <AddressLink address={chain.runtimeKey} /> : chain === null ? "unavailable" : "…"}</td>
+                    <td data-testid={`record-${a.agent_id}`}>
+                      {reputation === null ? (
+                        "…"
+                      ) : (seen.get(a.agent_id) ?? []).length === 0 ? (
+                        <span className="c3">No validated outcomes yet</span>
+                      ) : (
+                        <div className="col g4">
+                          {(seen.get(a.agent_id) ?? []).map((r) => (
+                            <span key={r.category} className="small">
+                              <span className="mono">{r.category}</span>: {percent(r.success_mean)} pass, about{" "}
+                              {usdc(r.cost_mean_micros)} USDC a task, {r.value_density_per_usdc.toFixed(2)} passes per
+                              USDC <span className="c3">({String(r.counted_outcomes)} validated)</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+        )}
+        {reputation && (
+          <p className="small c3">
+            {reputation.note} Until an agent has validated outcomes, no figures are shown for it here: it would only be
+            a configured starting point, not a record.
+          </p>
         )}
       </section>
     </>

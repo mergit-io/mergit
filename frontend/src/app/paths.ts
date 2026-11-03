@@ -21,4 +21,5 @@ export const paths = {
   leaderboard: `${APP}/leaderboard`,
   integrations: `${APP}/integrations`,
   wallet: `${APP}/wallet`,
+  settings: `${APP}/settings`,
 } as const;

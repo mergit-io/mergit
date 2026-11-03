@@ -23,6 +23,7 @@ import { LiveOverview } from "../screens/live/LiveOverview";
 import { LiveWallet } from "../screens/live/LiveWallet";
 import { LiveNewRun } from "../screens/live/run/LiveNewRun";
 import { LiveRunWorkspace } from "../screens/live/run/LiveRunWorkspace";
+import { LiveSettings } from "../screens/live/LiveSettings";
 import { LiveRuns } from "../screens/live/run/LiveRuns";
 import { HardNavigate } from "./HardNavigate";
 import { paths } from "./paths";
@@ -64,6 +65,8 @@ export const router = createBrowserRouter([
           { path: "leaderboard", element: live ? <Navigate to={paths.app} replace /> : <Leaderboard /> },
           { path: "integrations", element: live ? <Navigate to={paths.app} replace /> : <Integrations /> },
           { path: "wallet", element: live ? <LiveWallet /> : <Wallet /> },
+          // Settings are about a real account; the demo has none, so it goes back to the dashboard.
+          { path: "settings", element: live ? <LiveSettings /> : <Navigate to={paths.app} replace /> },
           { path: "*", element: <NotFound /> },
         ],
       },

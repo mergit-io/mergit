@@ -9,6 +9,8 @@ import type {
   Plan,
   PlanDetail,
   PlanSummary,
+  ReputationResponse,
+  Suggestions,
   TaskEdit,
 } from "./types";
 
@@ -65,26 +67,38 @@ async function toError(response: Response): Promise<ApiError> {
 /** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal. */
 const base = () => (LIVE.apiUrl ? apiBase() : "");
 
-async function request<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${base()}${path}`, {
       method,
       credentials: "include",
-      ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+      ...(body === undefined
+        ? { headers }
+        : { headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
   } catch {
     throw new ApiError(0, "Mergit is unreachable. Check your connection and try again.");
   }
   if (response.status === 401) sessionEnded?.();
   if (!response.ok) throw await toError(response);
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
 const planPath = (planUuid: string) => `/v0/plans/${encodeURIComponent(planUuid)}`;
 
 /** Drafts a plan from a goal. The planner model runs during this call, so it takes a few seconds. */
-export const createPlan = (body: NewPlanRequest) => request<Plan>("POST", "/v0/plans", body);
+export const createPlan = (body: NewPlanRequest, idempotencyKey?: string) =>
+  request<Plan>("POST", "/v0/plans", body, idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey });
+
+/** Throws a draft away, with its tasks. Only a draft: anything approved is closed with `abandonPlan` instead. */
+export const discardPlan = (planUuid: string) => request<undefined>("DELETE", planPath(planUuid));
 
 /** Replaces a draft's tasks. The API checks them exactly as it checks a planner answer. */
 export const editPlan = (planUuid: string, tasks: TaskEdit[]) => request<Plan>("PATCH", planPath(planUuid), { tasks });
@@ -101,6 +115,13 @@ export const listPlans = () => request<PlanSummary[]>("GET", "/v0/plans");
 export const getPlan = (planUuid: string) => request<PlanDetail>("GET", planPath(planUuid));
 
 export const listAgents = () => request<AgentInfo[]>("GET", "/v0/agents");
+
+/** Every agent-category pair with validated outcomes. Until there are any, the list is empty. */
+export const getReputation = () => request<ReputationResponse>("GET", "/v0/agents/reputation");
+
+/** Advice for a draft plan's agent picks. `explore` asks for a seeded Thompson draw instead of the greedy ranking. */
+export const getSuggestions = (planUuid: string, explore: boolean) =>
+  request<Suggestions>("GET", `${planPath(planUuid)}/suggestions${explore ? "?explore=true" : ""}`);
 
 /** Server-Sent Events for one plan. Open with `withCredentials: true`, or the session cookie is not sent. */
 export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid)}/events`;

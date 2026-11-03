@@ -74,6 +74,16 @@ async fn grants_once_per_address(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn the_view_states_the_limits_a_plan_must_fit(pool: PgPool) {
+    let w = world(pool).await;
+    let c = credits(&w, w.requester.address()).await;
+    // The control plane and the web app read these to refuse an over-cap plan before it is approved, instead
+    // of the gateway denying it afterwards.
+    assert_eq!(c["plan_cap_usdc_units"], "2000000");
+    assert_eq!(c["plans_per_day"], 3);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn credits_fund_plan_as_onboarding_tier(pool: PgPool) {
     let w = world(pool).await;
     post(&w, &approved(&w, 2, 1_500_000)).await;

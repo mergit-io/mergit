@@ -17,6 +17,7 @@ from . import (
     oauth,
     otp,
     redeem,
+    routes_account,
     routes_plans,
     routes_pr,
     routes_reputation,
@@ -56,7 +57,8 @@ def create_app(
         app.state.agents = load_agents(settings.agents_file, settings.agents_config)
         require_schemas()  # the plan checks and events are validated against spec/schemas
         prices = PriceTable.load(Path(settings.prices_file))
-        prices.model_call_cost(settings.planner_model, 0, 0, 0)  # the planner model must have a price
+        for model in settings.model_choices:  # every planner model a user may choose must have a price
+            prices.model_call_cost(model, 0, 0, 0)
         pool = await open_pool(settings.database_url, settings.db_pool_max)
         async with pool.connection() as conn:
             await migrate(conn)
@@ -104,12 +106,13 @@ def create_app(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+        allow_headers=["Content-Type", "Idempotency-Key"],
         expose_headers=["Retry-After"],  # the app says how long to wait after a 429 (redeem codes)
     )
     app.include_router(auth.router)
     app.include_router(auth.account_router)
+    app.include_router(routes_account.router)
     app.include_router(redeem.router)
     app.include_router(oauth.router)
     app.include_router(otp.router)

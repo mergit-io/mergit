@@ -170,18 +170,52 @@ async def redeem_code(
     return {"amount_usdc_units": str(amount)}
 
 
-@router.get("/credits")
-async def account_credits(principal: PrincipalDep, settings: SettingsDep) -> dict[str, Any]:
-    """The signed-in account's credits: granted, spent, remaining (USDC base units). The ledger is the
-    gateway's; this asks it for this account only."""
-    user_id = _member(principal)
+async def fetch_credits(settings: Settings, user_id: UUID) -> dict[str, Any] | None:
+    """The gateway's view of one account's credits, or None when it cannot be read (down, or not a 200)."""
     url = f"{settings.gateway_url.rstrip('/')}/v0/credits/account/{user_id}"
-    unavailable = HTTPException(status_code=502, detail={"error": "credits_unavailable"})
     try:
         async with httpx.AsyncClient(timeout=5.0) as http:
             response = await http.get(url)
-    except httpx.HTTPError as exc:
-        raise unavailable from exc
+    except httpx.HTTPError:
+        return None
     if response.status_code != 200:
-        raise unavailable
+        return None
     return dict(response.json())
+
+
+def _usdc(units: int) -> str:
+    return f"{units / 1_000_000:.2f}".rstrip("0").rstrip(".")
+
+
+def credit_problems(view: dict[str, Any], total: int) -> list[str]:
+    """Why the gateway would deny a credits plan worth ``total`` units, from its own view of the account.
+
+    Said before the plan is approved, so the plan stays a draft the person can still change. A view from a
+    gateway that does not state its limits yet yields nothing: the gateway still decides when it takes the
+    event."""
+    problems: list[str] = []
+    cap = view.get("plan_cap_usdc_units")
+    if cap is not None and total > int(cap):
+        problems.append(
+            f"free credits cover up to {_usdc(int(cap))} USDC per plan; this plan is {_usdc(total)} USDC."
+            " Lower the budget, or fund it from a wallet"
+        )
+    per_day = view.get("plans_per_day")
+    if per_day is not None and int(view.get("plans_today", 0)) >= int(per_day):
+        problems.append(f"you have used today's {per_day} free plans; they reset tomorrow")
+    remaining = view.get("remaining_usdc_units")
+    if remaining is not None and total > int(remaining):
+        problems.append(
+            f"only {_usdc(int(remaining))} USDC of free credits left; this plan is {_usdc(total)} USDC"
+        )
+    return problems
+
+
+@router.get("/credits")
+async def account_credits(principal: PrincipalDep, settings: SettingsDep) -> dict[str, Any]:
+    """The signed-in account's credits: granted, spent, remaining (USDC base units), and the limits a plan
+    must fit. The ledger is the gateway's; this asks it for this account only."""
+    view = await fetch_credits(settings, _member(principal))
+    if view is None:
+        raise HTTPException(status_code=502, detail={"error": "credits_unavailable"})
+    return view

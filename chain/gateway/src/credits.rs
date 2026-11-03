@@ -188,6 +188,8 @@ async fn view(s: &AppState, key: &str) -> Response {
         "spent_usdc_units": spent.to_string(),
         "remaining_usdc_units": (granted - spent).max(0).to_string(),
         "plans_today": plans_today,
+        "plan_cap_usdc_units": s.cfg.credit_plan_cap_units.to_string(),
+        "plans_per_day": s.cfg.credit_plans_per_day,
     }))
     .into_response()
 }

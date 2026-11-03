@@ -198,8 +198,7 @@ def _member(principal: Principal) -> UUID:
     return principal.user_id
 
 
-@router.get("/me")
-async def me(principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
+async def _account_view(principal: Principal, pool: Pool) -> dict[str, Any]:
     if principal.user_id is None:
         return {"address": principal.address, "user_id": None, "identities": [], "wallets": [], "trial": None}
     async with pool.connection() as conn:
@@ -215,6 +214,20 @@ async def me(principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
         "trial_address": accounts.trial_address(profile.user_id),
         "trial": ({"started_at": profile.trial_started_at.isoformat()} if profile.trial_started_at else None),
     }
+
+
+@router.get("/me")
+async def me(principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
+    return await _account_view(principal, pool)
+
+
+@router.get("/session")
+async def session_probe(principal: MaybePrincipalDep, pool: PoolDep) -> dict[str, Any] | None:
+    """Who is signed in, for a page that asks on every load. The same answer as ``/me``, but nobody signed in
+    (no cookie, a forged, expired or logged-out one) is ``200 null`` instead of ``401``: a 401 is an error the
+    browser prints in red in every visitor's console, and here it is the normal answer. ``/me`` stays
+    strict."""
+    return None if principal is None else await _account_view(principal, pool)
 
 
 @router.post("/wallet/link")
@@ -293,10 +306,13 @@ async def merge_accounts(
 
 
 @account_router.post("/trial")
-async def start_trial(principal: PrincipalDep, pool: PoolDep) -> dict[str, str]:
-    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet."""
+async def start_trial(principal: PrincipalDep, settings: SettingsDep, pool: PoolDep) -> dict[str, str]:
+    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet. Refused when one
+    of the account's sign-in methods belonged to a deleted account: the free credits are once per person."""
     user_id = _member(principal)
     async with pool.connection() as conn:
+        if await accounts.credits_forfeited(conn, settings, user_id):
+            raise HTTPException(status_code=403, detail="the free credits were already used by this person")
         started = await accounts.start_trial(conn, user_id)
     return {"started_at": started.isoformat()}
 

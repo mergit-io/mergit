@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, listPlans, onSessionEnded } from "./client";
+import { ApiError, createPlan, discardPlan, listPlans, onSessionEnded } from "./client";
 
 const answer = (status: number, body: unknown) =>
   Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
@@ -79,5 +79,42 @@ describe("with the API on the page's own hostname (VITE_API_URL=same-origin)", (
     });
     await c.listPlans();
     expect(seen.join()).not.toContain("same-origin");
+  });
+});
+
+describe("drafting and discarding a plan", () => {
+  const request = {
+    goal: "g",
+    repo_url: "https://github.com/o/r",
+    ref: "main",
+    budget_usdc_units: "1",
+    category: "bug-fix",
+  };
+
+  it("sends the Idempotency-Key when there is one, and none when there is not", async () => {
+    const seen: Array<Record<string, string>> = [];
+    vi.stubGlobal("fetch", (_url: string, init: { headers?: Record<string, string> }) => {
+      seen.push(init.headers ?? {});
+      return answer(201, { plan_uuid: "p" });
+    });
+    await createPlan(request, "key-1");
+    await createPlan(request);
+    expect(seen[0]?.["Idempotency-Key"]).toBe("key-1");
+    expect(seen[1]?.["Idempotency-Key"]).toBeUndefined();
+  });
+
+  it("discards with DELETE and accepts the empty 204 answer", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    vi.stubGlobal("fetch", (url: string, init: { method: string }) => {
+      calls.push({ url, method: init.method });
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+    await expect(discardPlan("a b")).resolves.toBeUndefined();
+    expect(calls).toEqual([{ url: expect.stringContaining("/v0/plans/a%20b") as string, method: "DELETE" }]);
+  });
+
+  it("surfaces a refusal to discard", async () => {
+    vi.stubGlobal("fetch", () => answer(409, { detail: "the plan is approved; only a draft can change" }));
+    await expect(discardPlan("p")).rejects.toMatchObject({ status: 409 });
   });
 });

@@ -13,6 +13,7 @@ from mergit_cp import (
     auth,
     oauth,
     otp,
+    routes_account,
     routes_plans,
     routes_reputation,
     routes_routing,
@@ -37,6 +38,7 @@ def _browser_paths() -> list[str]:
     routers = [
         auth.router,
         auth.account_router,
+        routes_account.router,
         oauth.router,
         otp.router,
         wallet_interest.router,

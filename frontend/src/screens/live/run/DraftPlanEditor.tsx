@@ -3,6 +3,9 @@ import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
+import { useNavigate } from "react-router-dom";
+import { paths } from "../../../app/paths";
+import { creditProblem } from "../../../chain/creditLimits";
 import { formatUsdc } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon } from "../../../components/Icon";
@@ -18,7 +21,10 @@ import {
   type TaskForm,
 } from "./draft";
 import { Problems } from "./Problems";
+import { SuggestAgents } from "./SuggestAgents";
+import { applySuggestions } from "./suggest";
 import { TaskDraftCard } from "./TaskDraftCard";
+import { DiscardDraft } from "./DiscardDraft";
 import { useSubmit } from "./useSubmit";
 
 const FUNDING_OPTIONS = ["Wallet", "Free credits"] as const;
@@ -40,6 +46,7 @@ export function DraftPlanEditor({
   agents: AgentInfo[] | null;
   onChanged: () => void;
 }) {
+  const navigate = useNavigate();
   const { session, account } = useAuth();
   const { credits, error: creditsError } = useCredits(session !== null);
   // A free-trial account has no wallet: its plans can only be paid from credits, and the API refuses anything else.
@@ -50,6 +57,8 @@ export function DraftPlanEditor({
   const { busy, problems, setProblems, submit } = useSubmit();
   const edited = hasEdits(plan, forms);
   const total = totalBudget(forms);
+  // The API refuses an over-limit credits plan too; saying so here keeps the button from inviting a refusal.
+  const creditLimit = funding === "Free credits" ? creditProblem(credits, total) : null;
 
   const update = (next: TaskForm) => {
     setForms((list) => list.map((f) => (f.index === next.index ? next : f)));
@@ -96,6 +105,12 @@ export function DraftPlanEditor({
           </span>
           <span className="small c3">of {formatUsdc(BigInt(plan.budget_usdc_units))} USDC you offered</span>
         </div>
+        <SuggestAgents
+          planUuid={plan.plan_uuid}
+          onUse={(suggestions) => {
+            setForms((list) => applySuggestions(list, suggestions));
+          }}
+        />
         <div className="col g8">
           <span className="cap">Pay with</span>
           <Segmented
@@ -112,9 +127,19 @@ export function DraftPlanEditor({
                 : `Free credits left: ${credits ? formatUsdc(credits.remaining) : "…"} USDC. Tasks paid with credits are always audited.`}
           </span>
         </div>
+        {creditLimit && (
+          <p className="small ca" role="alert">
+            {creditLimit}
+          </p>
+        )}
         <Problems items={problems} />
         <div className="col g8">
-          <button type="button" className="btn primary block" disabled={busy || !agents} onClick={approve}>
+          <button
+            type="button"
+            className="btn primary block"
+            disabled={busy || !agents || creditLimit !== null}
+            onClick={approve}
+          >
             <Icon name="check" size={16} />
             {busy ? "Working…" : "Approve plan"}
           </button>
@@ -122,6 +147,12 @@ export function DraftPlanEditor({
             Save changes
           </button>
           <span className="small c3">Approving locks the tasks, their checks and your agent picks.</span>
+          <DiscardDraft
+            planUuid={plan.plan_uuid}
+            onDiscarded={() => {
+              void navigate(paths.runs);
+            }}
+          />
         </div>
       </aside>
     </section>

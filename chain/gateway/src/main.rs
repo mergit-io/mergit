@@ -1,7 +1,7 @@
 //! mergit-gateway. Env: DATABASE_URL, RPC_URL, DEPLOYMENT_JSON or DEPLOYMENT_FILE, GATEWAY_KEY, ORCHESTRATOR_URL, VALIDATOR_URL,
 //! GATEWAY_ADDR (default 0.0.0.0:8082), CONFIRMATIONS (default 2), DEADLINE_SLACK_SECS (default 60),
-//! TREASURY_KEY (enables free credits), FREE_CREDITS_USDC_UNITS (5000000), CREDIT_PLAN_CAP_USDC_UNITS (2000000),
-//! CREDIT_PLANS_PER_DAY (3), EVENTS_TOKEN (required: the orchestrator's shared secret for /v0/events), AUDIT_TOKEN (required: the
+//! TREASURY_KEY (enables free credits), FREE_CREDITS_USDC_UNITS (5000000), CREDIT_PLAN_CAP_USDC_UNITS (default: the
+//! free grant, so one plan may use all of it), CREDIT_PLANS_PER_DAY (3), EVENTS_TOKEN (required: the orchestrator's shared secret for /v0/events), AUDIT_TOKEN (required: the
 //! validator's shared secret), CHAIN_EVENTS_TOKEN (required: sent to the orchestrator on /v0/chain-events). The credit
 //! figures are parameters, not measurements.
 
@@ -30,6 +30,9 @@ async fn main() -> anyhow::Result<()> {
     let contracts = Contracts::new(&deployment, provider(&rpc, env("GATEWAY_KEY")?.parse()?)?);
     let db = sqlx::PgPool::connect(&env("DATABASE_URL")?).await?;
     sqlx::migrate!("./migrations").run(&db).await?;
+    // The per-plan cap defaults to the grant itself: a cap set separately (it was 2 USDC against a 5 USDC grant) let the
+    // New run page offer a budget the gateway would then refuse, and the refused plan was closed.
+    let free_credits_units: u64 = num("FREE_CREDITS_USDC_UNITS", 5_000_000);
     let cfg = Config {
         orchestrator_url: env("ORCHESTRATOR_URL")?,
         validator_url: env("VALIDATOR_URL")?,
@@ -39,8 +42,8 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .and_then(|v| v.parse().ok()),
         deadline_slack_secs: num("DEADLINE_SLACK_SECS", 60),
-        free_credits_units: num("FREE_CREDITS_USDC_UNITS", 5_000_000),
-        credit_plan_cap_units: num("CREDIT_PLAN_CAP_USDC_UNITS", 2_000_000),
+        free_credits_units,
+        credit_plan_cap_units: num("CREDIT_PLAN_CAP_USDC_UNITS", free_credits_units),
         credit_plans_per_day: num("CREDIT_PLANS_PER_DAY", 3),
         events_token: Some(env("EVENTS_TOKEN")?),
         audit_token: Some(env("AUDIT_TOKEN")?),

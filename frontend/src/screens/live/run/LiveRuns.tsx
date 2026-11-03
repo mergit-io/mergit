@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { errorMessage, listPlans } from "../../../api/client";
+import { useAuth } from "../../../auth/context";
 import type { PlanSummary } from "../../../api/types";
 import { formatUsdc } from "../../../chain/funding";
 import { Button } from "../../../components/Button";
@@ -12,10 +13,13 @@ import "../../../styles/screens/live-run.css";
 
 /** The signed-in requester's own plans, newest first. */
 export function LiveRuns() {
+  const { session } = useAuth();
+  const signedIn = session !== null; // signed out, this page renders behind the Connect window and must not ask
   const [plans, setPlans] = useState<PlanSummary[] | null>(null);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    if (!signedIn) return;
     let active = true;
     listPlans().then(
       (list) => {
@@ -28,7 +32,7 @@ export function LiveRuns() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [signedIn]);
 
   return (
     <>

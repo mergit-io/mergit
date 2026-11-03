@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiBase } from "./wallet";
 
-export type Credits = { granted: bigint; spent: bigint; remaining: bigint; plansToday: number };
+export type Credits = {
+  granted: bigint;
+  spent: bigint;
+  remaining: bigint;
+  plansToday: number;
+  /** The most one plan may cost when paid from credits, and how many plans a day; null from a gateway that does not say. */
+  planCap: bigint | null;
+  plansPerDay: number | null;
+};
 
 /**
  * The signed-in account's free credits, from Mergit's API (which asks the gateway for this account only). Credits
@@ -26,6 +34,8 @@ export function useCredits(enabled: boolean) {
           spent_usdc_units: string;
           remaining_usdc_units: string;
           plans_today: number;
+          plan_cap_usdc_units?: string;
+          plans_per_day?: number;
         };
         if (live) {
           setError(undefined);
@@ -34,6 +44,8 @@ export function useCredits(enabled: boolean) {
             spent: BigInt(c.spent_usdc_units),
             remaining: BigInt(c.remaining_usdc_units),
             plansToday: c.plans_today,
+            planCap: c.plan_cap_usdc_units === undefined ? null : BigInt(c.plan_cap_usdc_units),
+            plansPerDay: c.plans_per_day ?? null,
           });
         }
       })

@@ -45,8 +45,9 @@ signed by the runtime. Version 0 has no TEE: every receipt says so, and no verif
 | `at` | When the step finished |
 
 The raw bytes behind every digest travel separately as **blobs**, keyed by digest. Captured output is
-capped at 1 MiB; when truncated, the stored bytes end with
-`\n[mergit: output truncated at 1048576 bytes]\n` and the digest covers exactly the stored bytes.
+capped (1 MiB, 1048576 bytes, by default); when truncated, the stored bytes end with
+`\n[mergit: output truncated at <cap> bytes]\n`, where `<cap>` is the cap that was applied, and the digest
+covers exactly the stored bytes. At the default cap the marker is `\n[mergit: output truncated at 1048576 bytes]\n`.
 
 **The `phi_eval` step.** Exactly one. It is the last step and it is in the evidence set. Its input bytes
 are `JCS(phi)` and its output bytes are `JCS(PhiResult)`. Only sealing creates it, after the agent has
