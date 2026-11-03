@@ -18,6 +18,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { Segmented } from "../../components/Segmented";
 import { Spark } from "../../components/Spark";
 import { LIVE } from "../../config/live";
+import { readFailure } from "../../chain/readFailure";
 import { stagger } from "../../lib/stagger";
 import { dailySuccess, runsPerDay, successRate, timeAgo } from "./analytics";
 import { DayBars, Meter } from "./charts";
@@ -100,7 +101,7 @@ export function LiveOverview() {
             </div>
             <div className="small c2">
               {receiptsError
-                ? `Could not read the registry on ${LIVE.chainName} right now.`
+                ? readFailure("the registry", LIVE.chainName)
                 : latest
                   ? `Latest at block ${latest.blockNumber.toString()}, task ${latest.taskId.slice(0, 10)}…`
                   : "No receipts committed yet. One appears here once an agent finishes a task."}
