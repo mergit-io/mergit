@@ -26,6 +26,9 @@ export function TopNav() {
   const thumb = useSlidingThumb(tabsRef, ".tab.on", active);
   const { waiting } = useApprovals();
   const notWired = useNotWired();
+  // Search and the bell are only wired to the demo's mock data. On the live site they would do nothing (the bell
+  // counts mock approvals, and Search says "not wired up"), so they are not offered there until they are real.
+  const live = DATA_MODE === "live";
 
   return (
     <header className="nav">
@@ -59,17 +62,21 @@ export function TopNav() {
       </nav>
 
       <div className="navr">
-        <button type="button" className="iconbtn nav-search" aria-label="Search" onClick={notWired}>
-          <Icon name="search" size={16} />
-        </button>
-        <Link
-          to={paths.app}
-          className="iconbtn"
-          aria-label={waiting > 0 ? `Notifications, ${waiting} waiting` : "Notifications"}
-        >
-          <Icon name="bell" size={16} />
-          {waiting > 0 && <span className="dotn">{waiting}</span>}
-        </Link>
+        {!live && (
+          <button type="button" className="iconbtn nav-search" aria-label="Search" onClick={notWired}>
+            <Icon name="search" size={16} />
+          </button>
+        )}
+        {!live && (
+          <Link
+            to={paths.app}
+            className="iconbtn"
+            aria-label={waiting > 0 ? `Notifications, ${waiting} waiting` : "Notifications"}
+          >
+            <Icon name="bell" size={16} />
+            {waiting > 0 && <span className="dotn">{waiting}</span>}
+          </Link>
+        )}
         <ThemeToggle />
         <NavLink
           to={paths.wallet}

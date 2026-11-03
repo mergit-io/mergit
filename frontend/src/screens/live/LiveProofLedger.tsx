@@ -7,6 +7,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { Spark } from "../../components/Spark";
 import { listCommitments, type Commitment } from "../../chain/proofs";
 import { LIVE } from "../../config/live";
+import { readFailure } from "../../chain/readFailure";
 import { useCountUp } from "../../hooks/useCountUp";
 import { costTrend, hourlyActivity, receiptsByAgent, receiptsPerBlock, runsPerDay, totalCost } from "./analytics";
 import { AreaTrend, BlockBars, HourHeatmap, ShareLegend, ShareRing } from "./charts";
@@ -58,7 +59,7 @@ export function LiveProofLedger() {
   const [error, setError] = useState<string>();
   useEffect(() => {
     listCommitments().then(setRows, () => {
-      setError(`Could not read receipts from ${LIVE.chainName}. Try again in a moment.`);
+      setError(readFailure("receipts", LIVE.chainName));
     });
   }, []);
 
