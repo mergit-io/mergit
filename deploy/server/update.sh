@@ -21,7 +21,7 @@ case "$what" in
     compose build
     # Before anything running is replaced: run the API's and the worker's own start-up configuration checks
     # in the images just built, against the real env files (mergit_cp/preflight.py, mergit_worker/preflight.py).
-    # A setting the new code needs and deploy/secrets/*.env lacks (a deployed agent's or the planner's model
+    # A setting the new code needs and deploy/secrets/*.env lacks (PLANNER_PROVIDER, a deployed agent's model
     # key) then fails the deploy here, with `set -e`, and the old containers keep serving, instead of `up`
     # leaving a new api restart-looping or a new worker that refuses to start. Neither check touches the
     # database or the network.

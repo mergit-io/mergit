@@ -188,9 +188,9 @@ instance the worker happened to reach. Fine for one instance (`O10` as currently
 instance would need Postgres `LISTEN`/`NOTIFY` or a shared queue, which is out of scope here.
 
 **Configuration** (`mergit_cp/config.py`). Required: `DATABASE_URL`, `APP_DOMAIN`, `SESSION_SECRET` (32+
-characters), `GATEWAY_URL`, `STORE_URL`, `AGENTS_FILE`, `PLANNER_MODEL`, `EVENTS_TOKEN`,
-`CHAIN_EVENTS_TOKEN`, `WORKER_TOKEN`, plus whichever model key `PLANNER_PROVIDER` needs. Defaults: `PLANNER_PROVIDER`
-(`anthropic`), `CHAIN_ID` (84532), `PLANS_PER_HOUR` (10),
+characters), `GATEWAY_URL`, `STORE_URL`, `AGENTS_FILE`, `PLANNER_MODEL`, `PLANNER_PROVIDER`, `EVENTS_TOKEN`,
+`CHAIN_EVENTS_TOKEN`, `WORKER_TOKEN`, plus whichever model key `PLANNER_PROVIDER` needs. Defaults: `CHAIN_ID`
+(84532), `PLANS_PER_HOUR` (10),
 `PLANNER_MAX_TASKS` (8), `MAX_ATTEMPTS` (3), `REPO_HOSTS` (github.com), `CORS_ORIGINS`, `SSE_POLL_S` (1),
 `OUTCOME_POLL_S` (1).
 `WORKER_TOKEN` is this deployment's own choice, like `CHAIN_EVENTS_TOKEN`: spec/events-v0.md does not name a
@@ -376,8 +376,8 @@ availability checks, additional agents, evals, failure injection: audited, see
 
 ## Model provider
 
-Each agent names its own model provider, and so does the planner (`PLANNER_PROVIDER`, default `anthropic`);
-there is no process-wide fallback. `agents.toml` carries both:
+Each agent and the planner name their own model provider; there is no process-wide default and no
+fallback. `agents.toml` carries both:
 
 ```toml
 [providers.openrouter]
@@ -385,23 +385,19 @@ kind = "openai_chat"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
-[agents.some-agent]
+[agents.claude-worker]
 provider = "openrouter"
-model = "some-vendor/some-model"   # priced in prices.toml under exactly this id
+model = "anthropic/claude-sonnet-5"
 ...
 ```
-
-The shipped agents are all on `anthropic`; `groq` and `openrouter` are defined and used by no shipped agent.
-Pointing an agent at one is a change to that agent's `provider` and `model` lines (and a `prices.toml` entry),
-and changes what its receipts attest, so it is its own decision.
 
 A `[providers.<name>]` table names that provider's implementation: `kind = "anthropic"` talks to the
 Anthropic SDK directly and needs nothing else (it falls back to the SDK's own `ANTHROPIC_API_KEY` /
 `ANTHROPIC_AUTH_TOKEN`); `kind = "openai_chat"` speaks an OpenAI-compatible chat API (Groq, OpenRouter, or
 anything else shaped like one) and needs `base_url` plus `api_key_env`, the environment variable holding
 its key. Each `[agents.<name>]` table then names which provider it uses by `provider`, and the planner
-names its own by `Settings.planner_provider` (`PLANNER_PROVIDER`), never derived from which keys happen to
-be set.
+names its own by `Settings.planner_provider` (`PLANNER_PROVIDER`) — a deployment choice, same as
+`PLANNER_MODEL`, not derived from which keys happen to be set.
 
 The provider key goes to `base_url` as a Bearer token, and `agents.toml` ships with every push to main, so
 `load_providers` refuses a provider that could send a key somewhere new. `base_url` must be https on the

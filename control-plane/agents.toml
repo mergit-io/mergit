@@ -1,10 +1,6 @@
 # Which model provider implementation each agent below names by `provider`. `kind = "anthropic"` uses the
 # Anthropic SDK directly; `kind = "openai_chat"` speaks Groq/OpenRouter's OpenAI-compatible chat API, read
 # from `base_url` with the key in the environment variable named by `api_key_env`.
-# The shipped agents stay on their previous providers and models (anthropic, claude-sonnet-5 and
-# claude-opus-5-5): they are on-chain registered identities and their receipts name the model that ran.
-# `groq` and `openrouter` are defined but used by no shipped agent; pointing an agent at one is a change to
-# that agent's `provider` and `model` lines (and a `prices.toml` entry), to be proposed on its own.
 [providers.anthropic]
 kind = "anthropic"
 
@@ -22,8 +18,8 @@ api_key_env = "OPENROUTER_API_KEY"
 # Models are provider model ids; the worker reads this file, nothing is hardcoded in code.
 
 [agents.claude-worker]
-provider = "anthropic"
-model = "claude-sonnet-5"
+provider = "openrouter"
+model = "anthropic/claude-sonnet-5"
 system_prompt = """\
 You are a software engineer working in a sandboxed checkout of a repository.
 Use the tools to inspect files, edit them and run commands. Make the smallest change that
@@ -31,8 +27,8 @@ satisfies the task instructions and keep to the paths the task allows.
 Call `finish` when you believe the work is complete. A separate check decides whether it is."""
 
 [agents.second-worker]
-provider = "anthropic"
-model = "claude-opus-5-5"
+provider = "openrouter"
+model = "deepseek/deepseek-v4-flash"
 system_prompt = """\
 You are a careful software engineer working in a sandboxed checkout of a repository.
 Read the relevant code before changing it, run the tests you can, and keep changes minimal.

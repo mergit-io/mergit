@@ -56,9 +56,11 @@ output_per_mtok = 0.30
 cache_read_per_mtok = 0.0375
 cache_write_per_mtok = 0.075
 
-# OpenRouter list prices, checked against https://openrouter.ai/api/v1/models on 2026-11-01. The receipt
-# prices the exact OpenRouter id called. No shipped agent uses these today (agents.toml keeps them on their
-# previous providers); they stay so a later `provider = "openrouter"` agent is priced and the table is tested.
+# OpenRouter list prices, checked against https://openrouter.ai/api/v1/models on 2026-11-01 (the Haiku 4.5 row
+# on 2026-11-03). The receipt prices the exact OpenRouter id called, vendor prefix and all: OpenRouter does not
+# know `claude-haiku-4-5`, only `anthropic/claude-haiku-4.5`. `claude-worker` and `second-worker` (agents.toml)
+# use the first two rows; the planner uses the Haiku row when `PLANNER_PROVIDER=openrouter` and
+# `PLANNER_MODEL=anthropic/claude-haiku-4.5`.
 
 [models."anthropic/claude-sonnet-5"]
 input_per_mtok = 2.00
@@ -71,3 +73,9 @@ input_per_mtok = 0.091
 output_per_mtok = 0.182
 cache_read_per_mtok = 0.0182
 cache_write_per_mtok = 0.091
+
+[models."anthropic/claude-haiku-4.5"]
+input_per_mtok = 1.00
+output_per_mtok = 5.00
+cache_read_per_mtok = 0.10
+cache_write_per_mtok = 1.25
