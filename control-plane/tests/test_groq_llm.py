@@ -216,3 +216,10 @@ def test_the_api_still_starts_with_no_model_key_so_sign_in_and_credits_work(monk
         "ANTHROPIC_API_KEY", "placeholder"
     )  # the SDK builds its client without contacting anything
     assert isinstance(cp_llm.build_llm({}), cp_llm.AnthropicLLM)
+
+
+def test_the_planner_accepts_a_gateway_token_without_warning(caplog: pytest.LogCaptureFixture):
+    env = {"ANTHROPIC_AUTH_TOKEN": "lend-token", "ANTHROPIC_BASE_URL": "https://lend.example"}
+    with caplog.at_level("WARNING", logger="mergit_cp.llm"):
+        assert isinstance(cp_llm.build_llm(env), cp_llm.AnthropicLLM)
+    assert "no model key" not in caplog.text

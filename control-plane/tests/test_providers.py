@@ -20,6 +20,18 @@ def test_anthropic_is_the_provider_whenever_its_key_is_set():
     assert llm_provider({"ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}) == "anthropic"
 
 
+def test_an_anthropic_auth_token_counts_as_the_anthropic_credential():
+    # A gateway such as Claude Lend takes ANTHROPIC_AUTH_TOKEN (+ ANTHROPIC_BASE_URL) instead of a real key.
+    # It must win over a Groq key left in the same file, or the deploy would silently keep using Groq.
+    assert llm_provider({"ANTHROPIC_AUTH_TOKEN": "t", "GROQ_API_KEY": "g"}) == "anthropic"
+    assert require_provider({"ANTHROPIC_AUTH_TOKEN": "t"}) == "anthropic"
+    assert require_provider({"ANTHROPIC_AUTH_TOKEN": "t", "GROQ_API_KEY": "g"}) == "anthropic"
+    # A blank value is not a credential.
+    assert llm_provider({"ANTHROPIC_AUTH_TOKEN": "", "GROQ_API_KEY": "g"}) == "groq"
+    with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"):
+        require_provider({"LLM_PROVIDER": "anthropic", "ANTHROPIC_AUTH_TOKEN": ""})
+
+
 def test_groq_is_the_fallback_when_only_its_key_is_set():
     assert llm_provider({"GROQ_API_KEY": "g"}) == "groq"
 
@@ -39,7 +51,7 @@ def test_an_unknown_provider_name_is_an_error():
 
 
 def test_require_provider_refuses_to_start_without_the_key_it_needs():
-    with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY or GROQ_API_KEY"):
+    with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY"):
         require_provider({})
     with pytest.raises(ConfigError, match="GROQ_API_KEY"):
         require_provider({"LLM_PROVIDER": "groq", "ANTHROPIC_API_KEY": "a"})

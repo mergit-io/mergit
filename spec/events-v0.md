@@ -42,10 +42,11 @@ retry is a new task id with its own escrow lock. Python computes both with `merg
 
 | Type | Payload | Gateway does |
 | --- | --- | --- |
-| `plan.approved` | `plan_id, plan_uuid, requester, total_budget_usdc_units, funding: "wallet" \| "credits"` | `credits`: checks the allowance and funds the plan from the treasury, or answers with `credits.denied`. `wallet`: waits for the requester's own `PlanFunded` |
+| `plan.approved` | `plan_id, plan_uuid, requester, total_budget_usdc_units, funding: "wallet" \| "credits", credit_account?` | `credits`: checks the allowance and funds the plan from the treasury, or answers with `credits.denied`. With `credit_account` (the control plane's user id) the free credits, the daily plan count and the refund are that account's, whichever address requests; without it they follow the requester address. `wallet`: waits for the requester's own `PlanFunded` |
 | `task.dispatch_requested` | `task_id, plan_id, index, attempt, agent_id, amount_usdc_units, category, phi_hash, deadline_unix` | Locks `amount` for the task in Escrow, unless already locked, and records `phi_hash`: a receipt is valid only for the approved Φ. `task_id` must equal the derivation above (`400` otherwise). A retry (`attempt > 1`) gets `503` while the previous attempt still holds its payment; deliver it again later |
 | `receipt.sealed` | `task_id, agent_id, root, terminal_hash, body_hash, cost_micros, signature` | Commits the receipt to ReceiptRegistry, unless already committed |
 | `plan.closed` | `plan_id` | Closes the plan in Escrow; the unspent balance returns to the requester (or the treasury for credits). A plan never funded is left alone |
+| `credits.grant` | `account, amount_usdc_units, ref` | Adds `amount_usdc_units` to the account's credits (a redeemed code). The account's default free grant is created first if it has none, so a code adds to it. Idempotent on `ref` (the code's id): a second event with the same `ref` adds nothing. `account` is 1 to 64 and `ref` 1 to 100 characters of letters, digits and `_ . : -`; the amount is 1 to 10^12 base units |
 
 **Rule:** the receipt bundle is uploaded to the receipt store (`PUT {STORE_URL}/v0/bundles`) **before**
 `receipt.sealed` is sent, so a committed receipt always has a body to audit.

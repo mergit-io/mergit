@@ -60,6 +60,7 @@ pub async fn receive(State(s): State<AppState>, body: axum::body::Bytes) -> Resp
             Incoming::DispatchRequested(d) => dispatch(&s, d).await,
             Incoming::ReceiptSealed(r) => sealed(&s, r).await,
             Incoming::PlanClosed(p) => closed(&s, p).await,
+            Incoming::CreditsGrant(g) => crate::credits::grant(&s, &g).await,
         }
     };
 

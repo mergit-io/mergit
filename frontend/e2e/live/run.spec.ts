@@ -3,7 +3,7 @@ import { toFunctionSelector } from "viem";
 import { LIVE_ENV } from "../../playwright.config";
 import { seedSession } from "../fixtures";
 import { installWallet, ME, mockBackend } from "./fake";
-import { approvedPlan, attempt, draftPlan, mockPlanApi, PHI, PLAN_ID, taskId, type ApiCall } from "./plans";
+import { approvedPlan, attempt, draftPlan, mockPlanApi, PHI, PLAN_ID, SEASONED, taskId, type ApiCall } from "./plans";
 
 /** Live run screens (plan task O8): draft, review, approve, fund, and watch a run, against a faked API. */
 
@@ -245,4 +245,170 @@ test("the runs tab lists the requester's plans and opens one", async ({ page }) 
   await expect(row).toContainText("Draft");
   await row.click();
   await expect(page.getByRole("group", { name: "Task 1" })).toBeVisible();
+});
+
+test.describe("opening the pull request", () => {
+  const done = () =>
+    approvedPlan({
+      state: "done",
+      attempts: [
+        attempt(0, 1, { status: "done", phi_holds: true, receipt_root: `0x${"ee".repeat(32)}` }),
+        attempt(1, 1, { status: "done", phi_holds: true, receipt_root: `0x${"ee".repeat(32)}` }),
+      ],
+    });
+
+  test("a finished plan shows its change, and approving opens the pull request", async ({ page }) => {
+    await mockBackend(page);
+    const plan = done();
+    const calls = await mockPlanApi(page, { plans: [plan], pr: { after: ["running", "done"] } });
+    await page.goto(`/app/runs/${plan.plan_uuid}`);
+
+    const step = page.getByRole("region", { name: "Open a pull request" });
+    await expect(step).toContainText("No pull request has been opened yet");
+    await expect(step).toContainText("+1");
+    await step.getByText("Read the change").click();
+    await expect(step.getByLabel("The combined change")).toContainText("max(0, min(requested_cents, remaining))");
+
+    await step.getByRole("button", { name: "Open the pull request" }).click();
+    expect(only(calls, "POST", "/open-pr")).toHaveLength(1);
+    await expect(step).toContainText("Pull request #7 is open.", { timeout: 15_000 });
+    const link = step.getByRole("link", { name: /View pull request #7/ });
+    await expect(link).toHaveAttribute("href", "https://github.com/mergit-io/demo-repo/pull/7");
+    await expect(link).toHaveAttribute("rel", /noopener/);
+  });
+
+  test("a failed attempt says why and offers to try again", async ({ page }) => {
+    await mockBackend(page);
+    const plan = done();
+    await mockPlanApi(page, { plans: [plan], pr: { after: ["error"] } });
+    await page.goto(`/app/runs/${plan.plan_uuid}`);
+    const step = page.getByRole("region", { name: "Open a pull request" });
+    await step.getByRole("button", { name: "Open the pull request" }).click();
+    await expect(step).toContainText("patch does not apply", { timeout: 15_000 });
+    await expect(step.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  test("a plan that is still running offers no pull request", async ({ page }) => {
+    await mockBackend(page);
+    const plan = approvedPlan({ state: "running", attempts: [attempt(0, 1)] });
+    await mockPlanApi(page, { plans: [plan] });
+    await page.goto(`/app/runs/${plan.plan_uuid}`);
+    await expect(page.getByRole("region", { name: "Tasks" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Open a pull request" })).toHaveCount(0);
+  });
+});
+
+test("a credits plan over the free-credit cap cannot be approved, and says why", async ({ page }) => {
+  await mockBackend(page, {
+    credits: { granted: "5000000", spent: "0", remaining: "5000000", plans_today: 0, plan_cap: "1000000" },
+  });
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await page.getByRole("radio", { name: "Free credits" }).click();
+  await expect(page.getByText("Free credits cover up to 1.00 USDC per plan; this plan is 1.50 USDC")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve plan" })).toBeDisabled();
+
+  await page.getByRole("radio", { name: "Wallet" }).click(); // a wallet has no such cap
+  await expect(page.getByRole("button", { name: "Approve plan" })).toBeEnabled();
+  expect(only(calls, "POST", "/approve")).toEqual([]);
+});
+
+test("double-clicking Draft the plan asks for one plan, under one key", async ({ page }) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page);
+  await page.goto("/app/runs/new");
+  await page.getByLabel("Goal").fill("The refund test in payments/ passes again");
+  await page.getByLabel("Repository").fill("https://github.com/acme/widgets");
+  const draft = page.getByRole("button", { name: "Draft the plan" });
+  await draft.dblclick();
+
+  await expect(page).toHaveURL(new RegExp(`/app/runs/${draftPlan().plan_uuid}$`));
+  const posts = only(calls, "POST", "/v0/plans");
+  expect(posts).toHaveLength(1);
+  expect(posts[0]?.key).toMatch(/^[A-Za-z0-9._:-]{1,100}$/);
+});
+
+test("a draft can be discarded, after one more confirmation, and the list no longer has it", async ({ page }) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await page.getByRole("button", { name: "Discard draft" }).click();
+  expect(only(calls, "DELETE", draftPlan().plan_uuid)).toEqual([]); // asked, not yet done
+  await page.getByRole("button", { name: "Yes, discard it" }).click();
+
+  await expect(page).toHaveURL(/\/app\/runs$/);
+  expect(only(calls, "DELETE", draftPlan().plan_uuid)).toHaveLength(1);
+});
+
+test("an approved plan offers Close, not Discard", async ({ page }) => {
+  await mockBackend(page);
+  await mockPlanApi(page, { plans: [{ ...draftPlan(), state: "approved", funding: "wallet" }] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+  await expect(page.getByRole("button", { name: "Discard draft" })).toHaveCount(0);
+});
+
+test("suggested agents only advise: nothing changes until the picks are used, and approving sends what is shown", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await page.getByRole("button", { name: "Suggest agents" }).click();
+  const advice = page.getByTestId("suggestions");
+  await expect(advice).toContainText("Task 1");
+  await expect(advice).toContainText("coder-b");
+  await expect(advice).toContainText("80% pass");
+  await expect(advice).toContainText("7 validated");
+  expect(only(calls, "GET", "/suggestions")[0]?.path).toContain(draftPlan().plan_uuid);
+
+  // Asking changed nothing: the pickers are still empty.
+  await expect(page.getByLabel("Task 1: runs it")).toHaveValue("");
+
+  await page.getByRole("button", { name: "Use these picks" }).click();
+  await expect(page.getByLabel("Task 1: runs it")).toHaveValue("2");
+  await expect(page.getByLabel("Task 2: runs it")).toHaveValue("2");
+
+  // The requester may still override a suggestion before approving.
+  await page.getByLabel("Task 2: runs it").selectOption("1");
+  await page.getByRole("button", { name: "Approve plan" }).click();
+  await expect(page.getByRole("heading", { name: "Fund 1.50 USDC" })).toBeVisible();
+  expect(only(calls, "POST", "/approve")[0]?.body).toEqual({
+    agents: { "0": ["2"], "1": ["1"] },
+    funding: "wallet",
+  });
+});
+
+test("exploring warns that an unproven agent's failure is not covered, and marks the unproven pick", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { plans: [draftPlan()] });
+  await page.goto(`/app/runs/${draftPlan().plan_uuid}`);
+
+  await expect(page.getByText("the platform does not yet cover that cost")).toHaveCount(0);
+  await page.getByLabel("Also try less-proven agents").check();
+  await expect(page.getByText("the platform does not yet cover that cost")).toBeVisible();
+
+  await page.getByRole("button", { name: "Suggest agents" }).click();
+  const advice = page.getByTestId("suggestions");
+  await expect(advice).toContainText("no validated outcomes yet");
+  await expect(advice).toContainText("unproven");
+  expect(only(calls, "GET", "/suggestions")[0]?.path).toBe(`/v0/plans/${draftPlan().plan_uuid}/suggestions`);
+});
+
+test("the agents list shows a validated record only where there is one, and says what the figures are", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  await mockPlanApi(page, { reputation: [SEASONED] });
+  await page.goto("/app/agents");
+
+  await expect(page.getByTestId("record-2")).toContainText("test-repair");
+  await expect(page.getByTestId("record-2")).toContainText("80% pass");
+  await expect(page.getByTestId("record-2")).toContainText("7 validated");
+  await expect(page.getByTestId("record-1")).toHaveText("No validated outcomes yet");
+  await expect(page.getByText("configuration, not a measurement")).toBeVisible();
 });

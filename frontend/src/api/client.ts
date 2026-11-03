@@ -1,4 +1,6 @@
+import { apiBase } from "../chain/wallet";
 import { LIVE } from "../config/live";
+import { parseDiff, parsePullRequest, type PlanDiff, type PullRequest } from "./pullRequest";
 import type {
   AgentInfo,
   ApproveRequest,
@@ -7,6 +9,8 @@ import type {
   Plan,
   PlanDetail,
   PlanSummary,
+  ReputationResponse,
+  Suggestions,
   TaskEdit,
 } from "./types";
 
@@ -60,26 +64,41 @@ async function toError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, message, problems);
 }
 
-async function request<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
+/** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal. */
+const base = () => (LIVE.apiUrl ? apiBase() : "");
+
+async function request<T>(
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${LIVE.apiUrl}${path}`, {
+    response = await fetch(`${base()}${path}`, {
       method,
       credentials: "include",
-      ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+      ...(body === undefined
+        ? { headers }
+        : { headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
   } catch {
     throw new ApiError(0, "Mergit is unreachable. Check your connection and try again.");
   }
   if (response.status === 401) sessionEnded?.();
   if (!response.ok) throw await toError(response);
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
 const planPath = (planUuid: string) => `/v0/plans/${encodeURIComponent(planUuid)}`;
 
 /** Drafts a plan from a goal. The planner model runs during this call, so it takes a few seconds. */
-export const createPlan = (body: NewPlanRequest) => request<Plan>("POST", "/v0/plans", body);
+export const createPlan = (body: NewPlanRequest, idempotencyKey?: string) =>
+  request<Plan>("POST", "/v0/plans", body, idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey });
+
+/** Throws a draft away, with its tasks. Only a draft: anything approved is closed with `abandonPlan` instead. */
+export const discardPlan = (planUuid: string) => request<undefined>("DELETE", planPath(planUuid));
 
 /** Replaces a draft's tasks. The API checks them exactly as it checks a planner answer. */
 export const editPlan = (planUuid: string, tasks: TaskEdit[]) => request<Plan>("PATCH", planPath(planUuid), { tasks });
@@ -97,9 +116,42 @@ export const getPlan = (planUuid: string) => request<PlanDetail>("GET", planPath
 
 export const listAgents = () => request<AgentInfo[]>("GET", "/v0/agents");
 
+/** Every agent-category pair with validated outcomes. Until there are any, the list is empty. */
+export const getReputation = () => request<ReputationResponse>("GET", "/v0/agents/reputation");
+
+/** Advice for a draft plan's agent picks. `explore` asks for a seeded Thompson draw instead of the greedy ranking. */
+export const getSuggestions = (planUuid: string, explore: boolean) =>
+  request<Suggestions>("GET", `${planPath(planUuid)}/suggestions${explore ? "?explore=true" : ""}`);
+
 /** Server-Sent Events for one plan. Open with `withCredentials: true`, or the session cookie is not sent. */
-export const planEventsUrl = (planUuid: string) => `${LIVE.apiUrl}${planPath(planUuid)}/events`;
+export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid)}/events`;
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The combined change of every task, for the requester to read before approving a pull request. 409 until the plan is done. */
+export async function getPlanDiff(planUuid: string): Promise<PlanDiff> {
+  const diff = parseDiff(await request<unknown>("GET", `${planPath(planUuid)}/diff`));
+  if (!diff) throw new ApiError(0, "Mergit's API did not answer like the diff service.");
+  return diff;
+}
+
+/** The requester's approval: queues the pull request for the worker, which holds the GitHub token. */
+export async function openPullRequest(planUuid: string): Promise<PullRequest> {
+  const pr = parsePullRequest(await request<unknown>("POST", `${planPath(planUuid)}/open-pr`));
+  if (!pr) throw new ApiError(0, "Mergit's API did not answer like the pull request service.");
+  return pr;
+}
+
+/** Where the pull request stands, or null when none was requested (404). */
+export async function getPullRequest(planUuid: string): Promise<PullRequest | null> {
+  try {
+    const pr = parsePullRequest(await request<unknown>("GET", `${planPath(planUuid)}/pr`));
+    if (!pr) throw new ApiError(0, "Mergit's API did not answer like the pull request service.");
+    return pr;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
 }

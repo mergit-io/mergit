@@ -39,7 +39,31 @@ class IdentityTaken(Exception):
 
 
 class WalletTaken(Exception):
-    """The wallet already belongs to a different user."""
+    """The wallet already belongs to a different user, ``owner``."""
+
+    def __init__(self, owner: UUID) -> None:
+        super().__init__("wallet belongs to another user")
+        self.owner = owner
+
+
+class OfferInvalid(Exception):
+    """A merge offer that is unknown, used, expired, or no longer true."""
+
+
+class OfferNotYours(Exception):
+    """A merge offer made for a different account."""
+
+
+class NotFound(Exception):
+    """The sign-in method or wallet is not on the caller's account."""
+
+
+class LastMethod(Exception):
+    """Removing it would leave the account with no way to sign in."""
+
+
+class Busy(Exception):
+    """A plan the change would touch is approved, funded or running."""
 
 
 def trial_address(user_id: UUID) -> str:
@@ -68,15 +92,44 @@ async def create_session(conn: Conn, settings: Settings, user_id: UUID, address:
     return token
 
 
-def set_session_cookie(response: Response, settings: Settings, token: str) -> None:
+async def renew_session(conn: Conn, settings: Settings, hashed: bytes) -> int | None:
+    """Slides a live session's expiry forward when less than half of its lifetime is left.
+
+    The new expiry is ``now + session_ttl_s`` but never later than ``created_at + session_max_age_s``. Returns
+    the seconds the cookie should now live, or None when nothing changed (not due yet, already at the cap,
+    revoked or expired). At most one write per half lifetime, so a busy session does not write on every call.
+    """
+    cur = await conn.execute(
+        "UPDATE sessions SET expires_at ="
+        " LEAST(now() + %(ttl)s::float8 * interval '1 second',"
+        "       created_at + %(cap)s::float8 * interval '1 second')"
+        " WHERE token_hash = %(hash)s AND revoked_at IS NULL AND expires_at > now()"
+        " AND expires_at < now() + %(half)s::float8 * interval '1 second'"
+        " AND expires_at < created_at + %(cap)s::float8 * interval '1 second'"
+        " RETURNING (extract(epoch FROM expires_at - now()))::int",
+        {
+            "ttl": settings.session_ttl_s,
+            "cap": settings.session_max_age_s,
+            "half": settings.session_ttl_s / 2,
+            "hash": hashed,
+        },
+    )
+    row = await cur.fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def set_session_cookie(
+    response: Response, settings: Settings, token: str, max_age: int | None = None
+) -> None:
     response.set_cookie(
         COOKIE,
         token,
-        max_age=settings.session_ttl_s,
+        max_age=settings.session_ttl_s if max_age is None else max_age,
         httponly=True,
         secure=True,
         samesite="lax",
         path="/",
+        domain=settings.cookie_domain,
     )
 
 
@@ -184,7 +237,9 @@ async def link_wallet(conn: Conn, user_id: UUID, address: str) -> None:
     cur = await conn.execute("SELECT user_id FROM wallets WHERE address = %s", (address,))
     row = await cur.fetchone()
     if row is None or row[0] != user_id:
-        raise WalletTaken
+        if row is None:  # wallets only go with their user, so this cannot happen; do not guess an owner
+            raise RuntimeError("wallet disappeared while it was being linked")
+        raise WalletTaken(row[0])
 
 
 async def owned_addresses(conn: Conn, user_id: UUID | None, session_address: str) -> list[str]:
@@ -192,7 +247,13 @@ async def owned_addresses(conn: Conn, user_id: UUID | None, session_address: str
     if user_id is None:
         return [session_address]
     cur = await conn.execute("SELECT address FROM wallets WHERE user_id = %s ORDER BY created_at", (user_id,))
-    return [*(r[0] for r in await cur.fetchall()), trial_address(user_id)]
+    return [*(r[0] for r in await cur.fetchall()), *await trial_addresses(conn, user_id)]
+
+
+async def trial_addresses(conn: Conn, user_id: UUID) -> list[str]:
+    """The user's own trial address, then those of every account that was merged into it."""
+    cur = await conn.execute("SELECT old_user_id FROM merged_users WHERE into_user_id = %s", (user_id,))
+    return [trial_address(user_id), *(trial_address(r[0]) for r in await cur.fetchall())]
 
 
 async def default_address(conn: Conn, user_id: UUID) -> str:
@@ -239,3 +300,209 @@ async def start_trial(conn: Conn, user_id: UUID) -> datetime:
     row = await cur.fetchone()
     assert row is not None
     return row[0]
+
+
+# --- merging two accounts of one person ------------------------------------------------------------------
+
+OFFER_TTL_S = 300
+
+
+async def offer_merge(conn: Conn, settings: Settings, keep: UUID, absorb: UUID, address: str) -> str:
+    """A one-time token: ``keep`` (signed in, and just proved it holds ``address``) may absorb ``absorb``."""
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(UTC) + timedelta(seconds=OFFER_TTL_S)
+    await conn.execute(
+        "INSERT INTO pending_merges (token_hash, keep_user, absorb_user, address, expires_at)"
+        " VALUES (%s, %s, %s, %s, %s)",
+        (token_hash(settings, f"merge:{token}"), keep, absorb, address, expires),
+    )
+    return token
+
+
+async def take_offer(conn: Conn, settings: Settings, token: str, caller: UUID) -> tuple[UUID, str]:
+    """Spends an offer and returns (the user to absorb, the wallet). Run inside the transaction that merges: a
+    refusal raised from here rolls the spend back, so a wrong caller does not burn the rightful one's offer.
+    """
+    cur = await conn.execute(
+        "UPDATE pending_merges SET used_at = now()"
+        " WHERE token_hash = %s AND used_at IS NULL AND expires_at > now()"
+        " RETURNING keep_user, absorb_user, address",
+        (token_hash(settings, f"merge:{token}"),),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        raise OfferInvalid
+    keep, absorb, address = row
+    if keep != caller:
+        raise OfferNotYours
+    cur = await conn.execute("SELECT user_id FROM wallets WHERE address = %s", (address,))
+    owner = await cur.fetchone()
+    if owner is None or owner[0] != absorb:
+        raise OfferInvalid  # the wallet changed hands since the offer was made
+    return absorb, address
+
+
+async def merge_summary(conn: Conn, user_id: UUID) -> dict[str, object]:
+    """What the other account holds, shown before anyone confirms."""
+    profile = await load_profile(conn, user_id)
+    cur = await conn.execute(
+        "SELECT count(*) FROM plans WHERE requester = ANY(%s)", (await owned_addresses(conn, user_id, ""),)
+    )
+    plans = await cur.fetchone()
+    return {
+        "identities": [{"provider": p, "label": label} for p, label in profile.identities],
+        "wallets": len(profile.wallets),
+        "plans": int(str(plans[0])) if plans else 0,
+        "trial_started": profile.trial_started_at is not None,
+    }
+
+
+async def merge_users(conn: Conn, keep: UUID, absorb: UUID) -> None:
+    """Moves everything ``absorb`` has to ``keep`` and deletes ``absorb``."""
+    if keep == absorb:
+        return
+    await conn.execute("UPDATE identities SET user_id = %s WHERE user_id = %s", (keep, absorb))
+    await conn.execute("UPDATE wallets SET user_id = %s WHERE user_id = %s", (keep, absorb))
+    await conn.execute(
+        "INSERT INTO wallet_interest (wallet, user_id, created_at)"
+        " SELECT wallet, %s, created_at FROM wallet_interest WHERE user_id = %s ON CONFLICT DO NOTHING",
+        (keep, absorb),
+    )
+    await conn.execute("UPDATE sessions SET user_id = %s WHERE user_id = %s", (keep, absorb))
+    await conn.execute(
+        "UPDATE users k SET display_name = COALESCE(k.display_name, a.display_name),"
+        " email = COALESCE(k.email, a.email), avatar_url = COALESCE(k.avatar_url, a.avatar_url),"
+        " trial_started_at = LEAST(k.trial_started_at, a.trial_started_at)"
+        " FROM users a WHERE k.user_id = %s AND a.user_id = %s",
+        (keep, absorb),
+    )
+    # Accounts already merged into the absorbed one now belong to the kept one, with the absorbed one itself.
+    await conn.execute("UPDATE merged_users SET into_user_id = %s WHERE into_user_id = %s", (keep, absorb))
+    await conn.execute("INSERT INTO merged_users (old_user_id, into_user_id) VALUES (%s, %s)", (absorb, keep))
+    await conn.execute("DELETE FROM users WHERE user_id = %s", (absorb,))
+
+
+# --- removing sign-in methods, and deleting the account ---------------------------------------------------
+
+IN_FLIGHT = ("approved", "funded", "running")
+REDACTED = "[deleted]"
+
+
+async def _lock_user(conn: Conn, user_id: UUID) -> None:
+    """Serialises changes to one account's sign-in methods, so two removals at once cannot both see the other
+    method still there and leave the account with none."""
+    await conn.execute("SELECT 1 FROM users WHERE user_id = %s FOR UPDATE", (user_id,))
+
+
+async def _method_count(conn: Conn, user_id: UUID) -> int:
+    cur = await conn.execute(
+        "SELECT (SELECT count(*) FROM identities WHERE user_id = %s)"
+        " + (SELECT count(*) FROM wallets WHERE user_id = %s)",
+        (user_id, user_id),
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+async def _in_flight(conn: Conn, requesters: list[str]) -> bool:
+    """Whether any plan of these requesters is approved, funded or running. Locks their plans as approval
+    does (``plans.load(for_update=True)``), so an approval that commits first is seen here."""
+    cur = await conn.execute("SELECT state FROM plans WHERE requester = ANY(%s) FOR UPDATE", (requesters,))
+    return any(row[0] in IN_FLIGHT for row in await cur.fetchall())
+
+
+async def unlink_wallet(conn: Conn, user_id: UUID, address: str) -> None:
+    """Removes one of the caller's own wallets. Sessions acting as it fall back to the account's default
+    address: its first remaining wallet, else its trial address."""
+    await _lock_user(conn, user_id)
+    cur = await conn.execute("SELECT 1 FROM wallets WHERE address = %s AND user_id = %s", (address, user_id))
+    if await cur.fetchone() is None:
+        raise NotFound
+    if await _method_count(conn, user_id) <= 1:
+        raise LastMethod
+    if await _in_flight(conn, [address]):
+        raise Busy
+    await conn.execute("DELETE FROM wallets WHERE address = %s AND user_id = %s", (address, user_id))
+    await conn.execute(
+        "UPDATE sessions SET address = %s WHERE user_id = %s AND address = %s",
+        (await default_address(conn, user_id), user_id, address),
+    )
+
+
+async def unlink_identity(conn: Conn, user_id: UUID, provider: Provider) -> None:
+    """Removes the caller's sign-in with ``provider`` (every identity of that provider on the account)."""
+    await _lock_user(conn, user_id)
+    cur = await conn.execute(
+        "SELECT count(*) FROM identities WHERE user_id = %s AND provider = %s", (user_id, provider)
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    removing = int(row[0])
+    if removing == 0:
+        raise NotFound
+    if await _method_count(conn, user_id) <= removing:
+        raise LastMethod
+    await conn.execute("DELETE FROM identities WHERE user_id = %s AND provider = %s", (user_id, provider))
+
+
+def _method_hash(settings: Settings, kind: str, value: str) -> bytes:
+    """A keyed hash of one sign-in method, the only form ``deleted_methods`` keeps. The prefix sets it apart
+    from every other hash made with the same key (session tokens have no colon; merge offers and emailed
+    codes have their own prefixes)."""
+    return token_hash(settings, f"deleted-method:v0:{kind}:{value}")
+
+
+async def _method_hashes(conn: Conn, settings: Settings, user_id: UUID) -> list[bytes]:
+    cur = await conn.execute("SELECT provider, subject FROM identities WHERE user_id = %s", (user_id,))
+    hashes = [_method_hash(settings, r[0], r[1]) for r in await cur.fetchall()]
+    cur = await conn.execute("SELECT address FROM wallets WHERE user_id = %s", (user_id,))
+    hashes.extend(_method_hash(settings, "wallet", r[0]) for r in await cur.fetchall())
+    return hashes
+
+
+async def credits_forfeited(conn: Conn, settings: Settings, user_id: UUID) -> bool:
+    """Whether one of this account's sign-in methods belonged to a deleted account: the free credits are once
+    per person, and deleting an account does not hand them out again."""
+    hashes = await _method_hashes(conn, settings, user_id)
+    if not hashes:
+        return False
+    cur = await conn.execute("SELECT 1 FROM deleted_methods WHERE method_hash = ANY(%s) LIMIT 1", (hashes,))
+    return await cur.fetchone() is not None
+
+
+async def delete_account(conn: Conn, settings: Settings, user_id: UUID) -> None:
+    """Deletes the user with its sign-in methods, wallets, settings and sessions. Refused (``Busy``) while one
+    of its plans is approved, funded or running.
+
+    What stays: its plans and tasks, with the goal, repository, ref and task text replaced by ``[deleted]``,
+    since the money ledger (``money_events``) and the dispatches point at them; and a keyed hash of each
+    sign-in method in ``deleted_methods``, so the same person cannot collect the free credits again.
+    """
+    await _lock_user(conn, user_id)
+    owned = await owned_addresses(conn, user_id, "")
+    if await _in_flight(conn, owned):
+        raise Busy
+    hashes = await _method_hashes(conn, settings, user_id)
+    if hashes:
+        await conn.execute(
+            "INSERT INTO deleted_methods (method_hash) SELECT unnest(%s::bytea[]) ON CONFLICT DO NOTHING",
+            (hashes,),
+        )
+    await conn.execute(
+        "UPDATE tasks SET title = %s, instructions = %s"
+        " WHERE plan_uuid IN (SELECT plan_uuid FROM plans WHERE requester = ANY(%s))",
+        (REDACTED, REDACTED, owned),
+    )
+    await conn.execute(
+        "UPDATE plans SET goal = %s, repo_url = %s, ref = %s, updated_at = now() WHERE requester = ANY(%s)",
+        (REDACTED, REDACTED, REDACTED, owned),
+    )
+    # A session from before accounts existed has no user but acts as one of this user's wallets.
+    await conn.execute(
+        "UPDATE sessions SET revoked_at = now()"
+        " WHERE user_id IS NULL AND address = ANY(%s) AND revoked_at IS NULL",
+        (owned,),
+    )
+    # Identities, wallets, sessions, settings and pending merge offers go with the user (ON DELETE CASCADE).
+    await conn.execute("DELETE FROM users WHERE user_id = %s", (user_id,))

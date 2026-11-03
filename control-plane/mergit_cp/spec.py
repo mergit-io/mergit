@@ -32,6 +32,23 @@ def _validators(directory: Path) -> dict[str, Draft202012Validator]:
     }
 
 
+REQUIRED_SCHEMAS = ("event", "predicate")
+
+
+def require_schemas(directory: Path | None = None) -> None:
+    """Refuses to start without the schemas this service validates against. Otherwise a missing directory
+    shows up later as a KeyError inside a request (every plan draft was a 500 on the server when the API
+    image lacked them), which is a much harder thing to find."""
+    where = directory or spec_dir()
+    found = _validators(where) if (where / "schemas").is_dir() else {}
+    missing = [name for name in REQUIRED_SCHEMAS if name not in found]
+    if missing:
+        raise EventSchemaError(
+            f"no schema for {', '.join(missing)} under {where}/schemas; set MERGIT_SPEC_DIR to the directory "
+            "that holds the repository's spec/schemas"
+        )
+
+
 def schema_errors(name: str, instance: Any) -> list[str]:
     """Readable problems with ``instance`` against ``spec/schemas/<name>.json``; empty when valid."""
     validator = _validators(spec_dir())[name]

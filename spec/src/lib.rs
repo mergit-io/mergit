@@ -18,6 +18,8 @@ pub use types::*;
 
 /// The only receipt version this crate reads and writes.
 pub const VERSION: &str = "mergit-receipt/0";
+/// Receipt format v1: open attestation kinds and an optional attestation document.
+pub const VERSION_V1: &str = "mergit-receipt/1";
 /// The only attestation kind in v0.
 pub const UNATTESTED: &str = "unattested";
 /// The only predicate kind in v0.

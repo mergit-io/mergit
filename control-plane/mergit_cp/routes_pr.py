@@ -12,11 +12,11 @@ wires in its own and tests wire in theirs.
 # No `from __future__ import annotations` here: FastAPI resolves the Annotated dependencies of the
 # nested route functions at runtime, and they close over `get_requester` and `get_store`.
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import Annotated, Any, Protocol
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from .pr_gate import PlanInfo, TaskChange, blockers, combined_diff, same_address
 from .pr_store import PrRequest
@@ -29,14 +29,32 @@ class PrStoreLike(Protocol):
     def approve(self, plan_uuid: str, requested_by: str) -> PrRequest: ...
 
 
+def _no_owned() -> None:
+    return None
+
+
+def store_of_app(request: Request) -> PrStoreLike:
+    """The store the API created at start-up (`app.state.pr_store`)."""
+    store: PrStoreLike = request.app.state.pr_store
+    return store
+
+
 def build_router(
-    get_requester: Callable[..., str],
+    get_requester: Callable[..., str | Awaitable[str]],
     get_store: Callable[..., PrStoreLike],
+    get_owned: Callable[..., list[str] | Awaitable[list[str] | None] | None] = _no_owned,
 ) -> APIRouter:
-    """`get_requester` returns the signed-in wallet address or raises 401; `get_store` returns the store."""
+    """`get_requester` returns the signed-in wallet address or raises 401; `get_store` returns the store.
+
+    An account can own several addresses (its trial address, every wallet it has linked), and a plan's
+    requester is whichever one it was drafted under. `get_owned` returns all of them, lowercase; without it
+    only the signed-in address owns a plan.
+    """
     router = APIRouter(prefix="/v0/plans", tags=["pull-request"])
 
-    def own_plan(store: PrStoreLike, plan_uuid: str, requester: str) -> PlanInfo:
+    def own_plan(
+        store: PrStoreLike, plan_uuid: str, requester: str, owned: list[str] | None = None
+    ) -> PlanInfo:
         try:
             plan_uuid = str(uuid.UUID(plan_uuid))
         except ValueError:
@@ -44,7 +62,10 @@ def build_router(
         plan = store.plan(plan_uuid)
         if plan is None:
             raise HTTPException(404, "plan not found")
-        if not same_address(plan.requester, requester):
+        mine = (
+            plan.requester.lower() in owned if owned is not None else same_address(plan.requester, requester)
+        )
+        if not mine:
             raise HTTPException(403, "only the requester of this plan may do that")
         return plan
 
@@ -62,8 +83,9 @@ def build_router(
         plan_uuid: str,
         requester: Annotated[str, Depends(get_requester)],
         store: Annotated[PrStoreLike, Depends(get_store)],
+        owned: Annotated[list[str] | None, Depends(get_owned)],
     ) -> dict[str, Any]:
-        plan = own_plan(store, plan_uuid, requester)
+        plan = own_plan(store, plan_uuid, requester, owned)
         changes = ready_changes(store, plan)
         return {
             "plan_uuid": plan.plan_uuid,
@@ -79,8 +101,9 @@ def build_router(
         response: Response,
         requester: Annotated[str, Depends(get_requester)],
         store: Annotated[PrStoreLike, Depends(get_store)],
+        owned: Annotated[list[str] | None, Depends(get_owned)],
     ) -> dict[str, Any]:
-        plan = own_plan(store, plan_uuid, requester)
+        plan = own_plan(store, plan_uuid, requester, owned)
         ready_changes(store, plan)
         request = store.approve(plan.plan_uuid, requester.lower())
         if request.status == "done":
@@ -92,8 +115,9 @@ def build_router(
         plan_uuid: str,
         requester: Annotated[str, Depends(get_requester)],
         store: Annotated[PrStoreLike, Depends(get_store)],
+        owned: Annotated[list[str] | None, Depends(get_owned)],
     ) -> dict[str, Any]:
-        plan = own_plan(store, plan_uuid, requester)
+        plan = own_plan(store, plan_uuid, requester, owned)
         request = store.request(plan.plan_uuid)
         if request is None:
             raise HTTPException(404, "no pull request has been requested for this plan")

@@ -22,7 +22,7 @@ from anthropic.types import Message, MessageParam, ToolParam
 
 from mergit_worker.llm import GROQ_BASE_URL, retry_wait
 from mergit_worker.openai_chat import BadReply, parse_reply, to_openai_messages, to_openai_tools
-from mergit_worker.providers import llm_provider
+from mergit_worker.providers import has_anthropic_credential, llm_provider
 
 
 @dataclass(frozen=True)
@@ -232,8 +232,9 @@ def build_llm(environ: Mapping[str, str] | None = None) -> LLM:
     provider = llm_provider(env)
     if provider == "groq" and env.get("GROQ_API_KEY"):
         return GroqLLM(env["GROQ_API_KEY"])
-    if not env.get("ANTHROPIC_API_KEY"):
+    if not has_anthropic_credential(env):
         log.warning(
-            "no model key set (ANTHROPIC_API_KEY or GROQ_API_KEY): planning requests will fail until one is"
+            "no model key set (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or GROQ_API_KEY): planning requests "
+            "will fail until one is"
         )
     return AnthropicLLM()

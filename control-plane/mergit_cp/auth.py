@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from siwe import SiweMessage, VerificationError, generate_nonce  # pyright: ignore[reportMissingTypeStubs]
 
 from . import accounts
@@ -62,10 +62,19 @@ def _checked_message(body: VerifyBody, settings: Settings) -> SiweMessage:
     if message.chain_id != settings.chain_id:
         raise _unauthorized("wrong chain")
     try:
-        # Checks the domain, the expiry and not-before fields, and that the signature recovers to the address.
-        message.verify(body.signature, domain=settings.app_domain)
+        # The message's domain must be one of the site's hostnames, or it was signed for another site.
+        # verify() then checks expiry, not-before and that the signature recovers to the address.
+        if message.domain not in settings.sign_in_domains:
+            raise _unauthorized("wrong domain")
+        message.verify(body.signature, domain=message.domain)
     except VerificationError as exc:
         raise _unauthorized(type(exc).__name__) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # A signature that is not even well formed (wrong length, out-of-range values) makes the signature
+        # library raise its own error types, not VerificationError. Failing to check one is never a session.
+        raise _unauthorized("InvalidSignature") from exc
     return message
 
 
@@ -110,39 +119,60 @@ class Principal:
         return requester in self.owned
 
 
-async def _lookup(settings: Settings, pool: Pool, token: str | None) -> Principal | None:
+async def _lookup(settings: Settings, pool: Pool, token: str | None) -> tuple[Principal, int | None] | None:
+    """The principal behind a live session, and the cookie lifetime in seconds if the session was just slid
+    forward (None when it was not renewed, so the cookie is left alone)."""
     if not token:
         return None
+    hashed = _token_hash(settings, token)
     async with pool.connection() as conn:
         cur = await conn.execute(
             "SELECT address, user_id FROM sessions"
             " WHERE token_hash = %s AND revoked_at IS NULL AND expires_at > now()",
-            (_token_hash(settings, token),),
+            (hashed,),
         )
         row = await cur.fetchone()
         if row is None:
             return None
         address, user_id = str(row[0]), row[1]
-        return Principal(address, user_id, await accounts.owned_addresses(conn, user_id, address))
+        renewed = await accounts.renew_session(conn, settings, hashed)
+        owned = await accounts.owned_addresses(conn, user_id, address)
+        return Principal(address, user_id, owned), renewed
 
 
 async def current_principal(
-    settings: SettingsDep, pool: PoolDep, mergit_session: Annotated[str | None, Cookie()] = None
+    response: Response,
+    settings: SettingsDep,
+    pool: PoolDep,
+    mergit_session: Annotated[str | None, Cookie()] = None,
 ) -> Principal:
-    """The signed-in caller. 401 when there is no live session."""
+    """The signed-in caller. 401 when there is no live session. A session in use is slid forward and its
+    cookie re-issued, so staying active keeps you signed in."""
     if not mergit_session:
         raise _unauthorized("not signed in")
-    principal = await _lookup(settings, pool, mergit_session)
-    if principal is None:
+    found = await _lookup(settings, pool, mergit_session)
+    if found is None:
         raise _unauthorized("session expired or revoked")
+    principal, renewed = found
+    if renewed is not None:
+        accounts.set_session_cookie(response, settings, mergit_session, renewed)
     return principal
 
 
 async def optional_principal(
-    settings: SettingsDep, pool: PoolDep, mergit_session: Annotated[str | None, Cookie()] = None
+    response: Response,
+    settings: SettingsDep,
+    pool: PoolDep,
+    mergit_session: Annotated[str | None, Cookie()] = None,
 ) -> Principal | None:
     """The signed-in caller, or None. Used where signing in again means linking to who is already in."""
-    return await _lookup(settings, pool, mergit_session)
+    found = await _lookup(settings, pool, mergit_session)
+    if found is None:
+        return None
+    principal, renewed = found
+    if renewed is not None and mergit_session:
+        accounts.set_session_cookie(response, settings, mergit_session, renewed)
+    return principal
 
 
 PrincipalDep = Annotated[Principal, Depends(current_principal)]
@@ -157,14 +187,18 @@ async def current_address(principal: PrincipalDep) -> str:
 AddressDep = Annotated[str, Depends(current_address)]
 
 
+async def owned_addresses_dep(principal: PrincipalDep) -> list[str]:
+    """Every requester address the signed-in account owns, lowercase (trial address and linked wallets)."""
+    return [a.lower() for a in principal.owned]
+
+
 def _member(principal: Principal) -> UUID:
     if principal.user_id is None:
         raise _unauthorized("sign in again")  # a session from before accounts existed
     return principal.user_id
 
 
-@router.get("/me")
-async def me(principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
+async def _account_view(principal: Principal, pool: Pool) -> dict[str, Any]:
     if principal.user_id is None:
         return {"address": principal.address, "user_id": None, "identities": [], "wallets": [], "trial": None}
     async with pool.connection() as conn:
@@ -182,6 +216,20 @@ async def me(principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
     }
 
 
+@router.get("/me")
+async def me(principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
+    return await _account_view(principal, pool)
+
+
+@router.get("/session")
+async def session_probe(principal: MaybePrincipalDep, pool: PoolDep) -> dict[str, Any] | None:
+    """Who is signed in, for a page that asks on every load. The same answer as ``/me``, but nobody signed in
+    (no cookie, a forged, expired or logged-out one) is ``200 null`` instead of ``401``: a 401 is an error the
+    browser prints in red in every visitor's console, and here it is the normal answer. ``/me`` stays
+    strict."""
+    return None if principal is None else await _account_view(principal, pool)
+
+
 @router.post("/wallet/link")
 async def link_wallet(
     body: VerifyBody,
@@ -190,17 +238,66 @@ async def link_wallet(
     pool: PoolDep,
     mergit_session: Annotated[str | None, Cookie()] = None,
 ) -> dict[str, str]:
-    """The signed-in user proves they hold a wallet; from then on the session acts as that wallet."""
+    """The signed-in user proves they hold a wallet; from then on the session acts as that wallet.
+
+    A wallet that already has its own account is answered with 409 and a one-time offer to merge that account
+    into this one (``POST /v0/auth/merge``). The same person has proven both sides, but nothing moves until
+    they confirm.
+    """
     user_id = _member(principal)
     message = _checked_message(body, settings)
     address = message.address.lower()
     assert mergit_session
+    offer: dict[str, object] | None = None
     async with pool.connection() as conn, conn.transaction():
         await _consume_nonce(conn, message.nonce)
         try:
             await accounts.link_wallet(conn, user_id, address)
         except accounts.WalletTaken as taken:
-            raise HTTPException(status_code=409, detail="that wallet belongs to another account") from taken
+            offer = {
+                "code": "wallet_taken",
+                "merge_token": await accounts.offer_merge(conn, settings, user_id, taken.owner, address),
+                "other": await accounts.merge_summary(conn, taken.owner),
+            }
+        else:
+            await conn.execute(
+                "UPDATE sessions SET address = %s WHERE token_hash = %s",
+                (address, _token_hash(settings, mergit_session)),
+            )
+    if offer is not None:
+        # Raised after the transaction commits, so the offer survives the refusal.
+        raise HTTPException(status_code=409, detail=offer)
+    return {"address": address}
+
+
+class MergeBody(BaseModel):
+    merge_token: Annotated[str, Field(min_length=20, max_length=200)]
+
+
+@router.post("/merge")
+async def merge_accounts(
+    body: MergeBody,
+    principal: PrincipalDep,
+    settings: SettingsDep,
+    pool: PoolDep,
+    mergit_session: Annotated[str | None, Cookie()] = None,
+) -> dict[str, str]:
+    """Confirms a merge offered by ``/wallet/link``: the other account's wallets, sign-in methods and runs
+    join this one, and the session acts as the wallet from now on."""
+    keep = _member(principal)
+    assert mergit_session
+    async with pool.connection() as conn, conn.transaction():
+        try:
+            absorb, address = await accounts.take_offer(conn, settings, body.merge_token, keep)
+        except accounts.OfferInvalid as invalid:
+            raise HTTPException(
+                status_code=404, detail="that merge offer is unknown, used or expired"
+            ) from invalid
+        except accounts.OfferNotYours as not_yours:
+            raise HTTPException(
+                status_code=403, detail="that merge offer belongs to another account"
+            ) from not_yours
+        await accounts.merge_users(conn, keep, absorb)
         await conn.execute(
             "UPDATE sessions SET address = %s WHERE token_hash = %s",
             (address, _token_hash(settings, mergit_session)),
@@ -209,10 +306,13 @@ async def link_wallet(
 
 
 @account_router.post("/trial")
-async def start_trial(principal: PrincipalDep, pool: PoolDep) -> dict[str, str]:
-    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet."""
+async def start_trial(principal: PrincipalDep, settings: SettingsDep, pool: PoolDep) -> dict[str, str]:
+    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet. Refused when one
+    of the account's sign-in methods belonged to a deleted account: the free credits are once per person."""
     user_id = _member(principal)
     async with pool.connection() as conn:
+        if await accounts.credits_forfeited(conn, settings, user_id):
+            raise HTTPException(status_code=403, detail="the free credits were already used by this person")
         started = await accounts.start_trial(conn, user_id)
     return {"started_at": started.isoformat()}
 
@@ -230,4 +330,6 @@ async def logout(
                 "UPDATE sessions SET revoked_at = now() WHERE token_hash = %s AND revoked_at IS NULL",
                 (_token_hash(settings, mergit_session),),
             )
-    response.delete_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+    response.delete_cookie(
+        COOKIE, path="/", domain=settings.cookie_domain, secure=True, httponly=True, samesite="lax"
+    )

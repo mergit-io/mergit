@@ -131,3 +131,22 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* the pull-request step */
+.lr-diff summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 6px 0;
+}
+.lr-diff pre {
+  max-height: 360px;
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--sunken);
+  font-family: "DM Mono", monospace;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+}

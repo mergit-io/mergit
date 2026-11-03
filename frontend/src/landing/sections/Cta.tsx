@@ -29,8 +29,11 @@ export function Cta() {
             openConnect();
           }}
         >
-          Try the demo <LIcon name="arrowUpRight" size={16} stroke={2} />
+          Get started <LIcon name="arrowUpRight" size={16} stroke={2} />
         </button>
+        <a href={paths.demo} className="l-btn-ghost l-btn-lg l-reveal" style={{ transitionDelay: "320ms" }}>
+          View demo <LIcon name="arrowUpRight" size={16} stroke={2} />
+        </a>
         <span className="l-mono muted l-reveal" style={{ transitionDelay: "360ms" }}>
           {cta.note}
         </span>
@@ -39,7 +42,8 @@ export function Cta() {
   );
 }
 
-export function Footer() {
+/** The footer. `columns` replaces the default links, for a layout that does not have every section. */
+export function Footer({ columns = footer.columns }: { columns?: typeof footer.columns }) {
   const { openConnect } = useAuth();
   return (
     <footer className="l-footer">
@@ -52,7 +56,7 @@ export function Footer() {
             <p className="muted">{footer.tagline}</p>
           </div>
           <nav className="footer-cols" aria-label="Footer">
-            {footer.columns.map((col) => (
+            {columns.map((col) => (
               <div key={col.title}>
                 <span className="l-eyebrow small">{col.title}</span>
                 <ul>
@@ -74,8 +78,11 @@ export function Footer() {
                       openConnect();
                     }}
                   >
-                    Try the demo
+                    Get started
                   </button>
+                </li>
+                <li>
+                  <a href={paths.demo}>View demo</a>
                 </li>
                 <li>
                   <Link to={paths.signIn}>Sign in</Link>

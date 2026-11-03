@@ -176,10 +176,7 @@ pub fn sealed_for(w: &World, t: B256) -> Bundle {
         phi,
         budget_usdc_units: "1000000".into(),
         runtime_image: "test".into(),
-        attestation: Attestation {
-            kind: UNATTESTED.into(),
-            dev_key: w.agent.runtime.address(),
-        },
+        attestation: Attestation::unattested(w.agent.runtime.address()),
         started_at: fmt_time(Utc::now()),
     };
     let result = PhiResult {

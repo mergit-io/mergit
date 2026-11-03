@@ -1,4 +1,5 @@
 import type { Ref } from "react";
+import { paths } from "../../app/paths";
 import { useAuth } from "../../auth/context";
 import { Icon } from "../../components/Icon";
 import { hero } from "../content";
@@ -51,8 +52,11 @@ export function Hero({ ready, globeRef }: { ready: boolean; globeRef: Ref<HTMLDi
                 openConnect();
               }}
             >
-              Try the demo <LIcon name="arrowUpRight" size={16} stroke={2} />
+              Get started <LIcon name="arrowUpRight" size={16} stroke={2} />
             </button>
+            <a href={paths.demo} className="l-btn-ghost l-btn-lg">
+              View demo <LIcon name="arrowUpRight" size={16} stroke={2} />
+            </a>
             <a href="#how-it-works" className="l-btn-ghost l-btn-lg">
               See how it works <LIcon name="arrowUpRight" size={16} stroke={2} />
             </a>

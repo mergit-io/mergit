@@ -1,4 +1,4 @@
-"""Every browser-facing API route must be forwarded by Caddy on app.mergit.site.
+"""Every browser-facing API route must be forwarded by Caddy on mergit.site.
 
 The web app and the API share that one origin (deploy/Caddyfile): a path Caddy does not list is answered by
 the static site, so a new route works in tests and fails for people. A route added without a line in the
@@ -9,12 +9,27 @@ import re
 from fnmatch import fnmatch
 from pathlib import Path
 
-from mergit_cp import auth, oauth, otp, routes_plans, routes_runs, wallet_interest
+from mergit_cp import (
+    auth,
+    oauth,
+    otp,
+    routes_account,
+    routes_plans,
+    routes_reputation,
+    routes_routing,
+    routes_runs,
+    wallet_interest,
+)
 
 CADDYFILE = Path(__file__).resolve().parents[2] / "deploy" / "Caddyfile"
 
 # Served to the gateway and the worker over the compose network, and deliberately not proxied.
 INTERNAL = ("/v0/internal", "/v0/chain-events")
+
+# Browser routes that are withheld from the public origin until they are safe to expose: DELETE /v0/account
+# removes the account, and what a deletion leaves behind and the once-per-person free credits are still open
+# (accounts.delete_account). Move a path out of this list in the same change that adds it to the Caddyfile.
+WITHHELD = ("/v0/account",)
 
 
 def _block(host: str) -> str:
@@ -25,11 +40,12 @@ def _block(host: str) -> str:
 
 
 def _proxied_patterns() -> list[str]:
-    """The browser routes: one shared snippet, imported by both app.mergit.site and api.mergit.site."""
+    """The browser routes: one shared snippet, imported by the site (mergit.site and app.mergit.site) and by
+    api.mergit.site."""
     text = CADDYFILE.read_text()
     snippet = re.search(r"^\(api_routes\) \{\n\s*@api path ([^\n]+)\n\}", text, re.M)
     assert snippet, "the (api_routes) snippet has no `@api path` matcher"
-    for host in ("app.mergit.site", "api.mergit.site"):
+    for host in ("mergit.site, app.mergit.site", "api.mergit.site"):
         assert "import api_routes" in _block(host), f"{host} must import the shared route list"
     return snippet.group(1).split()
 
@@ -38,29 +54,48 @@ def _browser_paths() -> list[str]:
     routers = [
         auth.router,
         auth.account_router,
+        routes_account.router,
         oauth.router,
         otp.router,
         wallet_interest.router,
         routes_plans.router,
         routes_runs.router,
         routes_runs.agents_router,
+        routes_reputation.router,
+        routes_routing.router,
     ]
     paths = {
         re.sub(r"\{[^}]+\}", "x", r.path) for router in routers for r in router.routes if hasattr(r, "path")
     }  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownVariableType,reportUnknownArgumentType]
-    return sorted(p for p in paths if not p.startswith(INTERNAL))
+    return sorted(p for p in paths if not p.startswith(INTERNAL) and p not in WITHHELD)
 
 
 def test_every_browser_route_is_proxied_to_the_api() -> None:
     patterns = _proxied_patterns()
     missing = [p for p in _browser_paths() if not any(fnmatch(p, pat) for pat in patterns)]
-    assert missing == [], f"app.mergit.site would serve the web app, not the API, for: {missing}"
+    assert missing == [], f"mergit.site would serve the web app, not the API, for: {missing}"
 
 
 def test_the_internal_routes_stay_off_the_public_origin() -> None:
     patterns = _proxied_patterns()
     for path in ("/v0/internal/progress", "/v0/chain-events"):
         assert not any(fnmatch(path, pat) for pat in patterns), f"{path} must not be proxied"
+
+
+def test_withheld_routes_stay_off_the_public_origin() -> None:
+    patterns = _proxied_patterns()
+    for path in WITHHELD:
+        assert not any(fnmatch(path, pat) for pat in patterns), f"{path} is withheld and must not be proxied"
+
+
+def test_a_withheld_route_is_a_real_route() -> None:
+    """A path left in WITHHELD after its route was removed or renamed would hide nothing and mislead."""
+    paths = {
+        r.path  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownVariableType]
+        for r in routes_account.router.routes
+        if hasattr(r, "path")
+    }
+    assert set(WITHHELD) <= paths
 
 
 def test_the_check_would_notice_a_route_it_does_not_know() -> None:

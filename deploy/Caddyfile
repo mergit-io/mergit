@@ -9,39 +9,49 @@
 
 (site_headers) {
 	encode zstd gzip
-	header {
-		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
-	}
 	@assets path /assets/*
 	header @assets Cache-Control "public, max-age=31536000, immutable"
-	# The apps use createBrowserRouter, so any unknown path must fall back to index.html.
-	try_files {path} /index.html
+	# The page itself is never cached: a new deploy has new asset names, and a stale index.html would point at old ones.
+	@shell not path /assets/*
+	header @shell Cache-Control "no-cache"
+	# Report-only: it shows in the browser console what would be blocked, without blocking. Watch it on a deployed
+	# page (sign in, open a run, the wallet picker) and fix every violation before turning it into an enforcing
+	# Content-Security-Policy. Enforcing it blind could break sign-in or the wallet. Clickjacking is covered
+	# already by X-Frame-Options below.
+	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self' https://gateway.mergit.site https://store.mergit.site https://sepolia.base.org https://api.github.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+	# The app is a single-page app, so its own routes fall back to index.html. Anything else that is not a file is a
+	# real 404 (not the app shell with a 200, which scanners flag and search engines index as soft 404s).
+	@spa path / /signin /signin/* /demo /demo/* /app /app/*
+	rewrite @spa /index.html
 }
 
-# The public site: the design over mock data.
-mergit.site {
-	root * /srv/web
-	import site_headers
-	file_server
-}
-
-www.mergit.site {
-	redir https://mergit.site{uri} permanent
-}
-
-# The API routes a browser calls. One list for app.mergit.site and api.mergit.site, so the two cannot drift;
-# control-plane/tests/test_caddy_routes.py fails when a route in the API is missing from it.
+# The API routes a browser calls. One list for the site (mergit.site and app.mergit.site) and api.mergit.site, so the
+# two cannot drift; control-plane/tests/test_caddy_routes.py fails when a route in the API is missing from it.
+# The bare /v0/account is not listed on purpose: it is DELETE /v0/account, deleting the account. It stays off the public
+# origin until the gaps in what a deletion removes and in the once-per-person free credits are decided (see
+# accounts.delete_account). /v0/account/* is every other account route.
 (api_routes) {
-	@api path /v0/auth/* /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents
+	@api path /v0/auth/* /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents /v0/agents/*
 }
 
-# The same frontend on live Base Sepolia data, and the orchestration API on the same origin: the browser calls
-# /v0/auth, /v0/account, /v0/wallet-interest, /v0/plans and /v0/agents here, so sign-in cookies are first-party and there is no CORS. The gateway and the
-# worker reach the API directly over the compose network, so /v0/chain-events and /v0/internal are deliberately not
-# proxied.
-app.mergit.site {
+# The site: the frontend on live Base Sepolia data, and the orchestration API on the same origin. It is served on both
+# mergit.site and app.mergit.site, identically. Each page calls /v0/auth, /v0/account, /v0/wallet-interest, /v0/plans
+# and /v0/agents (with its /reputation) on its own hostname, so there is no CORS. The gateway and the worker reach the API directly over the
+# compose network, so /v0/chain-events and /v0/internal are deliberately not proxied.
+# deploy/secrets/api.env must say how sign-in works across the two: APP_DOMAIN=app.mergit.site (where GitHub and Google
+# send people back to, since each allows one callback address), EXTRA_DOMAINS=mergit.site (wallet sign-in is accepted
+# from both) and COOKIE_DOMAIN=mergit.site (the session cookie is shared, so signing in on one signs in on the other).
+mergit.site, app.mergit.site {
 	import api_routes
+	# On every response, the page's and the API's. HSTS has no includeSubDomains or preload: other names under this
+	# domain are not all known to be HTTPS-only, and a preload entry cannot be taken back quickly.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+	}
 	handle @api {
 		reverse_proxy api:8000
 	}
@@ -50,6 +60,10 @@ app.mergit.site {
 		import site_headers
 		file_server
 	}
+}
+
+www.mergit.site {
+	redir https://mergit.site{uri} permanent
 }
 
 # Service APIs. Both allow any origin themselves (CORS), and their write endpoints need bearer tokens.

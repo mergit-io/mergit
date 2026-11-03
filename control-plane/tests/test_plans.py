@@ -416,7 +416,7 @@ def test_worker_reads_an_approved_plan(app_client: TestClient, settings: Setting
     assert row is not None and row[4] == "main" and row[5] == GOAL and row[10]["kind"] == "exec/0"
 
 
-def test_model_outage_is_502_and_stores_nothing(settings: Settings) -> None:
+def test_model_outage_is_502_and_stores_nothing(settings: Settings, caplog: pytest.LogCaptureFixture) -> None:
     from mergit_cp.llm import LLMUnavailable
 
     class Down:
@@ -428,6 +428,8 @@ def test_model_outage_is_502_and_stores_nothing(settings: Settings) -> None:
     ) as c:
         sign_in(c)
         assert c.post("/v0/plans", json=BODY).status_code == 502
+    # The reason reaches the operator's log even though the client only sees "unavailable".
+    assert "planner model unavailable: connection refused" in caplog.text
     with psycopg.connect(settings.database_url) as conn:
         assert conn.execute("SELECT count(*) FROM plans").fetchone() == (0,)
         conn.execute("TRUNCATE planning_attempts, sessions, auth_nonces")

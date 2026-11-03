@@ -31,6 +31,9 @@ COPY control-plane/mergit_cp mergit_cp
 # app.py imports mergit_worker.meter (the shared price table); the API never touches the rest of it.
 COPY control-plane/mergit_worker mergit_worker
 COPY control-plane/migrations migrations
+# Plans and events are validated against spec/schemas (mergit_cp/spec.py); without them every plan draft fails.
+COPY spec/schemas spec/schemas
+ENV MERGIT_SPEC_DIR=/app/spec
 COPY control-plane/agents.toml control-plane/prices.toml ./
 COPY deploy/agents.local.json deploy/agents.local.json
 ENV PATH="/app/.venv/bin:${PATH}"

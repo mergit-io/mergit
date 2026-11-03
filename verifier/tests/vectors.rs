@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, B256, U256};
 use mergit_spec::{Bundle, receipt_domain};
-use mergit_verifier::{Commitment, Status, verify};
+use mergit_verifier::{Commitment, Status, TrustPolicy, Verifier, verify};
 use serde_json::Value;
 
 fn vectors() -> Vec<Value> {
@@ -32,8 +32,8 @@ fn commitment(v: &Value) -> Option<Commitment> {
 fn every_vector_verifies_as_expected() {
     let all = vectors();
     assert!(
-        all.len() >= 19,
-        "expected at least 19 vectors, found {}",
+        all.len() >= 30,
+        "expected at least 30 vectors, found {}",
         all.len()
     );
     for v in all {
@@ -44,12 +44,33 @@ fn every_vector_verifies_as_expected() {
             v["domain"]["registry"].as_str().unwrap().parse().unwrap(),
         );
         let signer: Address = v["signer"].as_str().unwrap().parse().unwrap();
-        let report = verify(
+        // Optional: absent means an empty policy and now = 0, as for the v0 vectors.
+        let policy: TrustPolicy = match v.get("policy") {
+            Some(p) => serde_json::from_value(p.clone()).unwrap(),
+            None => TrustPolicy::default(),
+        };
+        let now = v.get("now").map_or(0, |n| n.as_i64().unwrap());
+        let report = Verifier::new(policy).verify(
             &bundle,
             &domain,
             Some(signer),
             commitment(&v["commitment"]).as_ref(),
+            now,
         );
+        // A vector that needs the test kind cannot be verified as designed without it. With the feature off the
+        // kind is not registered, so it must be invalid for exactly that reason and no other.
+        if v.get("requires").and_then(Value::as_str) == Some("test-attestation")
+            && !cfg!(feature = "test-attestation")
+        {
+            let got = serde_json::to_value(&report).unwrap();
+            assert_eq!(got["status"], "invalid", "{name}: {got}");
+            assert_eq!(
+                got["reasons"],
+                serde_json::json!(["ATTESTATION_UNSUPPORTED"]),
+                "{name}: {got}"
+            );
+            continue;
+        }
         let got = serde_json::to_value(&report).unwrap();
         assert_eq!(got["status"], v["expect"]["status"], "{name}: {got}");
         let reasons: Vec<&str> = got["reasons"]

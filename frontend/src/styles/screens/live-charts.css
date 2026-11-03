@@ -1,0 +1,252 @@
+/* Live dashboard charts. Builds on ledger.css (pl-*) and overview.css (ov-*). */
+
+/* Sparklines wipe in from the left. */
+.lc-spark .spark {
+  animation: lc-wipe 1.4s cubic-bezier(0.45, 0, 0.2, 1) 0.3s both;
+}
+@keyframes lc-wipe {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* Stat cards on the live proofs page: the label keeps its line, the sparkline takes what is left. */
+.pl-stat > .col {
+  flex: 1 1 auto;
+}
+.pl-stat .lc-spark {
+  flex: 0 1 120px;
+  min-width: 0;
+  margin-top: 14px;
+}
+.pl-stat .lc-spark .spark {
+  width: 100%;
+  max-width: none;
+  margin-top: 0;
+}
+
+/* A few blocks should not make slabs: bars keep a column's width and sit on the right, newest last. */
+.lc-blocks {
+  justify-content: flex-end;
+}
+.lc-blocks i {
+  flex: 0 1 28px;
+}
+
+/* Area chart at its real width; the empty note sits over the flat lines. */
+.lc-area svg {
+  height: auto;
+}
+.lc-empty {
+  position: absolute;
+  inset: 0 0 22px 28px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  text-align: center;
+}
+
+/* A day with nothing still shows a faint stub. */
+.ov-bar.lc-stub {
+  opacity: 0.25;
+}
+/* The bars fill whatever height the card gives them. */
+.lc-days {
+  position: relative;
+  min-height: 110px;
+}
+.lc-days .ov-bar-group {
+  height: 100%;
+}
+.lc-days .ov-bar {
+  width: 10px;
+}
+
+/* The ring's track draws itself, so an empty ring still animates in. */
+.lc-track {
+  stroke-dasharray: 1;
+  animation: lc-track 1.2s cubic-bezier(0.3, 0.7, 0.2, 1) 0.2s both;
+}
+@keyframes lc-track {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+.lc-share {
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Waiting for the first receipt: faint bars breathe in turn. */
+.pl-bars.lc-waiting i {
+  background: var(--sunken);
+  animation:
+    grow-up 0.55s cubic-bezier(0.3, 0.7, 0.2, 1) both,
+    lc-breathe 2.4s ease-in-out infinite;
+}
+@keyframes lc-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Heatmap with day and hour labels. */
+.lc-heat {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 8px;
+}
+.lc-heat-days {
+  display: grid;
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+  gap: 3px;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+}
+.lc-heat-hours {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+}
+
+/* A thin fill bar, used for credits spent. */
+.lc-meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+.lc-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transform-origin: left;
+  animation: grow-x 1.1s cubic-bezier(0.3, 0.7, 0.2, 1) 0.4s both;
+}
+
+/* Settlement trace on live data. */
+.lc-trace .pl-trace-row {
+  padding: 7px 4px;
+}
+.lc-trace-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+.lc-trace-empty i {
+  display: block;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--sunken) 0%, var(--surface) 50%, var(--sunken) 100%);
+  background-size: 200% 100%;
+  animation: lc-shimmer 1.8s ease-in-out infinite;
+}
+@keyframes lc-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* Task flow graph (live runs). Nodes reuse the design's .dnode from run.css. */
+.lc-flow {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 14px;
+  scrollbar-width: thin;
+}
+.lc-flow-stage {
+  position: relative;
+  min-width: 100%;
+}
+.lc-flow .dnode {
+  height: 58px;
+}
+.lc-node-n {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--azure-wash);
+  color: var(--azure);
+  font-weight: 600;
+}
+.lc-node.running .lc-node-n {
+  animation: pl-breathe 1.6s ease-in-out infinite;
+}
+.lc-edge-live {
+  stroke: var(--azure) !important;
+  stroke-width: 2 !important;
+  stroke-dasharray: 0.03 0.03 !important;
+  animation: lc-flow-dash 1.2s linear infinite !important;
+}
+@keyframes lc-flow-dash {
+  to {
+    stroke-dashoffset: -0.12;
+  }
+}
+.lc-ghost-line {
+  display: block;
+  height: 9px;
+  width: 80%;
+  border-radius: 99px;
+}
+.lc-ghost-line.short {
+  width: 50%;
+}
+.lc-ghost-line {
+  background: linear-gradient(90deg, var(--sunken) 0%, var(--surface) 50%, var(--sunken) 100%);
+  background-size: 200% 100%;
+  animation: lc-shimmer 1.8s ease-in-out infinite;
+}
+
+/* Recent runs with nothing to list: the message, then faint rows that keep the table's shape. */
+.lc-table-empty > p {
+  padding: 16px 20px 4px;
+}
+.lc-ghost-row {
+  pointer-events: none;
+}
+.lc-ghost-row:nth-child(3) {
+  opacity: 0.7;
+}
+.lc-ghost-row:nth-child(4) {
+  opacity: 0.45;
+}
+.lc-ghost-row:nth-child(5) {
+  opacity: 0.25;
+}
+.lc-ghost-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.lc-ghost-row .lc-ghost-when {
+  flex: none;
+  width: 56px;
+  margin-right: 28px;
+}
+.lc-ghost-pill {
+  display: block;
+  width: 84px;
+  height: 22px;
+  border-radius: 999px;
+  margin-right: 46px;
+  background: linear-gradient(90deg, var(--sunken) 0%, var(--surface) 50%, var(--sunken) 100%);
+  background-size: 200% 100%;
+  animation: lc-shimmer 1.8s ease-in-out infinite;
+}

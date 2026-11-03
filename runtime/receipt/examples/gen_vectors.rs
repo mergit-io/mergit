@@ -1,14 +1,15 @@
 //! Writes the receipt test vectors to the directory given as the first argument (normally `spec/vectors`).
 //! Every forged vector breaks exactly one rule and is otherwise resealed, so it names one reason code.
-//! Run: cargo run -p mergit-receipt --features forgery-fixture --example gen_vectors -- spec/vectors
+//! Run: cargo run -p mergit-receipt --features forgery-fixture,test-attestation --example gen_vectors -- spec/vectors
 
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_signer_local::PrivateKeySigner;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{TimeZone, Utc};
 use mergit_receipt::fixture::{forge, forge_raw, resign};
 use mergit_receipt::{ReceiptBuilder, StepInput};
 use mergit_spec::*;
+use mergit_verifier::test_kind::{TEST_KIND, issue_test_document, test_root_public_key};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -59,10 +60,7 @@ fn header(signer: &PrivateKeySigner) -> Header {
         phi,
         budget_usdc_units: "2000000".into(),
         runtime_image: "mergit-runtime:dev".into(),
-        attestation: Attestation {
-            kind: UNATTESTED.into(),
-            dev_key: signer.address(),
-        },
+        attestation: Attestation::unattested(signer.address()),
         started_at: fmt_time(t(0)),
     }
 }
@@ -149,6 +147,231 @@ fn write(
         serde_json::to_string_pretty(&v).unwrap() + "\n",
     )
     .unwrap();
+}
+
+const MEASUREMENT: &str = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+const NOT_AFTER: i64 = 2_000_000_000;
+const NOW: i64 = 1_800_000_000;
+
+/// A sealed v1 receipt (`valid_minimal`'s shape) claiming `kind` and `measurement` for `signer`'s key,
+/// carrying `document` when given.
+fn attested(
+    kind: &str,
+    measurement: &str,
+    document: Option<Vec<u8>>,
+    signer: &PrivateKeySigner,
+) -> Bundle {
+    let mut h = header(signer);
+    h.version = VERSION_V1.into();
+    h.attestation = Attestation::attested(kind, signer.address(), measurement);
+    let mut b = ReceiptBuilder::new(h).unwrap();
+    if let Some(doc) = document {
+        b = b.with_attestation_document(doc);
+    }
+    b.seal_with_phi(
+        phi_result(true),
+        cost(0, 0),
+        t(2),
+        signer,
+        &receipt_domain(CHAIN_ID, registry()),
+    )
+    .unwrap()
+}
+
+fn policy(kind: &str, measurements: &[&str]) -> Value {
+    json!({kind: {"roots": [STANDARD.encode(test_root_public_key())], "measurements": measurements}})
+}
+
+/// An attested-slice vector: `policy` and `now` feed the `Verifier`; `requires` marks vectors that need the
+/// `test-attestation` kind compiled in (the harness skips them, asserting `ATTESTATION_UNSUPPORTED`, when it is off).
+#[allow(clippy::too_many_arguments)]
+fn write_attested(
+    dir: &Path,
+    name: &str,
+    bundle: &Bundle,
+    signer: Address,
+    policy: Value,
+    now: i64,
+    requires: bool,
+    status: &str,
+    reasons: &[&str],
+) {
+    let mut v = json!({
+        "name": name,
+        "bundle": bundle,
+        "domain": {"chain_id": CHAIN_ID, "registry": registry()},
+        "signer": signer,
+        "commitment": null,
+        "policy": policy,
+        "now": now,
+        "expect": {"status": status, "reasons": reasons},
+    });
+    if requires {
+        v["requires"] = json!("test-attestation");
+    }
+    std::fs::write(
+        dir.join(format!("{name}.json")),
+        serde_json::to_string_pretty(&v).unwrap() + "\n",
+    )
+    .unwrap();
+}
+
+fn attested_vectors(dir: &Path, s: &PrivateKeySigner, other: &PrivateKeySigner) {
+    let a = s.address();
+    let d = receipt_domain(CHAIN_ID, registry());
+    let doc = |key: Address, m: &str, na: i64| issue_test_document(key, m, na);
+    let good_doc = || doc(a, MEASUREMENT, NOT_AFTER);
+    let good_policy = || policy(TEST_KIND, &[MEASUREMENT]);
+    let w = |name: &str,
+             b: &Bundle,
+             pol: Value,
+             now: i64,
+             requires: bool,
+             status: &str,
+             reasons: &[&str]| {
+        write_attested(dir, name, b, a, pol, now, requires, status, reasons)
+    };
+    let valid = attested(TEST_KIND, MEASUREMENT, Some(good_doc()), s);
+
+    w(
+        "attested_valid",
+        &valid,
+        good_policy(),
+        NOW,
+        true,
+        "valid",
+        &[],
+    );
+    w(
+        "attested_measurement_not_allowed",
+        &valid,
+        policy(TEST_KIND, &["0011223344556677"]),
+        NOW,
+        true,
+        "invalid",
+        &["ATTESTATION_MEASUREMENT"],
+    );
+    // The document binds an address one byte off the header's runtime key.
+    let mut near = a.0;
+    near.0[19] ^= 1;
+    w(
+        "attested_key_mismatch",
+        &attested(
+            TEST_KIND,
+            MEASUREMENT,
+            Some(doc(Address::from(near), MEASUREMENT, NOT_AFTER)),
+            s,
+        ),
+        good_policy(),
+        NOW,
+        true,
+        "invalid",
+        &["ATTESTATION_KEY_MISMATCH"],
+    );
+    // A genuine document, but issued for another runtime's key.
+    w(
+        "attested_document_for_other_key",
+        &attested(
+            TEST_KIND,
+            MEASUREMENT,
+            Some(doc(other.address(), MEASUREMENT, NOT_AFTER)),
+            s,
+        ),
+        good_policy(),
+        NOW,
+        true,
+        "invalid",
+        &["ATTESTATION_KEY_MISMATCH"],
+    );
+    w(
+        "attested_missing_document",
+        &attested(TEST_KIND, MEASUREMENT, None, s),
+        good_policy(),
+        NOW,
+        true,
+        "invalid",
+        &["ATTESTATION_INVALID"],
+    );
+    let mut tampered: Value = serde_json::from_slice(&good_doc()).unwrap();
+    tampered["not_after"] = json!(NOT_AFTER + 1);
+    w(
+        "attested_tampered_document",
+        &attested(
+            TEST_KIND,
+            MEASUREMENT,
+            Some(serde_json::to_vec(&tampered).unwrap()),
+            s,
+        ),
+        good_policy(),
+        NOW,
+        true,
+        "invalid",
+        &["ATTESTATION_INVALID"],
+    );
+    w(
+        "attested_expired",
+        &attested(
+            TEST_KIND,
+            MEASUREMENT,
+            Some(doc(a, MEASUREMENT, NOW - 1)),
+            s,
+        ),
+        good_policy(),
+        NOW,
+        true,
+        "invalid",
+        &["ATTESTATION_INVALID"],
+    );
+    w(
+        "attested_empty_policy",
+        &valid,
+        json!({}),
+        NOW,
+        true,
+        "invalid",
+        &["ATTESTATION_INVALID"],
+    );
+
+    // Header-shape vectors: nothing here depends on the test kind being compiled in.
+    let with_doc = forge_raw(minimal(s), |b| {
+        b.receipt.attestation_document = Some(Bytes::from(good_doc()));
+    });
+    w(
+        "unattested_with_document",
+        &with_doc,
+        good_policy(),
+        NOW,
+        false,
+        "invalid",
+        &["ATTESTATION_UNSUPPORTED", "UNATTESTED"],
+    );
+    let under_v0 = forge(
+        valid.clone(),
+        |b| {
+            b.receipt.header.version = VERSION.into();
+            recommit(b);
+        },
+        s,
+        &d,
+    );
+    w(
+        "attested_under_v0",
+        &under_v0,
+        good_policy(),
+        NOW,
+        false,
+        "invalid",
+        &["ATTESTATION_UNSUPPORTED"],
+    );
+    w(
+        "attested_unknown_kind",
+        &attested("unknown-kind", MEASUREMENT, Some(good_doc()), s),
+        policy("unknown-kind", &[MEASUREMENT]),
+        NOW,
+        false,
+        "invalid",
+        &["ATTESTATION_UNSUPPORTED"],
+    );
 }
 
 fn main() {
@@ -385,6 +608,8 @@ fn main() {
         bad,
         &["COMMITMENT_MISMATCH"],
     );
+
+    attested_vectors(dir, &s, &other);
 
     let ids: Vec<Value> = [(0u32, 1u32), (2, 1), (0, 2)]
         .iter()

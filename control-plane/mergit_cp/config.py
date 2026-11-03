@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     database_url: str
     app_domain: str
     """The SIWE domain the web app signs for, e.g. app.mergit.site. Messages for any other domain fail."""
+    extra_domains: Annotated[list[str], NoDecode] = []
+    """Other hostnames the same site is served on (app.mergit.site beside mergit.site). Wallet messages for
+    them are accepted too. OAuth callbacks and redirects stay on ``app_domain``: GitHub takes one callback."""
+    cookie_domain: str | None = None
+    """When set (mergit.site), the session cookie is shared by that domain and its subdomains, so signing in
+    on one of the site's hostnames signs in on the others. Unset, the cookie stays on the host that set it."""
     session_secret: SecretStr = Field(min_length=32)
     gateway_url: str
     store_url: str
@@ -27,13 +33,20 @@ class Settings(BaseSettings):
 
     planner_model: str
     """The planner's model (HLD D18 is open, so this is a deployment choice, not a code default)."""
+    planner_models: Annotated[list[str], NoDecode] = []
+    """Other planner models a user may choose in their settings (comma-separated). Each must be priced, like
+    ``planner_model``. Empty: everyone gets ``planner_model``. See ``model_choices``."""
     prices_file: str = "prices.toml"
     planner_max_tasks: int = Field(default=8, ge=1, le=32)
     plans_per_hour: int = Field(default=10, ge=1)
     """Planner calls per requester per hour. Each one spends on the model before anything is funded."""
+    redeem_attempts_per_hour: int = Field(default=10, ge=1)
+    """Redeem-code attempts per account per hour, right or wrong, so a code cannot be guessed."""
     goal_max_chars: int = Field(default=8000, ge=1)
     repo_hosts: Annotated[list[str], NoDecode] = ["github.com"]
     """Hosts a plan's repository may live on. The worker clones it, so anything else is refused here."""
+    verify_repos: bool = True
+    """Ask GitHub whether the repository and branch exist (publicly) before a plan is drafted."""
     max_attempts: int = Field(default=3, ge=1)
     """Agents a requester may list per task: the pick plus the retries (plan O6: at most 3 attempts)."""
 
@@ -51,10 +64,25 @@ class Settings(BaseSettings):
     event_timeout_s: float = Field(default=10.0, gt=0)
     outcome_poll_s: float = Field(default=1.0, gt=0)
     """How often finished jobs are checked for a retry, an escalation or plan completion (plan O6)."""
+    reputation_poll_s: float = Field(default=5.0, gt=0)
+    """How often finished tasks' costs are read from the gateway and the posteriors refreshed."""
+    routing_epsilon: float = Field(default=0.1, ge=0)
+    """Slack on the task budget when a suggestion skips an agent whose cost would not fit (paper §9.3)."""
+    routing_min_observations: int = Field(default=5, ge=1)
+    """Counted outcomes below which a suggested agent is called unproven."""
+    reputation_cost_prior_micros: int = Field(default=500_000, ge=1)
+    """The cost prior's mean for an agent with no history, in USDC micros. Configuration, not a measurement:
+    it only matters until an agent has a few validated outcomes."""
 
     chain_id: int = BASE_SEPOLIA_CHAIN_ID
     nonce_ttl_s: int = Field(default=600, gt=0)
-    session_ttl_s: int = Field(default=12 * 3600, gt=0)
+    session_ttl_s: int = Field(default=30 * 86400, gt=0)
+    """How long a session lives after sign-in or after its last renewal. A session in use is slid forward
+    once less than half of this remains (accounts.renew_session), so someone who keeps using the app stays
+    signed in; one who stops is signed out after this long."""
+    session_max_age_s: int = Field(default=90 * 86400, gt=0)
+    """Hard cap from sign-in: sliding never extends a session past this, so everyone signs in again at least
+    this often."""
     db_pool_max: int = Field(default=10, gt=0)
 
     github_client_id: str | None = None
@@ -92,6 +120,7 @@ class Settings(BaseSettings):
         # the model that really answers (mergit_worker/providers.py). Unchanged whenever Anthropic is the
         # provider.
         self.planner_model = effective_model(self.planner_model)
+        self.planner_models = [effective_model(m) for m in self.planner_models]
         return self
 
     @model_validator(mode="before")
@@ -102,6 +131,16 @@ class Settings(BaseSettings):
             return data
         values = cast(dict[str, object], data)
         return {k: v for k, v in values.items() if not (isinstance(v, str) and v.strip() == "")}
+
+    @property
+    def sign_in_domains(self) -> list[str]:
+        """Every hostname a wallet may sign in for."""
+        return [self.app_domain, *self.extra_domains]
+
+    @property
+    def model_choices(self) -> list[str]:
+        """The planner models a user may choose: ``planner_model``, then ``planner_models``, once each."""
+        return list(dict.fromkeys([self.planner_model, *self.planner_models]))
 
     @property
     def public_origin(self) -> str:
@@ -121,7 +160,7 @@ class Settings(BaseSettings):
     def email_enabled(self) -> bool:
         return bool(self.smtp_host and self.smtp_from)
 
-    @field_validator("cors_origins", "repo_hosts", mode="before")
+    @field_validator("cors_origins", "repo_hosts", "extra_domains", "planner_models", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
         if isinstance(value, str):

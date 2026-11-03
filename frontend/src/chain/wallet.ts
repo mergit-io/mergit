@@ -3,12 +3,30 @@ import { LIVE } from "../config/live";
 import { short, type Session } from "../auth/session";
 import { injected, switchChain, walletChainId } from "./client";
 import { NoAccountError, type Intent } from "../auth/intent";
+import { parseWalletTaken, WalletTakenError } from "../auth/merge";
 import { buildSignIn } from "./siwe";
 
-/** The API's address without a trailing slash. An empty one would send sign-in to the page's own origin. */
-export function apiBase(url: string = LIVE.apiUrl): string {
+const pageOrigin = () => (typeof window === "undefined" ? "" : window.location.origin);
+
+/**
+ * The API's address without a trailing slash. `same-origin` means whichever hostname the page was served from, which is
+ * how one build serves both mergit.site and app.mergit.site. A blank one is an error, not the page's own origin.
+ */
+export function apiBase(url: string = LIVE.apiUrl, origin: string = pageOrigin()): string {
   if (!url) throw new Error("Mergit's API address is not configured for this build (VITE_API_URL).");
-  return url.replace(/\/+$/, "");
+  return (url === "same-origin" ? origin : url).replace(/\/+$/, "");
+}
+
+/**
+ * Where GitHub and Google sign-in starts and ends. They accept one callback address, so it is the same hostname
+ * whichever one the visitor is on; the session cookie is shared by both, so they come back signed in.
+ */
+export function authBase(
+  authOrigin: string = LIVE.authOrigin,
+  api: string = LIVE.apiUrl,
+  origin: string = pageOrigin(),
+): string {
+  return authOrigin ? authOrigin.replace(/\/+$/, "") : apiBase(api, origin);
 }
 
 /** Connects the browser wallet, checks the chain and has it sign an EIP-4361 message for a fresh server nonce. */
@@ -43,7 +61,7 @@ async function signWithWallet(onMessage?: (message: string) => void) {
   return { api, address, message, signature };
 }
 
-const walletSession = (address: Address): Session => ({
+export const walletSession = (address: Address): Session => ({
   address,
   addressShort: short(address),
   method: "browser",
@@ -76,7 +94,12 @@ export async function connectAndLinkWallet(onMessage?: (message: string) => void
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ message, signature }),
   });
-  if (link.status === 409) throw new Error("That wallet already belongs to another Mergit account.");
+  if (link.status === 409) {
+    // The wallet has its own account. When it is the same person's, they can merge it into this one.
+    const offer = parseWalletTaken(await link.json().catch(() => null));
+    if (offer) throw new WalletTakenError(offer);
+    throw new Error("That wallet already belongs to another Mergit account.");
+  }
   if (!link.ok) throw new Error("Mergit did not accept the signature. Try connecting the wallet again.");
   return walletSession(address);
 }

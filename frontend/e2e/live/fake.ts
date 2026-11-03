@@ -17,10 +17,28 @@ export const RUNTIME_KEY = getAddress("0xf39fd6e51aad88f6f4ce6ab8827279cfffb9226
 export type Backend = {
   ethWei?: bigint;
   usdcUnits?: bigint;
-  credits?: { granted: string; spent: string; remaining: string; plans_today: number };
+  credits?: {
+    granted: string;
+    spent: string;
+    remaining: string;
+    plans_today: number;
+    /** The gateway's per-plan cap and plans per day; 2 USDC and 3 unless a test says otherwise. */
+    plan_cap?: string;
+    plans_per_day?: number;
+  };
+  /**
+   * Redeem codes the API accepts, by the code as typed: the amount in base units, or the status the API refuses
+   * with (`retryAfter` is the Retry-After header of a 429). A redeemed code adds to `credits` and then answers 409.
+   */
+  redeemCodes?: Record<string, string | { status: number; retryAfter?: string }>;
   commitments?: Array<{ taskId: Hex; agentId: bigint; root: Hex; bodyHash: Hex; costMicros: bigint; block: number }>;
   /** Bundles the store serves, keyed by body hash (the only way the app may fetch them). */
   bundles?: Record<string, string>;
+  /**
+   * The wallet being linked already has its own account: linking is answered with 409 and an offer to merge (`"plain"`:
+   * a 409 with no offer). `POST /v0/auth/merge` then makes the session act as the wallet.
+   */
+  walletTaken?: { token: string; other: Record<string, unknown> } | "plain";
   /** False: no account uses the wallet, so signing in (not creating an account) with it is refused. */
   walletRegistered?: boolean;
   /** What GET /v0/auth/providers says is set up. Default: none, so only the wallet is offered. */
@@ -30,6 +48,12 @@ export type Backend = {
    * no session (401). Unset, it answers with something that is not an account, so a remembered session is kept.
    */
   me?: Record<string, unknown> | null;
+  /** Run preferences and the models on offer, as `GET /v0/account/settings` answers; `PUT` replaces them. */
+  settings?: { preferences: Record<string, unknown>; planner_models: string[]; default_planner_model: string };
+  /** Devices signed in as this account. Default: just this one. */
+  sessions?: Array<{ created_at: string; expires_at: string; address: string; current: boolean }>;
+  /** Status the server answers any of the settings changes with instead of succeeding (409: last way in, plan running). */
+  settingsRefusal?: number;
   /** What `me` becomes once the emailed code has been accepted. */
   meAfterEmail?: Record<string, unknown>;
   /** On-chain commitment per task, as `commitmentOf` returns it. */
@@ -142,8 +166,9 @@ export async function installWallet(
 export const CORS = (route: Route) => ({
   "access-control-allow-origin": route.request().headers()["origin"] ?? "*",
   "access-control-allow-credentials": "true",
-  "access-control-allow-headers": "content-type",
-  "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+  "access-control-allow-headers": "content-type, idempotency-key",
+  "access-control-expose-headers": "retry-after",
+  "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
 });
 
 export function json(route: Route, body: unknown, status = 200) {
@@ -249,10 +274,27 @@ function rpc(b: Backend) {
 /** Paths the store was asked for in the current test. */
 export const storeCalls: string[] = [];
 
+const creditsBody = (b: Backend) => ({
+  granted_usdc_units: b.credits?.granted ?? "5000000",
+  spent_usdc_units: b.credits?.spent ?? "0",
+  remaining_usdc_units: b.credits?.remaining ?? "5000000",
+  plans_today: b.credits?.plans_today ?? 0,
+  plan_cap_usdc_units: b.credits?.plan_cap ?? "2000000",
+  plans_per_day: b.credits?.plans_per_day ?? 3,
+});
+
 /** Intercepts every backend host. Returns the requests the API received, for assertions. */
 export async function mockBackend(page: Page, b: Backend = {}) {
   const apiCalls: Array<{ path: string; body: unknown }> = [];
   storeCalls.length = 0;
+  // GitHub's public API (the New run pickers): nothing is public here unless a test fakes it, so no test reaches out.
+  await page.route("https://api.github.com/**", (route) =>
+    route.fulfill({
+      status: 404,
+      headers: { "access-control-allow-origin": "*", "content-type": "application/json" },
+      body: JSON.stringify({ message: "Not Found" }),
+    }),
+  );
   await page.route(`${LIVE_ENV.VITE_RPC_URL}/**`, rpc(b));
   await page.route(`${LIVE_ENV.VITE_API_URL}/**`, async (route) => {
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS(route) });
@@ -270,6 +312,8 @@ export async function mockBackend(page: Page, b: Backend = {}) {
       if (b.me === null) return json(route, { detail: "not signed in" }, 401);
       return json(route, b.me ?? {});
     }
+    // The quiet probe the page asks on every load: the same account as /me, but nobody signed in is `200 null`.
+    if (path === "/v0/auth/session") return json(route, b.me === null ? null : (b.me ?? {}));
     if (path === "/v0/auth/email/start") return route.fulfill({ status: 204, headers: CORS(route) });
     if (path === "/v0/auth/email/verify") {
       if (b.meAfterEmail) b.me = b.meAfterEmail;
@@ -277,10 +321,100 @@ export async function mockBackend(page: Page, b: Backend = {}) {
       return json(route, { address: typeof address === "string" ? address : ME });
     }
     if (path === "/v0/wallet-interest") return route.fulfill({ status: 204, headers: CORS(route) });
+    if (path === "/v0/account/credits") return json(route, creditsBody(b));
+    if (path === "/v0/account/redeem") {
+      const code = (route.request().postDataJSON() as { code: string }).code;
+      const rule = b.redeemCodes?.[code];
+      if (rule === undefined) return json(route, { detail: { error: "invalid_code" } }, 400);
+      if (typeof rule !== "string") {
+        const headers: Record<string, string> = { ...CORS(route), "content-type": "application/json" };
+        if (rule.retryAfter !== undefined) headers["retry-after"] = rule.retryAfter;
+        return route.fulfill({ status: rule.status, headers, body: JSON.stringify({ detail: { error: "refused" } }) });
+      }
+      const now = creditsBody(b);
+      b.credits = {
+        granted: String(BigInt(now.granted_usdc_units) + BigInt(rule)),
+        spent: now.spent_usdc_units,
+        remaining: String(BigInt(now.remaining_usdc_units) + BigInt(rule)),
+        plans_today: now.plans_today,
+      };
+      if (b.redeemCodes) b.redeemCodes[code] = { status: 409 };
+      return json(route, { amount_usdc_units: rule });
+    }
+    if (
+      path.startsWith("/v0/account/") &&
+      !["/v0/account/trial", "/v0/account/credits", "/v0/account/redeem"].includes(path)
+    ) {
+      const method = route.request().method();
+      const sent = route.request().postDataJSON() as Record<string, unknown> | null;
+      if (method !== "GET" && b.settingsRefusal !== undefined)
+        return json(route, { detail: "refused" }, b.settingsRefusal);
+      if (path === "/v0/account/settings") {
+        const base = b.settings ?? {
+          preferences: {
+            planner_model: null,
+            routing_mode: "greedy",
+            max_attempts: 1,
+            default_funding: "credits",
+            per_plan_cap_usdc_units: null,
+            daily_cap_usdc_units: null,
+          },
+          planner_models: ["claude-opus-5", "claude-sonnet-5"],
+          default_planner_model: "claude-opus-5",
+        };
+        if (method === "PUT") b.settings = { ...base, preferences: { ...sent } };
+        return json(route, b.settings ?? base);
+      }
+      if (path === "/v0/account/profile") {
+        b.me = { ...b.me, name: sent?.["name"] };
+        return json(route, { name: sent?.["name"] });
+      }
+      if (path.startsWith("/v0/account/wallets/")) {
+        const address = path.split("/").pop() ?? "";
+        const wallets = ((b.me?.["wallets"] as string[] | undefined) ?? []).filter((w) => w !== address.toLowerCase());
+        b.me = { ...b.me, wallets };
+        return route.fulfill({ status: 204, headers: CORS(route) });
+      }
+      if (path.startsWith("/v0/account/identities/")) {
+        const provider = path.split("/").pop();
+        const identities = ((b.me?.["identities"] as Array<{ provider: string }> | undefined) ?? []).filter(
+          (i) => i.provider !== provider,
+        );
+        b.me = { ...b.me, identities };
+        return route.fulfill({ status: 204, headers: CORS(route) });
+      }
+      if (path === "/v0/account/sessions") {
+        const now = "2026-11-01T10:00:00+00:00";
+        const later = "2026-12-01T10:00:00+00:00";
+        return json(
+          route,
+          b.sessions ?? [{ created_at: now, expires_at: later, address: ME.toLowerCase(), current: true }],
+        );
+      }
+      if (path === "/v0/account/sessions/revoke-others") {
+        const revoked = (b.sessions ?? []).filter((x) => !x.current).length;
+        b.sessions = (b.sessions ?? []).filter((x) => x.current);
+        return json(route, { revoked });
+      }
+    }
+    if (path === "/v0/account" && route.request().method() === "DELETE") {
+      if (b.settingsRefusal !== undefined) return json(route, { detail: "refused" }, b.settingsRefusal);
+      b.me = null;
+      return route.fulfill({ status: 204, headers: CORS(route) });
+    }
     if (path === "/v0/account/trial") {
       const started_at = "2026-10-30T10:00:00+00:00";
       b.me = { ...b.me, trial: { started_at } };
       return json(route, { started_at });
+    }
+    if (path === "/v0/auth/wallet/link" && b.walletTaken !== undefined) {
+      const taken = b.walletTaken;
+      if (taken === "plain") return json(route, { detail: "that wallet belongs to another account" }, 409);
+      return json(route, { detail: { code: "wallet_taken", merge_token: taken.token, other: taken.other } }, 409);
+    }
+    if (path === "/v0/auth/merge") {
+      b.me = { ...b.me, address: ME.toLowerCase(), wallets: [ME.toLowerCase()] };
+      return json(route, { address: ME.toLowerCase() });
     }
     if (path === "/v0/auth/wallet/link") {
       b.me = { ...b.me, address: ME.toLowerCase(), wallets: [ME.toLowerCase()] };
@@ -305,12 +439,7 @@ export async function mockBackend(page: Page, b: Backend = {}) {
         }));
       return json(route, rows);
     }
-    return json(route, {
-      granted_usdc_units: b.credits?.granted ?? "5000000",
-      spent_usdc_units: b.credits?.spent ?? "0",
-      remaining_usdc_units: b.credits?.remaining ?? "5000000",
-      plans_today: b.credits?.plans_today ?? 0,
-    });
+    return json(route, creditsBody(b));
   });
   await page.route(`${LIVE_ENV.VITE_STORE_URL}/**`, (route) => {
     storeCalls.push(new URL(route.request().url()).pathname);

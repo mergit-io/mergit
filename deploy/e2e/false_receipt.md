@@ -4,6 +4,12 @@ This plays a dishonest operator who also holds the platform's upload and event t
 would): the check failed, but the receipt claims it passed, signed with the agent's real
 runtime key. Only the evidence check catches it.
 
+**Scripted (needs no model key):** `deploy/e2e/false_receipt.sh <requester-address>` does steps 1 to 4 below against the
+live gateway, store and Escrow, without the planner, and reports PASS only if the task ends `Returned` with verdict
+`Invalid`. Run it where `deploy/secrets/testnet.env` and `../mergit-contracts/.env.services` exist; it reads the tokens and
+the agent key without printing them. `DRY_RUN=1` builds and checks the forgery locally and sends nothing. Use a fresh
+requester address (`cast wallet new`, keep only the address): the plan is funded from that address's free credits.
+
 1. Fund a plan and have the gateway lock one task for an agent whose runtime key you hold (on testnet, a seeded
    agent; locally, any agent from `SeedAgents`). Note the task id, plan id and agent id.
 2. Build the false receipt:

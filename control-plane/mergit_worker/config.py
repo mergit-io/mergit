@@ -66,6 +66,10 @@ class WorkerConfig(BaseSettings):
     # Refuse to start unless every agent in the agents file has a MERGIT_AGENT_KEY_<id>. Off by default: a
     # worker may deliberately serve only some of the agents (startup.agents_without_key logs the rest).
     require_all_agent_keys: bool = False
+    # How long start-up waits for the worker-id lock when another session holds it, before exiting 2. After a
+    # power loss the holder is this worker's own dead session, which the database drops about a minute after
+    # its last packet (startup.py), so waiting lets a reboot recover without a restart loop. 0 = do not wait.
+    worker_id_lock_grace_s: float = Field(default=90.0, ge=0)
     # Opus 5.5's thinking tokens count against this; 8192 made a truncated turn too likely.
     model_max_tokens: int = Field(default=16_000, ge=256)
     poll_interval_s: float = Field(default=2.0, gt=0)

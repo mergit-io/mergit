@@ -59,10 +59,7 @@ fn main() {
         phi,
         budget_usdc_units: "1000000".into(),
         runtime_image: "false-receipt-check".into(),
-        attestation: Attestation {
-            kind: UNATTESTED.into(),
-            dev_key: signer.address(),
-        },
+        attestation: Attestation::unattested(signer.address()),
         started_at: fmt_time(Utc::now()),
     };
     let honest_fail = PhiResult {

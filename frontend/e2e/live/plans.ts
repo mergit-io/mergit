@@ -62,6 +62,46 @@ export const AGENTS = [
   { agent_id: "2", name: "coder-b", model: "claude-opus-5-5" },
 ];
 
+/** What GET /v0/agents/reputation answers (written out here, as the API's contract, not imported from the app). */
+export const REPUTATION_NOTE =
+  "Derived from validated outcomes only. Work funded from free credits is not counted. Where no outcome is counted the figures are the prior, which is configuration, not a measurement.";
+
+export type FakeReputation = {
+  agent_id: string;
+  name: string;
+  category: string;
+  basis: string;
+  counted_outcomes: number;
+  uncounted_credit_outcomes: number;
+  success_mean: number;
+  cost_mean_micros: number;
+  value_density_per_usdc: number;
+  effective_sample_size: number;
+};
+
+export const SEASONED: FakeReputation = {
+  agent_id: "2",
+  name: "coder-b",
+  category: "test-repair",
+  basis: "validated outcomes",
+  counted_outcomes: 7,
+  uncounted_credit_outcomes: 2,
+  success_mean: 0.8,
+  cost_mean_micros: 400_000,
+  value_density_per_usdc: 2,
+  effective_sample_size: 9.1,
+};
+
+const suggestedPick = (agent_id: string, name: string, counted: number, unproven: boolean) => ({
+  agent_id,
+  name,
+  score_per_usdc: 2,
+  assumed_success: 0.8,
+  assumed_cost_micros: 400_000,
+  counted_outcomes: counted,
+  unproven,
+});
+
 export const PHI = {
   kind: "exec/0",
   command: ["pytest", "tests/test_refund.py", "-q"],
@@ -148,7 +188,7 @@ export function attempt(index: number, n: number, over: Partial<FakeAttempt> = {
   };
 }
 
-export type ApiCall = { method: string; path: string; body: unknown };
+export type ApiCall = { method: string; path: string; body: unknown; key?: string };
 
 const sseBody = (events: FakeEvent[]) =>
   // A long retry, so the browser does not reconnect while a test is still asserting.
@@ -160,8 +200,28 @@ const sseBody = (events: FakeEvent[]) =>
  */
 export async function mockPlanApi(
   page: Page,
-  opts: { plans?: FakePlan[]; created?: FakePlan; events?: FakeEvent[] } = {},
+  opts: {
+    plans?: FakePlan[];
+    created?: FakePlan;
+    events?: FakeEvent[];
+    /** The pull-request step. `after` is what the worker reports on each poll once the request is queued. */
+    pr?: { after: Array<"running" | "done" | "error"> };
+    /** What GET /v0/agents/reputation lists. Default: nothing validated yet. */
+    reputation?: FakeReputation[];
+  } = {},
 ) {
+  let prState: "none" | "queued" | "running" | "done" | "error" = "none";
+  const prPolls = [...(opts.pr?.after ?? ["running", "done"])];
+  const prBody = () => ({
+    plan_uuid: "x",
+    requested_by: ME.toLowerCase(),
+    status: prState,
+    branch: prState === "done" ? "mergit/0b7f6a52" : null,
+    commit_sha: prState === "done" ? "a".repeat(40) : null,
+    pr_number: prState === "done" ? 7 : null,
+    pr_url: prState === "done" ? "https://github.com/mergit-io/demo-repo/pull/7" : null,
+    error: prState === "error" ? "patch does not apply" : null,
+  });
   const plans = new Map((opts.plans ?? []).map((p) => [p.plan_uuid, structuredClone(p)]));
   const calls: ApiCall[] = [];
 
@@ -172,9 +232,10 @@ export async function mockPlanApi(
     const path = new URL(request.url()).pathname;
     if (path.startsWith("/v0/auth/") || path.startsWith("/v0/account/")) return route.fallback();
     const body: unknown = request.postData() ? request.postDataJSON() : null;
-    calls.push({ method, path, body });
+    calls.push({ method, path, body, key: request.headers()["idempotency-key"] });
 
     if (path === "/v0/agents") return json(route, AGENTS);
+    if (path === "/v0/agents/reputation") return json(route, { note: REPUTATION_NOTE, agents: opts.reputation ?? [] });
     if (path === "/v0/plans" && method === "GET") return json(route, [...plans.values()]);
     if (path === "/v0/plans" && method === "POST") {
       const created = structuredClone(opts.created ?? draftPlan());
@@ -186,11 +247,34 @@ export async function mockPlanApi(
     const plan = plans.get(uuid);
     if (!plan) return json(route, { detail: "no such plan" }, 404);
 
+    if (method === "DELETE" && !action) {
+      if (plan.state !== "draft")
+        return json(route, { detail: `the plan is ${plan.state}; only a draft can change` }, 409);
+      plans.delete(uuid);
+      return route.fulfill({ status: 204, headers: CORS(route) });
+    }
+
     if (action === "events") {
       return route.fulfill({
         status: 200,
         headers: { ...CORS(route), "content-type": "text/event-stream", "cache-control": "no-cache" },
         body: sseBody([{ event: "plan.state", data: { state: plan.state } }, ...(opts.events ?? [])]),
+      });
+    }
+    if (method === "GET" && action === "suggestions") {
+      const explore = new URL(request.url()).searchParams.get("explore") === "true";
+      if (plan.state !== "draft")
+        return json(route, { detail: `the plan is ${plan.state}; suggestions are for drafts` }, 409);
+      // Greedy: the seasoned agent first. Exploring: the same, plus an unproven agent as the retry.
+      const picks = explore
+        ? [suggestedPick("2", "coder-b", 7, false), suggestedPick("1", "coder-a", 0, true)]
+        : [suggestedPick("2", "coder-b", 7, false)];
+      return json(route, {
+        plan_id: plan.plan_id,
+        mode: explore ? "explore" : "greedy",
+        seed: explore ? 12345 : null,
+        note: "A suggestion, not an assignment: you still choose the agents when you approve.",
+        tasks: plan.tasks.map((t) => ({ index: t.index, budget_usdc_units: t.budget_usdc_units, picks })),
       });
     }
     if (method === "GET" && !action) return json(route, plan);
@@ -209,6 +293,31 @@ export async function mockPlanApi(
       }));
       Object.assign(plan, { state: "approved", funding, total_budget_usdc_units: total });
       return json(route, { plan_id: plan.plan_id, total_budget_usdc_units: total });
+    }
+    if (method === "GET" && action === "diff") {
+      if (plan.state !== "done") {
+        return json(
+          route,
+          { detail: { message: "the plan is not ready", blockers: ["the plan is " + plan.state] } },
+          409,
+        );
+      }
+      return json(route, {
+        plan_uuid: plan.plan_uuid,
+        repo_url: plan.repo_url,
+        base_ref: plan.ref,
+        tasks: plan.tasks.map((t) => ({ index: t.index, title: t.title, task_id: taskId(t.index, 1) })),
+        diff: "--- a/payments/refund.py\n+++ b/payments/refund.py\n@@ -9,2 +9,2 @@\n-    return min(requested_cents, remaining)\n+    return max(0, min(requested_cents, remaining))\n",
+      });
+    }
+    if (method === "POST" && action === "open-pr") {
+      if (prState === "none" || prState === "error") prState = "queued";
+      return json(route, prBody(), 202);
+    }
+    if (method === "GET" && action === "pr") {
+      if (prState === "none") return json(route, { detail: "no pull request has been requested" }, 404);
+      if (prState === "queued" || prState === "running") prState = prPolls.shift() ?? "done";
+      return json(route, prBody());
     }
     if (method === "POST" && action === "abandon") {
       plan.state = "closed";

@@ -15,7 +15,7 @@ pub enum BuildError {
     UnknownSeq(u32),
     #[error("header phi_hash does not match the predicate")]
     PhiHashMismatch,
-    #[error("v0 receipts must be unattested")]
+    #[error("attestation kind does not match the receipt version")]
     AttestationNotUnattested,
     #[error("unsupported receipt version or predicate kind")]
     UnsupportedVersion,
@@ -44,14 +44,30 @@ pub struct ReceiptBuilder {
     steps: Vec<Step>,
     evidence: BTreeSet<u32>,
     blobs: BTreeMap<B256, Vec<u8>>,
+    attestation_document: Option<Bytes>,
 }
 
 impl ReceiptBuilder {
     pub fn new(header: Header) -> Result<Self, BuildError> {
-        if header.version != VERSION || header.phi.kind != PREDICATE_KIND {
+        if (header.version != VERSION && header.version != VERSION_V1)
+            || header.phi.kind != PREDICATE_KIND
+        {
             return Err(BuildError::UnsupportedVersion);
         }
-        if header.attestation.kind != UNATTESTED {
+        // v0 is unattested with a dev key; v1 is an attested kind with a runtime key and a measurement.
+        let att = &header.attestation;
+        let consistent = if header.version == VERSION {
+            att.kind == UNATTESTED
+                && att.dev_key.is_some()
+                && att.runtime_key.is_none()
+                && att.measurement.is_none()
+        } else {
+            att.kind != UNATTESTED
+                && att.runtime_key.is_some()
+                && att.measurement.is_some()
+                && att.dev_key.is_none()
+        };
+        if !consistent {
             return Err(BuildError::AttestationNotUnattested);
         }
         if header.phi_hash != jcs_hash(&header.phi) {
@@ -62,7 +78,14 @@ impl ReceiptBuilder {
             steps: Vec::new(),
             evidence: BTreeSet::new(),
             blobs: BTreeMap::new(),
+            attestation_document: None,
         })
+    }
+
+    /// Attaches the attestation document. It travels beside the receipt, outside `body_hash`.
+    pub fn with_attestation_document(mut self, doc: Vec<u8>) -> Self {
+        self.attestation_document = Some(Bytes::from(doc));
+        self
     }
 
     pub fn header(&self) -> &Header {
@@ -109,7 +132,11 @@ impl ReceiptBuilder {
         signer: &PrivateKeySigner,
         domain: &Eip712Domain,
     ) -> Result<(Bundle, BTreeMap<B256, Vec<u8>>), BuildError> {
-        if signer.address() != self.header.attestation.dev_key {
+        // An unattested receipt has no document to carry: the verifier would call it unsupported.
+        if self.header.attestation.kind == UNATTESTED && self.attestation_document.is_some() {
+            return Err(BuildError::AttestationNotUnattested);
+        }
+        if Some(signer.address()) != self.header.attestation.signing_key() {
             return Err(BuildError::SignerMismatch);
         }
         if result.holds != phi_holds(&self.header.phi, &result) {
@@ -136,6 +163,7 @@ impl ReceiptBuilder {
             ended_at: fmt_time(ended_at),
             body_hash: B256::ZERO,
             signature: Bytes::new(),
+            attestation_document: self.attestation_document,
         };
         receipt.body_hash = body_hash(&receipt);
         receipt.signature = sign(&receipt, signer, domain)?;

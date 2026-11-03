@@ -26,6 +26,10 @@
 .connect-dialog {
   /* Against the viewport: the backdrop's grid track would size itself to the dialog. */
   width: min(420px, 100vw - 32px);
+  /* Taller than the screen (a landscape phone, the wallet guide): scroll inside the window, never off the bottom. */
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 28px;
   border-radius: 22px;
   background: var(--surface);

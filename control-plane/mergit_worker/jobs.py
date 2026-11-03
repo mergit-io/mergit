@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, TypeVar, cast
 
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
 from .models import Job, RunOutcome
@@ -97,15 +98,16 @@ class PgJobStore:
 
     @staticmethod
     def _open(database_url: str) -> psycopg.Connection[dict[str, Any]]:
-        # connect_timeout: a database that is down or unreachable must not hang this reconnect forever.
         return cast(
             "psycopg.Connection[dict[str, Any]]",
             psycopg.connect(
                 database_url,
                 autocommit=True,
-                row_factory=dict_row,  # pyright: ignore[reportArgumentType]
-                connect_timeout=10,
-            ),
+                row_factory=dict_row,
+                # An unreachable database must fail in seconds, not after the kernel's TCP timeout. A
+                # connect_timeout in the URL itself wins.
+                **({} if "connect_timeout" in conninfo_to_dict(database_url) else {"connect_timeout": 10}),
+            ),  # pyright: ignore[reportArgumentType]
         )
 
     def _retrying(self, fn: Callable[[], _T]) -> _T:

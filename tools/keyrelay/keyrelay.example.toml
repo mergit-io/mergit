@@ -1,0 +1,21 @@
+# Copy to keyrelay.toml (git-ignored) and edit. Paths are relative to this file.
+
+[server]
+listen = "127.0.0.1:8787"      # keep it on localhost unless you put it behind something that does auth
+token_file = "proxy-token.txt" # callers send:  Authorization: Bearer <contents of this file>
+# token_env = "KEYRELAY_TOKEN" # or read the token from an environment variable instead
+
+[[provider]]
+name = "groq"
+base_url = "https://api.groq.com/openai/v1" # what /v1 maps to
+keys_file = "groq-keys.txt"                 # one key per line; the LAST line is used first; chmod 600
+# keys_env = "GROQ_KEYS"                    # or newline/comma separated keys in an environment variable
+default_cooldown_s = 60                     # used when a 429 has no usable Retry-After
+max_cooldown_s = 86400                      # a daily-quota Retry-After is clamped to this
+max_attempts = 0                            # keys tried per request; 0 = number of keys + 1
+
+# More providers can follow; with more than one, callers use /<name>/v1/... instead of /v1/...
+# [[provider]]
+# name = "openrouter"
+# base_url = "https://openrouter.ai/api/v1"
+# keys_file = "openrouter-keys.txt"

@@ -1,0 +1,13 @@
+{
+  "event_id": "3f1c2b8e-9d4a-4e6f-8a1b-2c3d4e5f6a7b",
+  "type": "plan.approved",
+  "at": "2026-10-27T10:00:00.000Z",
+  "payload": {
+    "plan_id": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "plan_uuid": "3f1c2b8e-9d4a-4e6f-8a1b-2c3d4e5f6a7b",
+    "requester": "0x6E2d4A9c51b07f3e9d28c4a16b0e7f2c3d119A0b",
+    "total_budget_usdc_units": "2000000",
+    "funding": "credits",
+    "credit_account": "7a2f0c1e-5b3d-4c8a-9e1f-0d2b3c4a5e6f"
+  }
+}

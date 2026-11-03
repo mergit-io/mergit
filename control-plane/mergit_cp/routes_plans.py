@@ -5,6 +5,7 @@ Approval fixes the agent picks and each task's ``phi_hash``, and writes ``plan.a
 in the same transaction. Inputs that would waste a planner call are rejected before the model is called.
 """
 
+import logging
 import re
 import uuid
 from typing import Annotated, Any, Literal
@@ -12,15 +13,18 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import mergit_receipt
-from fastapi import APIRouter, Depends, HTTPException, Request
+import psycopg.errors
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from . import accounts, outcomes, plans
+from . import accounts, outcomes, plans, redeem, repo_check, user_settings
 from .agents import Agent
 from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .events import enqueue
 from .llm import LLM, LLMUnavailable
 from .planner import CostSink, PlanningFailed, TaskDraft, check_tasks, plan_goal
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v0/plans", tags=["plans"])
 
@@ -110,7 +114,14 @@ async def create_plan(
     pool: PoolDep,
     llm: Annotated[LLM, Depends(get_llm)],
     costs: Annotated[CostSink, Depends(get_costs)],
+    idempotency_key: Annotated[str | None, Header(pattern=r"^[A-Za-z0-9._:-]{1,100}$")] = None,
 ) -> dict[str, Any]:
+    """Drafts a plan. ``Idempotency-Key`` makes a retry (or a second click) return the first draft."""
+    if idempotency_key is not None:
+        async with pool.connection() as conn:
+            earlier = await plans.by_key(conn, principal.address, idempotency_key)
+        if earlier is not None:
+            return plans.view(earlier)
     problems = _check_repo(body.repo_url, settings.repo_hosts)
     if not _REF.match(body.ref):
         problems.append("ref must be a branch, tag or commit name")
@@ -118,6 +129,8 @@ async def create_plan(
         problems.append(f"goal is longer than {settings.goal_max_chars} characters")
     if not body.goal.strip():
         problems.append("goal is empty")
+    if not problems and settings.verify_repos:
+        problems = await repo_check.check(body.repo_url, body.ref)
     if problems:
         raise _problems(422, problems)
 
@@ -136,6 +149,14 @@ async def create_plan(
             raise HTTPException(status_code=429, detail="too many plans this hour; try again later")
         await conn.execute("INSERT INTO planning_attempts (requester) VALUES (%s)", (address,))
 
+    model = settings.planner_model
+    if principal.user_id is not None:
+        async with pool.connection() as conn:
+            chosen = (await user_settings.load(conn, principal.user_id)).planner_model
+        if (
+            chosen is not None and chosen in settings.model_choices
+        ):  # a model the operator has since withdrawn falls back to the default
+            model = chosen
     budget = int(body.budget_usdc_units)
     try:
         draft = await plan_goal(
@@ -144,32 +165,53 @@ async def create_plan(
             budget,
             body.category,
             llm,
-            model=settings.planner_model,
+            model=model,
             costs=costs,
             max_tasks=settings.planner_max_tasks,
         )
     except PlanningFailed as failed:
         raise _problems(422, failed.problems) from failed
     except LLMUnavailable as down:
+        # The client sees only "unavailable"; the provider's reason (a rejected request, a missing key) is
+        # what an operator needs, so it goes to the log. It is the provider's reply, never our key.
+        log.warning("planner model unavailable: %s", down)
         raise HTTPException(status_code=502, detail="the planner model is unavailable") from down
 
-    async with pool.connection() as conn, conn.transaction():
-        await plans.insert_draft(
-            conn,
-            plan_uuid=draft.plan_uuid,
-            plan_id=mergit_receipt.plan_id(draft.plan_uuid),
-            requester=address,
-            goal=body.goal,
-            repo_url=body.repo_url,
-            ref=body.ref,
-            category=body.category,
-            budget_usdc_units=budget,
-            planner_model=settings.planner_model,
-            tasks=draft.tasks,
-        )
-        stored = await plans.load(conn, uuid.UUID(draft.plan_uuid))
+    try:
+        async with pool.connection() as conn, conn.transaction():
+            await plans.insert_draft(
+                conn,
+                plan_uuid=draft.plan_uuid,
+                plan_id=mergit_receipt.plan_id(draft.plan_uuid),
+                requester=address,
+                goal=body.goal,
+                repo_url=body.repo_url,
+                ref=body.ref,
+                category=body.category,
+                budget_usdc_units=budget,
+                planner_model=model,
+                tasks=draft.tasks,
+                idempotency_key=idempotency_key,
+            )
+            stored = await plans.load(conn, uuid.UUID(draft.plan_uuid))
+    except psycopg.errors.UniqueViolation:
+        # A concurrent request with the same key finished first: its draft is the answer.
+        if idempotency_key is None:
+            raise
+        async with pool.connection() as conn:
+            stored = await plans.by_key(conn, address, idempotency_key)
     assert stored is not None
     return plans.view(stored)
+
+
+@router.delete("/{plan_uuid}", status_code=204)
+async def discard_plan(plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep) -> Response:
+    """Throws a draft away, with its tasks. Nothing was approved or paid, so nothing else refers to it; a plan
+    past draft is a record and is closed or abandoned instead."""
+    async with pool.connection() as conn, conn.transaction():
+        plan = await _owned_draft(conn, plan_uuid, principal)
+        await conn.execute("DELETE FROM plans WHERE plan_uuid = %s", (plan.plan_uuid,))
+    return Response(status_code=204)
 
 
 @router.patch("/{plan_uuid}")
@@ -201,6 +243,13 @@ async def approve_plan(
     agents: Annotated[list[Agent], Depends(get_agents)],
 ) -> dict[str, str]:
     known = {a.agent_id for a in agents}
+    # Read before the transaction opens, so a slow gateway holds no row lock. None: unreachable, and the
+    # gateway then enforces its limits alone, as it did before this look-ahead.
+    credit_view = (
+        await redeem.fetch_credits(settings, principal.user_id)
+        if body.funding == "credits" and principal.user_id is not None
+        else None
+    )
     async with pool.connection() as conn, conn.transaction():
         plan = await _owned_draft(conn, plan_uuid, principal)
         drafts = [t.draft for t in plan.tasks]
@@ -217,14 +266,29 @@ async def approve_plan(
             problems.extend(f"task {index}: unknown agent {a!r}" for a in picked if a not in known)
         if (
             principal.user_id is not None
-            and plan.requester == accounts.trial_address(principal.user_id)
+            and plan.requester in await accounts.trial_addresses(conn, principal.user_id)
             and body.funding != "credits"
         ):
             problems.append("a plan drafted on the free trial can only be funded from credits")
+        total = sum(t.budget_usdc_units for t in drafts)
+        if credit_view is not None:
+            problems.extend(redeem.credit_problems(credit_view, total))
+        if principal.user_id is not None:
+            prefs = await user_settings.load(conn, principal.user_id)
+            problems.extend(
+                await user_settings.cap_problems(
+                    conn, prefs, principal.owned, total, plan_uuid=plan.plan_uuid
+                )
+            )
         if problems:
             raise _problems(422, problems)
+        if (
+            body.funding == "credits"
+            and principal.user_id is not None
+            and await accounts.credits_forfeited(conn, settings, principal.user_id)
+        ):
+            raise HTTPException(status_code=403, detail="the free credits were already used by this person")
 
-        total = sum(t.budget_usdc_units for t in drafts)
         await plans.approve(
             conn,
             plan.plan_uuid,
@@ -233,16 +297,22 @@ async def approve_plan(
             funding=body.funding,
             total_budget_usdc_units=total,
         )
+        payload = {
+            "plan_id": plan.plan_id,
+            "plan_uuid": plan.plan_uuid,
+            "requester": plan.requester,
+            "total_budget_usdc_units": str(total),
+            "funding": body.funding,
+        }
+        if body.funding == "credits" and principal.user_id is not None:
+            # The free credits belong to the account, not to whichever address requests: one grant per person,
+            # however many wallets they link. (A session from before accounts has none, and the gateway then
+            # falls back to the requester address.)
+            payload["credit_account"] = str(principal.user_id)
         await enqueue(
             conn,
             "plan.approved",
-            {
-                "plan_id": plan.plan_id,
-                "plan_uuid": plan.plan_uuid,
-                "requester": plan.requester,
-                "total_budget_usdc_units": str(total),
-                "funding": body.funding,
-            },
+            payload,
             plan_id=plan.plan_id,
             retry_window_s=settings.event_retry_window_s,
         )

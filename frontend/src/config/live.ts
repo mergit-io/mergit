@@ -1,15 +1,26 @@
 import type { Address } from "viem";
+import { isDemoPath, resolveMode, type DataMode } from "./mode";
 
 /**
- * `mock` (the default) renders the design over mock data, as the public site does.
- * `live` talks to the Mergit services and the chain. Set VITE_DATA_MODE=live and the VITE_* values below.
+ * What this build is: `live` talks to the Mergit services and the chain (set VITE_DATA_MODE=live and the VITE_* values
+ * below); `mock` (the default) renders the design over sample data.
  */
-export const DATA_MODE: "mock" | "live" = import.meta.env.VITE_DATA_MODE === "live" ? "live" : "mock";
+const BUILD_MODE: DataMode = import.meta.env.VITE_DATA_MODE === "live" ? "live" : "mock";
+
+const loadedAt = typeof window === "undefined" ? "/" : window.location.pathname;
+
+/** True when this page was loaded at /demo: the same bundle, over sample data, with its own storage and no API. */
+export const IN_DEMO = isDemoPath(loadedAt);
+
+/** Fixed for the life of the page: the demo is sample data, everywhere else is what the build is. */
+export const DATA_MODE: DataMode = resolveMode(loadedAt, BUILD_MODE);
 
 const env = import.meta.env as Record<string, string | undefined>;
 
 export const LIVE = {
   apiUrl: env.VITE_API_URL ?? "",
+  /** The hostname GitHub and Google sign-in runs on (VITE_AUTH_ORIGIN); blank means the API's own. */
+  authOrigin: env.VITE_AUTH_ORIGIN ?? "",
   gatewayUrl: env.VITE_GATEWAY_URL ?? "",
   storeUrl: env.VITE_STORE_URL ?? "",
   rpcUrl: env.VITE_RPC_URL ?? "https://sepolia.base.org",

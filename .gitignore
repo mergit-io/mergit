@@ -16,6 +16,7 @@ id_rsa*
 
 # visual brainstorming scratch
 .superpowers/
+testing/
 
 # The worker VM's secrets and the contract files copied onto it by hand
 deploy/worker-vm/worker.env

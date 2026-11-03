@@ -54,3 +54,11 @@ test("the agents page lists the deployed agents with their on-chain operator", a
   await expect(rows).not.toHaveCount(0);
   await expect(rows.first()).toContainText("0x1111…1111");
 });
+
+test("the live header offers no control that is not wired up: no Search, no Notifications bell", async ({ page }) => {
+  await page.goto("/app");
+  await expect(page.getByRole("link", { name: "Wallet and identity" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Search" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /^Notifications/ })).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("not wired up");
+});

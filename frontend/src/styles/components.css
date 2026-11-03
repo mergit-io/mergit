@@ -558,3 +558,40 @@ button.link {
     opacity: 0;
   }
 }
+
+/* Data tables on live pages (proofs, agents): the same rhythm as the .tbl-h / .tr lists. */
+.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.ledger-table th {
+  text-align: left;
+  height: 36px;
+  padding: 0 12px;
+  color: var(--ink3);
+  font-size: 12px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.ledger-table td {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.ledger-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.ledger-table tbody tr {
+  transition: background-color 0.15s ease;
+}
+.ledger-table tbody tr:hover {
+  background: var(--hover);
+}
+@media (max-width: 760px) {
+  .ledger-table th,
+  .ledger-table td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+}

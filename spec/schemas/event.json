@@ -13,6 +13,7 @@
         "task.dispatch_requested",
         "receipt.sealed",
         "plan.closed",
+        "credits.grant",
         "plan.funded",
         "task.escrowed",
         "receipt.committed",
@@ -100,6 +101,22 @@
         "properties": {
           "payload": {
             "$ref": "#/$defs/plan_closed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "credits.grant"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/credits_grant"
           }
         }
       }
@@ -286,6 +303,9 @@
             "wallet",
             "credits"
           ]
+        },
+        "credit_account": {
+          "$ref": "#/$defs/ledger_token"
         }
       },
       "required": [
@@ -393,6 +413,32 @@
       },
       "required": [
         "plan_id"
+      ],
+      "additionalProperties": false
+    },
+    "ledger_token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+    },
+    "credits_grant": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/ledger_token"
+        },
+        "amount_usdc_units": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,11}$"
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,100}$"
+        }
+      },
+      "required": [
+        "account",
+        "amount_usdc_units",
+        "ref"
       ],
       "additionalProperties": false
     },

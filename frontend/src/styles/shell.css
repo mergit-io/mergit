@@ -287,3 +287,45 @@
   text-align: center;
   padding-top: 80px;
 }
+
+/* The demo says what it is on every page. */
+.demo-banner {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding: 8px 40px;
+  background: var(--amber-wash);
+  color: var(--amber);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.demo-banner a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+@media (max-width: 720px) {
+  .demo-banner {
+    padding: 8px 16px;
+  }
+}
+
+/* The smallest phones: logo plus four 36 to 44px controls need about 308px, and a 320px screen has 288 inside the
+   padding. Tighter gaps and a slightly smaller logo bring it under, so the bar never pushes the page sideways. */
+@media (max-width: 400px) {
+  .nav {
+    padding-inline: 12px;
+    column-gap: 8px;
+  }
+  .navr {
+    gap: 4px;
+  }
+  .brand img,
+  .brand svg {
+    max-height: 26px;
+    width: auto;
+  }
+}

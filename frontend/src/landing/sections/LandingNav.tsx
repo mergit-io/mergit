@@ -6,15 +6,23 @@ import { ThemeToggle } from "../../components/ThemeToggle";
 import { nav } from "../content";
 import { LIcon } from "../LIcon";
 
-export function LandingNav() {
+export function LandingNav({ links = nav }: { links?: readonly { label: string; href: string }[] }) {
   const { session, openConnect } = useAuth();
   return (
     <header className="l-nav l-container">
-      <Link to={paths.landing} className="l-brand" aria-label="Mergit home">
+      <Link
+        to={paths.landing}
+        className="l-brand"
+        aria-label="Mergit home"
+        onClick={() => {
+          // Already on the landing page: go back to the very top, wherever the scroll story is.
+          window.scrollTo({ top: 0, behavior: "instant" });
+        }}
+      >
         <MergitLogo title="" className="l-logo" />
       </Link>
       <nav className="l-nav-links" aria-label="Sections">
-        {nav.map((item) => (
+        {links.map((item) => (
           <a key={item.href} href={item.href}>
             {item.label}
           </a>
@@ -28,6 +36,9 @@ export function LandingNav() {
           </Link>
         ) : (
           <>
+            <a href={paths.demo} className="l-signin">
+              View demo
+            </a>
             <Link to={paths.signIn} className="l-signin">
               Sign in
             </Link>
@@ -38,7 +49,7 @@ export function LandingNav() {
                 openConnect();
               }}
             >
-              Try the demo <LIcon name="arrowUpRight" size={14} stroke={2} />
+              Get started <LIcon name="arrowUpRight" size={14} stroke={2} />
             </button>
           </>
         )}

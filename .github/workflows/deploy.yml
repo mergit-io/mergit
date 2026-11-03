@@ -3,8 +3,8 @@ name: deploy
 # Redeploys the Hetzner server (deploy/server/README.md) by running deploy/server/update.sh over SSH.
 #
 # It runs after the CI workflows finish on main, and only deploys when every CI run for that commit passed:
-#   - control-plane and frontend only run for pushes that touch their paths, so a push may trigger one, both or neither;
-#     deploy waits for whichever ran. A push that triggers neither (docs only, say) does not deploy.
+#   - control-plane, frontend and rust only run for pushes that touch their paths, so a push may trigger any of them or none;
+#     deploy waits for whichever ran. A push that triggers none (docs only, say) does not deploy.
 #   - if another CI run for the same commit is still going, this run steps aside; that run's own finish starts deploy again.
 #   - it only deploys if the commit is still the tip of main, because update.sh pulls main and would otherwise ship a newer,
 #     untested commit. That newer commit's own CI starts its own deploy.
@@ -18,7 +18,7 @@ name: deploy
 
 on:
   workflow_run:
-    workflows: [control-plane, frontend]
+    workflows: [control-plane, frontend, rust]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -68,9 +68,16 @@ jobs:
           bad=$(jq -r '[.[] | select(.name != "deploy" and (.conclusion | IN("success","skipped","neutral") | not)) | .name] | join(", ")' <<<"$runs")
           [ -z "$bad" ] || skip "Not deploying $SHA: CI did not pass ($bad)."
 
-          # Two CI workflows finishing together both start a deploy; the first one wins, a retry after a failed one still runs.
-          done_already=$(gh run list --repo "$REPO" --workflow deploy --commit "$SHA" --limit 100 --json databaseId,conclusion,status \
-            | jq --argjson me "$GITHUB_RUN_ID" '[.[] | select(.databaseId < $me and (.conclusion == "success" or .status != "completed"))] | length')
+          # Several CI workflows finishing together each start a deploy; the first one wins, and a retry after a failed one
+          # still runs. "Won" means that run's update.sh step succeeded or is still running. A run that stepped aside above
+          # also ends as a success, and must not count: it deployed nothing.
+          done_already=0
+          for id in $(gh run list --repo "$REPO" --workflow deploy --commit "$SHA" --limit 100 --json databaseId \
+                        --jq ".[] | select(.databaseId < $GITHUB_RUN_ID) | .databaseId"); do
+            step=$(gh api "repos/$REPO/actions/runs/$id/jobs" \
+              --jq '[.jobs[].steps[] | select(.name == "Run update.sh on the server") | (.conclusion // .status)] | first // "none"')
+            case "$step" in success|in_progress|queued|pending) done_already=1 ;; esac
+          done
           [ "$done_already" = 0 ] || skip "$SHA is already deployed or being deployed."
 
           echo "go=true" >> "$GITHUB_OUTPUT"

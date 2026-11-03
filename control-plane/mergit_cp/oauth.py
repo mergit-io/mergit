@@ -87,7 +87,14 @@ def _redirect_uri(settings: Settings, name: str) -> str:
 
 def _back(settings: Settings, to: str) -> RedirectResponse:
     response = RedirectResponse(f"{settings.public_origin}{to}", status_code=302)
-    response.delete_cookie(STATE_COOKIE, path="/v0/auth", secure=True, httponly=True, samesite="lax")
+    response.delete_cookie(
+        STATE_COOKIE,
+        path="/v0/auth",
+        domain=settings.cookie_domain,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
     return response
 
 
@@ -143,6 +150,9 @@ async def start(
         secure=True,
         samesite="lax",
         path="/v0/auth",
+        # Shared by both hostnames: a sign-in started on one comes back on the callback hostname, which is
+        # the other one if it began there.
+        domain=settings.cookie_domain,
     )
     return response
 

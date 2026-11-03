@@ -3,8 +3,11 @@ import { expect, test, type Page } from "@playwright/test";
 const session = (page: Page) => page.evaluate(() => localStorage.getItem("mergit-session"));
 
 test.describe("landing page", () => {
+  // The earlier landing page, kept at /?landing=classic. Phones and tablets now get the compact page (see below).
+  test.use({ viewport: { width: 1000, height: 800 } });
+
   test("the intro hands over to the hero, and a click skips it", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?landing=classic");
     await expect(page.locator(".intro")).toBeVisible();
     await expect(page.getByText("settled on chain.")).toBeVisible();
     await page.mouse.click(10, 10);
@@ -18,7 +21,7 @@ test.describe("landing page", () => {
   test("reduced motion skips the intro and shows everything", async ({ browser }) => {
     const ctx = await browser.newContext({ reducedMotion: "reduce" });
     const page = await ctx.newPage();
-    await page.goto("/");
+    await page.goto("/?landing=classic");
     await expect(page.locator(".intro")).toHaveCount(0);
     await expect(page.locator(".agent-step").last()).toHaveCSS("opacity", "1");
     await ctx.close();
@@ -28,7 +31,7 @@ test.describe("landing page", () => {
     await page.addInitScript(() => {
       sessionStorage.setItem("mergit-intro-seen", "1");
     });
-    await page.goto("/");
+    await page.goto("/?landing=classic");
     await page.locator("#how-it-works").scrollIntoViewIfNeeded();
     await expect(page.locator(".how-chip").last()).toContainText("Artifact → hash → settled proof", { timeout: 6000 });
 
@@ -47,11 +50,16 @@ test.describe("landing page", () => {
 
   test("renders in both themes with no errors and no stale terms", async ({ browser }) => {
     for (const colorScheme of ["light", "dark"] as const) {
-      const ctx = await browser.newContext({ colorScheme, reducedMotion: "reduce" });
+      // The OS is dark in both rounds: the theme comes from the saved choice alone.
+      const ctx = await browser.newContext({ colorScheme: "dark", reducedMotion: "reduce" });
+      if (colorScheme === "dark")
+        await ctx.addInitScript(() => {
+          localStorage.setItem("mergit-theme", "dark");
+        });
       const page = await ctx.newPage();
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.goto("/");
+      await page.goto("/?landing=classic");
       expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe(colorScheme);
       const text = await page.locator("body").innerText();
       expect(text).not.toMatch(/Monad|soulbound|passport|proof of work/i);
@@ -66,7 +74,7 @@ test.describe("landing page", () => {
       await page.addInitScript(() => {
         sessionStorage.setItem("mergit-intro-seen", "1");
       });
-      await page.goto("/");
+      await page.goto("/?landing=classic");
       const box = async (selector: string) => {
         const b = await page.locator(selector).first().boundingBox();
         if (!b) throw new Error(`${selector} has no box`);
@@ -98,7 +106,7 @@ test.describe("landing page", () => {
       await page.addInitScript(() => {
         sessionStorage.setItem("mergit-intro-seen", "1");
       });
-      await page.goto("/");
+      await page.goto("/?landing=classic");
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       const spills = await page.evaluate(() => {
         const vw = document.documentElement.clientWidth;
@@ -115,6 +123,235 @@ test.describe("landing page", () => {
   }
 });
 
+test.describe("scroll story", () => {
+  // A scripted jump does not interrupt the snap glide the way a wheel does, so let each one settle.
+  const tools = (page: import("@playwright/test").Page) => {
+    const settled = async () => {
+      let last = -1;
+      await expect
+        .poll(
+          async () => {
+            const y = await page.evaluate(() => window.scrollY);
+            const still = y === last;
+            last = y;
+            return still;
+          },
+          { timeout: 20_000, intervals: [700] },
+        )
+        .toBe(true);
+    };
+    const jump = async (y: number) => {
+      await page.evaluate((to) => {
+        window.scrollTo(0, to);
+      }, y);
+      await settled();
+    };
+    // Where a nav link lands, as a scroll position: the story's length is not something a test should hard-code.
+    const anchorTop = (id: string) =>
+      page.evaluate((i) => {
+        const el = document.getElementById(i);
+        return el ? el.getBoundingClientRect().top + window.scrollY : -1;
+      }, id);
+    return { jump, anchorTop };
+  };
+
+  /** Pause holds a flow where it is, a step on the left jumps there, and Replay starts over. */
+  const exerciseControls = async (page: import("@playwright/test").Page, scene: string) => {
+    const pn = page.locator(`${scene} .pn`);
+    await expect(pn).toHaveText("01");
+    await expect(pn).not.toHaveText("01", { timeout: 15_000 }); // it moves on by itself (a step is ~4.5 s), no scrolling
+
+    await page.locator(scene).getByRole("button", { name: "Pause the animation" }).click();
+    const held = await pn.textContent();
+    await page.waitForTimeout(3_000);
+    await expect(pn).toHaveText(held ?? "");
+    await page.locator(scene).getByRole("button", { name: "Play the animation" }).click();
+
+    await page.locator(`${scene} .ri`).nth(3).click();
+    await expect(pn).toHaveText("04");
+    await page.locator(scene).getByRole("button", { name: "Replay from the start" }).click();
+    await expect(pn).toHaveText("01");
+  };
+
+  test("the lean story: hero, the problem, one settlement flow that plays itself, and the closer", async ({ page }) => {
+    // The splash, then real playback of a flow (about 17 s from its first step to its last) at its own pace.
+    test.slow();
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto("/");
+    await expect(page.locator(".landing.story-mode")).toBeVisible();
+    await expect(page.locator(".story")).toHaveAttribute("data-variant", "lean");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pay for what you got.");
+    await expect(page.locator(".intro")).toHaveCount(0);
+    await expect(page.locator(".splash")).toBeHidden({ timeout: 9000 });
+    await expect(page.locator("#s1")).toBeVisible();
+    const { jump, anchorTop } = tools(page);
+
+    await jump(await anchorTop("problem"));
+    await expect(page.locator("#sp")).toBeVisible({ timeout: 15_000 });
+
+    await jump(await anchorTop("how-it-works"));
+    await expect(page.locator("#ss")).toBeVisible({ timeout: 15_000 });
+    await exerciseControls(page, "#ss");
+    await expect(page.locator("#ss .pn")).toHaveText("05", { timeout: 35_000 }); // plays through to its last step
+
+    // The closer is the last scene, and the scenes the lean story skips are never on screen.
+    await jump(await page.evaluate(() => document.querySelector(".story")?.getBoundingClientRect().height ?? 0));
+    await expect(page.locator("#s7")).toBeVisible({ timeout: 15_000 });
+    for (const skipped of ["#s2", "#s3", "#s4", "#s5"]) await expect(page.locator(skipped)).toBeHidden();
+
+    // Scrolling back to the top brings the hero back, and only the hero.
+    await jump(0);
+    await expect(page.locator("#s1")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#ss")).toBeHidden();
+    await expect(page.locator("#sp")).toBeHidden();
+    for (const id of ["#prog", "#idx", "#idx2"]) await expect(page.locator(id)).toHaveCount(0);
+
+    expect(errors).toEqual([]);
+  });
+
+  test("Get started goes to sign in when signed out and to the dashboard when already signed in", async ({
+    page,
+    context,
+  }) => {
+    // Mock project only (the live project runs just e2e/live/): the session is read from this browser alone, with no
+    // server to drop it, so the seeded address below is kept. Served at "/", never under /demo, so the dashboard
+    // is /app (paths.app is /demo only in demo mode, and e2e cannot import it: it reads import.meta.env).
+    const DASHBOARD = "/app";
+    // A plain locator: the closer's button sits in a scene that is hidden until the story reaches it.
+    const getStarted = page.locator("a.sbtn", { hasText: "Get started" });
+    const expectBoth = async (href: string) => {
+      await expect(page.locator(".landing.story-mode")).toBeVisible();
+      await expect(getStarted).toHaveCount(2); // the hero and the closer
+      for (const i of [0, 1]) await expect(getStarted.nth(i)).toHaveAttribute("href", href);
+    };
+
+    await page.goto("/");
+    await expectBoth("/signin");
+
+    await context.addInitScript(() => {
+      localStorage.setItem("mergit-session", JSON.stringify({ address: "0x0", method: "browser", since: 0 }));
+    });
+    await page.goto("/");
+    await expectBoth(DASHBOARD);
+  });
+
+  test("the flows story is still there: both flows play themselves", async ({ page }) => {
+    // The splash, then real playback of a flow (about 17 s from its first step to its last) at its own pace.
+    test.slow();
+    await page.goto("/?story=flows");
+    await expect(page.locator(".story")).toHaveAttribute("data-variant", "flows");
+    await expect(page.locator(".splash")).toBeHidden({ timeout: 9000 });
+    const { jump, anchorTop } = tools(page);
+
+    await jump(await anchorTop("agents"));
+    await expect(page.locator("#s3")).toBeVisible({ timeout: 15_000 });
+    await exerciseControls(page, "#s3");
+
+    await jump(await anchorTop("proofs"));
+    await expect(page.locator("#ss")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#ss .pn")).toHaveText("05", { timeout: 35_000 });
+  });
+
+  test("each story is shorter to scroll than the one before it", async ({ page }) => {
+    const heights: number[] = [];
+    for (const query of ["", "?story=flows", "?story=full"]) {
+      await page.goto(`/${query}`);
+      await expect(page.locator(".landing.story-mode")).toBeVisible();
+      heights.push(await page.evaluate(() => document.documentElement.scrollHeight));
+    }
+    const [lean = 0, flows = 0, full = 0] = heights;
+    // The lean story scrolls more slowly than the others so its scenes have time to be seen; it is still the shortest.
+    expect(lean).toBeLessThan(flows * 0.6);
+    expect(flows).toBeLessThan(full * 0.5);
+  });
+
+  test("the full story is the original: it has no play controls and scrolls through every step", async ({ page }) => {
+    await page.goto("/?story=full");
+    await expect(page.locator(".landing.story-mode")).toBeVisible();
+    await expect(page.locator(".story")).toHaveAttribute("data-variant", "full");
+    await expect(page.locator(".flow-ctl").first()).toBeHidden();
+  });
+
+  test("nav links land on their story sections", async ({ page }) => {
+    await page.goto("/");
+    // The nav fades in only once the logo splash clears (heroIntro.ts).
+    await expect(page.locator(".splash")).toBeHidden({ timeout: 9000 });
+    const nav = page.getByRole("navigation", { name: "Sections" });
+    await expect(nav.getByRole("link")).toHaveText(["The problem", "How it works", "FAQ"]);
+    await nav.getByRole("link", { name: "How it works" }).click();
+    await expect(page.locator("#ss")).toBeVisible({ timeout: 15_000 });
+    await nav.getByRole("link", { name: "FAQ" }).click();
+    await expect(page.locator("#faq")).toBeInViewport({ timeout: 15_000 });
+  });
+
+  test("reduced motion gets the compact page even on a wide screen", async ({ browser }) => {
+    const ctx = await browser.newContext({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    await page.goto("/");
+    await expect(page.locator(".landing.story-mode")).toHaveCount(0);
+    await expect(page.locator(".landing.compact-mode")).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pay for what you got.");
+    await ctx.close();
+  });
+});
+
+test.describe("compact landing page", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem("mergit-intro-seen", "1");
+    });
+  });
+
+  for (const [width, height] of [
+    [360, 740],
+    [768, 1024],
+    [1000, 800],
+  ] as const) {
+    test(`${String(width)}px wide: the same four parts as the story, as sections`, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      await page.goto("/");
+      await expect(page.locator(".landing.compact-mode")).toBeVisible();
+      await expect(page.locator(".landing.story-mode")).toHaveCount(0);
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pay for what you got.");
+      await expect(page.getByRole("heading", { name: /Billed for the attempt/ })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /How a plan settles/ })).toBeVisible();
+      await expect(page.locator(".cp-step")).toHaveCount(5);
+      await expect(page.getByRole("heading", { name: /Give your next outcome a team/ })).toBeVisible();
+      await expect(page.locator("#faq")).toBeVisible();
+    });
+  }
+
+  test("the settlement steps say what the contracts do, not that every task is audited or settles on Ethereum", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    const text = await page.locator(".cp-steps").innerText();
+    expect(text).toMatch(/Free-credit work is always audited/);
+    expect(text).toMatch(/Base Sepolia/);
+    expect(text).not.toMatch(/settles on Ethereum|audit checks the receipt before any money moves/);
+  });
+
+  test("Get started opens sign in and View demo opens the demo, from the hero", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await expect(page.locator(".cp-hero").getByRole("link", { name: /View demo/ })).toHaveAttribute("href", "/demo");
+    await page
+      .locator(".cp-hero")
+      .getByRole("button", { name: /Get started/ })
+      .click();
+    await expect(page).toHaveURL(/\/app$/);
+  });
+
+  test("the earlier landing page is still at /?landing=classic", async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.goto("/?landing=classic");
+    await expect(page.locator(".landing.compact-mode")).toHaveCount(0);
+    await expect(page.getByRole("heading", { level: 1 })).toContainText("AI agents that do real work.");
+  });
+});
+
 test.describe("sign in", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
@@ -122,10 +359,10 @@ test.describe("sign in", () => {
     });
   });
 
-  test("Try the demo connects a wallet and opens the dashboard", async ({ page }) => {
+  test("Get started connects a wallet and opens the dashboard", async ({ page }) => {
     await page.goto("/");
     await page
-      .getByRole("button", { name: /Try the demo/ })
+      .getByRole("button", { name: /Get started/ })
       .first()
       .click();
     await expect(page).toHaveURL(/\/app$/);
@@ -208,7 +445,7 @@ test.describe("sign in", () => {
   test("the Connect window fits a phone screen", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 800 });
     await page.goto("/");
-    await page.getByRole("button", { name: "Try the demo" }).first().click();
+    await page.getByRole("button", { name: "Get started" }).first().click();
     const box = await page.getByRole("dialog").boundingBox();
     expect(box?.x).toBeGreaterThanOrEqual(0);
     expect((box?.x ?? 0) + (box?.width ?? Infinity)).toBeLessThanOrEqual(390);

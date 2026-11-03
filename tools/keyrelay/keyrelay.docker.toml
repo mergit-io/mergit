@@ -1,0 +1,17 @@
+# The config for running keyrelay in the compose stack. Copy it, with the two secret files, into
+# deploy/secrets/keyrelay/ (git-ignored). Paths are relative to this file, which is mounted at /etc/keyrelay.
+#
+#   mkdir -p deploy/secrets/keyrelay && chmod 700 deploy/secrets/keyrelay
+#   cp tools/keyrelay/keyrelay.docker.toml deploy/secrets/keyrelay/keyrelay.toml
+#   (create groq-keys.txt and proxy-token.txt there, one key per line, chmod 600; see tools/keyrelay/README.md)
+
+[server]
+listen = "0.0.0.0:8787"        # inside the container only: compose publishes no port, so only api and worker reach it
+token_file = "proxy-token.txt"
+
+[[provider]]
+name = "groq"
+base_url = "https://api.groq.com/openai/v1"
+keys_file = "groq-keys.txt"
+default_cooldown_s = 60
+max_cooldown_s = 86400

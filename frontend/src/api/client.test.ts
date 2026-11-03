@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, listPlans, onSessionEnded } from "./client";
+import { ApiError, createPlan, discardPlan, listPlans, onSessionEnded } from "./client";
 
 const answer = (status: number, body: unknown) =>
   Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
@@ -31,5 +31,90 @@ describe("a 401 from the API", () => {
   it("is harmless when nobody is listening", async () => {
     vi.stubGlobal("fetch", () => answer(401, {}));
     await expect(listPlans()).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe("with the API on the page's own hostname (VITE_API_URL=same-origin)", () => {
+  // One build serves both mergit.site and app.mergit.site, so each page calls the API on the hostname it was loaded
+  // from. The setting is a word, not an address: using it as one sends "same-origin/v0/plans" to the web server,
+  // which answers a POST with 405.
+  async function clientOn(origin: string) {
+    vi.resetModules();
+    vi.stubEnv("VITE_API_URL", "same-origin");
+    vi.stubGlobal("window", { location: { origin, pathname: "/app" } });
+    return import("./client");
+  }
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("calls the plan routes on whichever hostname the page is served from", async () => {
+    for (const origin of ["https://mergit.site", "https://app.mergit.site"]) {
+      const c = await clientOn(origin);
+      const seen: string[] = [];
+      vi.stubGlobal("fetch", (url: string) => {
+        seen.push(url);
+        return answer(200, []);
+      });
+      await c.listPlans();
+      await c.listAgents();
+      expect(seen).toEqual([`${origin}/v0/plans`, `${origin}/v0/agents`]);
+    }
+  });
+
+  it("opens a plan's live stream on the same hostname too", async () => {
+    const c = await clientOn("https://mergit.site");
+    expect(c.planEventsUrl("0b7f6a52-3a7c-4c2e-9d1f-1c0e5a6b7d88")).toBe(
+      "https://mergit.site/v0/plans/0b7f6a52-3a7c-4c2e-9d1f-1c0e5a6b7d88/events",
+    );
+  });
+
+  it("never builds a URL from the word itself", async () => {
+    const seen: string[] = [];
+    const c = await clientOn("https://mergit.site");
+    vi.stubGlobal("fetch", (url: string) => {
+      seen.push(url);
+      return answer(200, []);
+    });
+    await c.listPlans();
+    expect(seen.join()).not.toContain("same-origin");
+  });
+});
+
+describe("drafting and discarding a plan", () => {
+  const request = {
+    goal: "g",
+    repo_url: "https://github.com/o/r",
+    ref: "main",
+    budget_usdc_units: "1",
+    category: "bug-fix",
+  };
+
+  it("sends the Idempotency-Key when there is one, and none when there is not", async () => {
+    const seen: Array<Record<string, string>> = [];
+    vi.stubGlobal("fetch", (_url: string, init: { headers?: Record<string, string> }) => {
+      seen.push(init.headers ?? {});
+      return answer(201, { plan_uuid: "p" });
+    });
+    await createPlan(request, "key-1");
+    await createPlan(request);
+    expect(seen[0]?.["Idempotency-Key"]).toBe("key-1");
+    expect(seen[1]?.["Idempotency-Key"]).toBeUndefined();
+  });
+
+  it("discards with DELETE and accepts the empty 204 answer", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    vi.stubGlobal("fetch", (url: string, init: { method: string }) => {
+      calls.push({ url, method: init.method });
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+    await expect(discardPlan("a b")).resolves.toBeUndefined();
+    expect(calls).toEqual([{ url: expect.stringContaining("/v0/plans/a%20b") as string, method: "DELETE" }]);
+  });
+
+  it("surfaces a refusal to discard", async () => {
+    vi.stubGlobal("fetch", () => answer(409, { detail: "the plan is approved; only a draft can change" }));
+    await expect(discardPlan("p")).rejects.toMatchObject({ status: 409 });
   });
 });
