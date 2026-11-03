@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { COMPARISON, FREE_CREDITS_LABEL, PLAN_CAP_LABEL, PLANS, PLANS_PER_DAY } from "./plans";
+import {
+  COMPARISON,
+  FREE_CREDITS_LABEL,
+  FREE_CREDITS_USDC,
+  PLAN_CAP_LABEL,
+  PLAN_CAP_USDC,
+  PLANS,
+  PLANS_PER_DAY,
+} from "./plans";
 
 describe("pricing data", () => {
   it("has Free, Premium and Pay as you go, and only Premium is unbuilt", () => {
@@ -10,6 +18,14 @@ describe("pricing data", () => {
   it("gives Free the credits the gateway grants by default, and Premium no invented price", () => {
     expect(PLANS[0]?.amount).toBe(FREE_CREDITS_LABEL);
     expect(PLANS[1]?.amount).not.toMatch(/\d/);
+  });
+
+  it("caps a plan at the free grant, not a smaller number", () => {
+    // chain/gateway/src/main.rs: CREDIT_PLAN_CAP_USDC_UNITS has no separate default, it defaults to
+    // FREE_CREDITS_USDC_UNITS itself, after a past bug where a hardcoded cap under the grant let the New
+    // run page offer a budget the gateway then refused. PLAN_CAP_USDC must track the grant, not a literal.
+    expect(PLAN_CAP_USDC).toBe(FREE_CREDITS_USDC);
+    expect(PLAN_CAP_LABEL).toBe(FREE_CREDITS_LABEL);
   });
 
   it("sets one built plan apart, never an unbuilt one", () => {

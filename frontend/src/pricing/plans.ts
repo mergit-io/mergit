@@ -9,12 +9,15 @@
 
 /**
  * The free-credit limits, in whole USDC. They are the gateway's defaults (FREE_CREDITS_USDC_UNITS=5000000,
- * CREDIT_PLAN_CAP_USDC_UNITS=2000000, CREDIT_PLANS_PER_DAY=3) and a deployment can change them, so the page words
- * them as defaults and change them here, in one place, when the gateway's change. A signed-in account's real values
- * come from GET /v0/account/credits (see chain/useCredits); the pricing page is public and has no session to ask.
+ * CREDIT_PLANS_PER_DAY=3) and a deployment can change them, so the page words them as defaults and change
+ * them here, in one place, when the gateway's change. CREDIT_PLAN_CAP_USDC_UNITS has no separate default:
+ * chain/gateway/src/main.rs defaults it to FREE_CREDITS_USDC_UNITS itself, after a bug where a hardcoded
+ * 2 USDC cap under a 5 USDC grant let the New run page offer a budget the gateway then refused. A signed-in
+ * account's real values come from GET /v0/account/credits (see chain/useCredits); the pricing page is public
+ * and has no session to ask.
  */
 export const FREE_CREDITS_USDC = 5;
-export const PLAN_CAP_USDC = 2;
+export const PLAN_CAP_USDC = FREE_CREDITS_USDC;
 export const PLANS_PER_DAY = 3;
 export const FREE_CREDITS_LABEL = `${String(FREE_CREDITS_USDC)} USDC`;
 export const PLAN_CAP_LABEL = `${String(PLAN_CAP_USDC)} USDC`;
