@@ -26,6 +26,11 @@ CADDYFILE = Path(__file__).resolve().parents[2] / "deploy" / "Caddyfile"
 # Served to the gateway and the worker over the compose network, and deliberately not proxied.
 INTERNAL = ("/v0/internal", "/v0/chain-events")
 
+# Browser routes that are withheld from the public origin until they are safe to expose: DELETE /v0/account
+# removes the account, and what a deletion leaves behind and the once-per-person free credits are still open
+# (accounts.delete_account). Move a path out of this list in the same change that adds it to the Caddyfile.
+WITHHELD = ("/v0/account",)
+
 
 def _proxied_patterns() -> list[str]:
     text = CADDYFILE.read_text()
@@ -51,7 +56,7 @@ def _browser_paths() -> list[str]:
     paths = {
         re.sub(r"\{[^}]+\}", "x", r.path) for router in routers for r in router.routes if hasattr(r, "path")
     }  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownVariableType,reportUnknownArgumentType]
-    return sorted(p for p in paths if not p.startswith(INTERNAL))
+    return sorted(p for p in paths if not p.startswith(INTERNAL) and p not in WITHHELD)
 
 
 def test_every_browser_route_is_proxied_to_the_api() -> None:
@@ -64,6 +69,22 @@ def test_the_internal_routes_stay_off_the_public_origin() -> None:
     patterns = _proxied_patterns()
     for path in ("/v0/internal/progress", "/v0/chain-events"):
         assert not any(fnmatch(path, pat) for pat in patterns), f"{path} must not be proxied"
+
+
+def test_withheld_routes_stay_off_the_public_origin() -> None:
+    patterns = _proxied_patterns()
+    for path in WITHHELD:
+        assert not any(fnmatch(path, pat) for pat in patterns), f"{path} is withheld and must not be proxied"
+
+
+def test_a_withheld_route_is_a_real_route() -> None:
+    """A path left in WITHHELD after its route was removed or renamed would hide nothing and mislead."""
+    paths = {
+        r.path  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownVariableType]
+        for r in routes_account.router.routes
+        if hasattr(r, "path")
+    }
+    assert set(WITHHELD) <= paths
 
 
 def test_the_check_would_notice_a_route_it_does_not_know() -> None:

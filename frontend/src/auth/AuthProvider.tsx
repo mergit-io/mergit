@@ -15,6 +15,7 @@ import {
   type Account,
   type AccountCheck,
 } from "./account";
+import { forgetDismissal } from "./planChoice";
 import { demoSession, readSession, writeSession, type Session } from "./session";
 import { SignOutSplash } from "./SignOutSplash";
 
@@ -53,11 +54,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signIn = useCallback((next: Session) => {
+    forgetDismissal(); // a new sign-in is asked to choose a plan again
     writeSession(next);
     setSession(next);
   }, []);
 
   const endSession = useCallback(() => {
+    forgetDismissal();
     writeSession(null);
     setSession(null);
     setAccount(null);
