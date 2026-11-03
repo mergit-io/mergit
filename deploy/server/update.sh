@@ -33,36 +33,17 @@ esac
 case "$what" in all) deploy/server/build-sites.sh all ;; web|app) deploy/server/build-sites.sh "$what" ;; esac
 
 # `up -d` returns when the containers have started, not when the API has run its start-up migrations, so give it a
-# moment instead of failing a good deploy on the first request. Returns 1 when it never answers; callers decide
-# whether that is a failed deploy.
-wait_until() {  # name command... (the command succeeds when the service answers)
-  local name=$1 tries=${WAIT_TRIES:-30}; shift
+# moment instead of failing a good deploy on the first request.
+wait_healthy() {  # name url [tries]
+  local tries=${3:-30}
   for _ in $(seq "$tries"); do
-    if "$@" >/dev/null 2>&1; then echo "$name: ok"; return 0; fi
+    if curl -fsS -m 5 "$2/healthz" >/dev/null 2>&1; then echo "$1: ok"; return 0; fi
     sleep 2
   done
+  echo "$1 did not become healthy at $2/healthz" >&2
   return 1
 }
-api_inside() { compose exec -T api python -c \
-  "import urllib.request as u; u.urlopen('http://localhost:8000/healthz', timeout=5).read()"; }
-# Running now, by `docker compose ps`: a crashed or restarting container is not listed.
-# The list is captured first: `grep -q` quits at its first match, and a `compose ps` still writing would then die of
-# SIGPIPE, which `pipefail` turns into a failure for a service that is running. A failing `compose ps` fails too.
-running() { local out; out=$(compose ps --status running --services) || return 1; grep -qx "$1" <<<"$out"; }
-public() { curl -fsS -m 5 "https://$1.mergit.site/healthz"; }
 
 compose ps
-# The deploy has failed if the API does not answer on the compose network: that is the container itself.
-wait_until "api (compose network)" api_inside || { echo "the api container did not answer /healthz" >&2; exit 1; }
-# The gateway and the store have no check of their own inside the compose network (their images have no curl), so
-# the deploy has failed if either container is not running.
-for h in gateway store; do
-  WAIT_TRIES=10 wait_until "$h (container)" running "$h" || { echo "the $h container is not running" >&2; exit 1; }
-done
-# The public URLs also need DNS and a certificate, which a new or moved server may not have yet. That is a warning
-# only, because the containers above are up. If it persists after DNS is set, look at Caddy (`compose logs caddy`).
-for h in gateway store api; do
-  WAIT_TRIES=5 wait_until "$h (https://$h.mergit.site)" public "$h" \
-    || echo "warning: https://$h.mergit.site/healthz did not answer from here. The containers are running, so this is DNS, a certificate not issued yet, or Caddy: the deploy itself succeeded" >&2
-done
-exit 0
+for h in gateway store; do printf '%s: ' "$h"; curl -fsS "https://$h.mergit.site/healthz"; echo; done
+wait_healthy api https://api.mergit.site

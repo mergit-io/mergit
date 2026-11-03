@@ -12,15 +12,7 @@ workspaces=${WORKSPACES:-/var/lib/mergit/workspaces}
 bad=0
 ok()   { echo "ok:   $*"; }
 fail() { echo "FAIL: $*" >&2; bad=1; }
-# The value of NAME in worker.env as Compose reads it: one pair of surrounding quotes is not part of the value.
-get()  {
-  local v; v=$(grep -E "^$1=" worker.env 2>/dev/null | tail -1 | cut -d= -f2-)
-  case "$v" in
-    \"*\") v=${v#\"}; v=${v%\"} ;;
-    \'*\') v=${v#\'}; v=${v%\'} ;;
-  esac
-  printf '%s' "$v"
-}
+get()  { grep -E "^$1=" worker.env 2>/dev/null | tail -1 | cut -d= -f2-; }
 
 command -v docker >/dev/null || fail "docker is not installed"
 docker info >/dev/null 2>&1 && ok "the Docker daemon answers" || fail "cannot reach the Docker daemon (is this user in the docker group?)"
@@ -68,8 +60,7 @@ for pair in "api:$api" "gateway:$gateway" "store:$store"; do
 done
 
 if docker image inspect mergit-worker:local >/dev/null 2>&1 && [ -f worker.env ]; then
-  # The unquoted URL goes in through the environment (never the command line): `--env-file` would keep the quotes.
-  DATABASE_URL=$(get DATABASE_URL) docker run --rm -e DATABASE_URL --entrypoint python mergit-worker:local -c \
+  docker run --rm --env-file worker.env --entrypoint python mergit-worker:local -c \
     "import os, psycopg; psycopg.connect(os.environ['DATABASE_URL'], connect_timeout=8).close()" >/dev/null 2>&1 \
     && ok "the database accepts this worker's credentials" \
     || fail "the database refused or did not answer (private address, firewall, password, CP_DB_BIND on the server?)"

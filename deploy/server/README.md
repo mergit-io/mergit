@@ -10,7 +10,7 @@ One server (Hetzner CPX32, Nuremberg) runs everything that used to run on a lapt
 | `store.mergit.site` | evidence store (receipt bundles) | Caddy, then `store:8081` |
 | _(not public)_ | validator, Postgres | compose network only |
 | `app.mergit.site/v0/{auth,account,plans,agents}` | orchestration API (control plane), same origin as the app | Caddy, then `api:8000`; needs `deploy/compose.controlplane.yaml` |
-| `api.mergit.site` | the same API on its own name: the non-account browser routes, `/healthz`, and `/v0/internal/*` from the worker VM only (`WORKER_VM_IP`); everything else 404 | Caddy, then `api:8000`; needs an A record |
+| `api.mergit.site` | the same API on its own name: browser routes, `/healthz`, and `/v0/internal/*` from the worker VM only (`WORKER_VM_IP`); everything else 404 | Caddy, then `api:8000`; needs an A record |
 | _(its own VM)_ | the agent worker | `deploy/worker-vm/README.md` |
 
 Everything is testnet money. The Hetzner firewall (`mergit-fw`) allows only 22, 80 and 443.
@@ -40,12 +40,6 @@ ssh viscous@SERVER 'chmod 600 ~/mergit/mergit/deploy/secrets/testnet.env'
 **Stop the old stack first** (`docker compose -f deploy/compose.testnet.yaml down` on the laptop). Two gateways sending
 transactions with the same key collide on nonces.
 
-Then, on the server, `deploy/make-controlplane-env.sh` writes the control plane's secrets: `api.env`, `worker.env` and
-`cp_postgres.env`. The last holds the `cp_postgres` superuser password it generates (the API and the worker get the same
-password in their `DATABASE_URL`). Compose refuses to start until these files exist. A server set up before the
-password moved out of `compose.controlplane.yaml` needs the one-time step in
-[The database superuser password](#the-database-superuser-password) instead.
-
 ## 3. DNS (Spaceship, Advanced DNS)
 
 Add A records to the server's IPv4 address for `gateway` and `store` now; they are new names, so nothing breaks.
@@ -60,8 +54,6 @@ deploy/server/build-sites.sh                                                    
 docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml ps
 docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml exec caddy caddy validate --config /etc/caddy/Caddyfile
 ```
-
-If a worker VM will connect, run `deploy/worker-vm/create-db-role.sh` only now that the stack is up (it needs `cp_postgres` running and the tables the API creates); see `deploy/worker-vm/README.md`.
 
 Check the services once `gateway.` and `store.` resolve:
 
@@ -113,79 +105,6 @@ notice and deploys nothing. Two consequences: a push that touches neither workfl
 does not deploy by itself, and a manual run from the Actions tab skips the checks. A build that fails on the server
 leaves the running containers as they were, but a change that builds and misbehaves still goes live.
 
-## The database superuser password
-
-`cp_postgres` once ran with the superuser password `mergit`, written in `compose.controlplane.yaml`. It now comes from
-`deploy/secrets/cp_postgres.env`, which `make-controlplane-env.sh` generates. Postgres reads `POSTGRES_PASSWORD` only when
-it creates a new database, so on a server whose `cp_pgdata` volume already exists the password must also be changed
-inside the database. Once per server, after pulling this change (until then `update.sh` stops at "env file ... not
-found" and the running containers stay as they are). Each step below is safe to stop at; nothing changes in the running
-database or stack until step 3.
-
-**Step 1: check that the new network range is free.** The compose network now has a fixed address range (`networks:` in
-`compose.controlplane.yaml`, which `deploy/postgres/pg_hba.conf` names). This prints a line only when another Docker
-network on the server uses `172.30.53.0/24`; if it does, stop here and change the range (see the end of this section):
-
-```bash
-docker network inspect $(docker network ls -q) -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | tr ' ' '\n' | grep -x 172.30.53.0/24
-```
-
-**Step 2: make the password file and build the new images.** Compose will not load without `cp_postgres.env`, so it is
-written first. Building now means the restart in step 3 takes seconds, not the minutes a Rust build takes. The running
-containers and the database are untouched:
-
-```bash
-cd ~/mergit/mergit
-bash -euo pipefail <<'EOF'
-cd deploy
-[ -e secrets/api.env ] && [ -e secrets/worker.env ] || { echo "no api.env/worker.env: run make-controlplane-env.sh instead" >&2; exit 1; }
-[ ! -e secrets/cp_postgres.env ] || { echo "secrets/cp_postgres.env exists already" >&2; exit 1; }
-! grep -q '^DATABASE_URL=' secrets/api.env secrets/worker.env || { echo "api.env or worker.env has a DATABASE_URL already" >&2; exit 1; }
-umask 077
-echo "POSTGRES_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')" > secrets/cp_postgres.env
-echo "wrote secrets/cp_postgres.env"
-EOF
-docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml build   # minutes
-```
-
-If the build fails, fix the cause and run only the `build` line again; the script above refuses to run twice.
-
-**Step 3: change the password and restart at once.** This is the only step that changes anything live. Between the
-`ALTER ROLE` and the restart, the running API's new database connections fail to authenticate (it still holds the old
-password in its environment; connections it already has stay open), so run the restart straight after. `down` keeps the
-volumes; the sites are down for the seconds between `down` and `up` (the images are already built), and the worker VM
-reconnects by itself. Use `up -d --build` (or `deploy/server/update.sh`): a plain `up -d` would start the old images.
-If the `ALTER ROLE` fails the script stops before touching `api.env` and `worker.env`; fix the cause and run it again. If it stops after the `DATABASE_URL` lines are written (the script then refuses to
-run again), the password is already changed: run just the `down` and `up -d --build` lines.
-
-```bash
-bash -euo pipefail <<'EOF'
-cd ~/mergit/mergit/deploy
-c() { docker compose -f compose.testnet.yaml -f compose.controlplane.yaml -f compose.server.yaml "$@"; }
-! grep -q '^DATABASE_URL=' secrets/api.env secrets/worker.env || { echo "api.env or worker.env has a DATABASE_URL already" >&2; exit 1; }
-pw=$(sed -n 's/^POSTGRES_PASSWORD=//p' secrets/cp_postgres.env)
-[ ${#pw} -eq 48 ] || { echo "secrets/cp_postgres.env has no generated password: step 2 first" >&2; exit 1; }
-# The password goes to psql on stdin, never on a command line, where `ps` would show it.
-{ printf "\\\\set pw '%s'\n" "$pw"; echo "ALTER ROLE postgres PASSWORD :'pw';"; } \
-  | c exec -T cp_postgres psql -U postgres -v ON_ERROR_STOP=1 -q
-umask 077
-for f in api worker; do echo "DATABASE_URL=postgres://postgres:$pw@cp_postgres:5432/mergit_cp" >> "secrets/$f.env"; done
-echo "changed the password and added DATABASE_URL to api.env and worker.env; restarting"
-c down
-c up -d --build
-EOF
-```
-
-If `up` fails with "Pool overlaps with other one on this address space" (step 1 missed it), another Docker network uses
-`172.30.53.0/24`: change the three addresses in `compose.controlplane.yaml` and the matching line in `pg_hba.conf`
-together (`tests/test_cp_postgres_hba.py` checks they agree), then run `up -d --build` again.
-
-The `networks:` block pins the compose network's subnet, and Docker cannot change the subnet of a network that already
-exists. On a server whose stack was started before this change, the old network keeps its automatic subnet, so
-`up` can fail (or leave `cp_postgres` outside the range `pg_hba.conf` allows, so the API cannot log in). Recreate it once:
-`docker compose ... down` (keeps the volumes), `docker network prune` if the old network is left, then `up -d --build`.
-Step 3 above does the `down` already; a deploy by `update.sh` alone does not.
-
 ## Notes
 
 - Data lives in Docker volumes (`pgdata`, `receipts`, `audits`, `caddy_data`). `docker compose down` keeps them;
@@ -206,7 +125,6 @@ deploy/server/backup.sh            # writes ~/backups/mergit_cp-<time>.sql.gz an
 Run it nightly from cron (`crontab -e`): `15 3 * * * cd ~/mergit/mergit && deploy/server/backup.sh >> ~/backups/backup.log 2>&1`.
 Copy the directory off the server as well (`scp -r viscous@91.98.73.73:backups .`), because a dump on the same disk is
 lost with the disk. To restore into a fresh database: `gunzip -c mergit_cp-<time>.sql.gz | docker compose exec -T cp_postgres psql -U postgres mergit_cp`.
-A restore does not bring back the worker role's rights: `pg_dump --no-owner` leaves out the `REVOKE CONNECT` on `mergit_cp`, so after restoring, re-run `deploy/worker-vm/create-db-role.sh`.
 Dumps contain email addresses and session-token hashes: keep them private.
 
 
