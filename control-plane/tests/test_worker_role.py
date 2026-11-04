@@ -211,3 +211,37 @@ def test_the_role_can_take_the_lock_too(role_url: str) -> None:
     lock = WorkerIdLock.acquire(role_url, "role-lock-id")
     assert lock is not None
     lock.close()
+
+
+def _lock_settings(lock: WorkerIdLock) -> dict[str, str]:
+    conn = lock._conn  # pyright: ignore[reportPrivateUsage]
+    names = ("tcp_keepalives_idle", "tcp_keepalives_interval", "tcp_keepalives_count", "tcp_user_timeout")
+    shown = {n: str(conn.execute(f"SHOW {n}").fetchone()[0]) for n in names}  # pyright: ignore[reportOptionalSubscript]
+    client = conn.info.get_parameters()
+    keys = ("keepalives", "keepalives_idle", "tcp_user_timeout")
+    return shown | {f"client_{k}": client.get(k, "") for k in keys}
+
+
+@pytest.mark.parametrize("url_fixture", ["database_url", "role_url"])
+def test_a_dead_worker_vm_releases_its_lock_within_a_minute_not_hours(
+    url_fixture: str, request: pytest.FixtureRequest
+) -> None:
+    """A VM that loses power sends no FIN, so without keepalives its backend (and the advisory lock) lives
+    until the OS gives up on the socket, about two hours, and the restarted worker is refused its own id all
+    that time. The lock's session asks the server to probe its socket after 30 s idle and drop it after three
+    missed probes, and the worker's own socket probes the same way. Checked as the restricted role too: these
+    must be settings it is allowed to set, or the real worker VM would fail to connect."""
+    lock = WorkerIdLock.acquire(request.getfixturevalue(url_fixture), f"keepalive-{url_fixture}")
+    assert lock is not None
+    try:
+        assert _lock_settings(lock) == {
+            "tcp_keepalives_idle": "30",
+            "tcp_keepalives_interval": "10",
+            "tcp_keepalives_count": "3",
+            "tcp_user_timeout": "60000",
+            "client_keepalives": "1",
+            "client_keepalives_idle": "30",
+            "client_tcp_user_timeout": "60000",
+        }
+    finally:
+        lock.close()

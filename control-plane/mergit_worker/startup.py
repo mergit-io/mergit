@@ -82,13 +82,50 @@ def sweep_workspaces(root: Path, older_than_s: float, *, now: float | None = Non
     return removed
 
 
+# How the lock's connection notices that the other end is gone. Without keepalives a worker VM that loses
+# power or its network sends no FIN, so its backend, and the advisory lock it holds, stay alive until the OS
+# gives up on the socket (about two hours): the restarted worker is refused its own id ("already running") all
+# that time. The `options` set the server's side of this one session (the backend's socket, which is what
+# holds the lock); the libpq keywords set the worker's own side, so a dead database is noticed too instead of
+# a call hanging. Every value is user-settable, so the restricted mergit_worker role can set them. Roughly a
+# minute either way.
+LOCK_KEEPALIVE_IDLE_S = 30
+LOCK_KEEPALIVE_INTERVAL_S = 10
+LOCK_KEEPALIVE_COUNT = 3
+LOCK_TCP_USER_TIMEOUT_MS = 60_000
+
+
+def _connect_for_lock(database_url: str) -> psycopg.Connection[tuple[object, ...]]:
+    server_side = (
+        f"-c tcp_keepalives_idle={LOCK_KEEPALIVE_IDLE_S}"
+        f" -c tcp_keepalives_interval={LOCK_KEEPALIVE_INTERVAL_S}"
+        f" -c tcp_keepalives_count={LOCK_KEEPALIVE_COUNT}"
+        f" -c tcp_user_timeout={LOCK_TCP_USER_TIMEOUT_MS}"
+    )
+    return psycopg.connect(  # pyright: ignore[reportArgumentType]
+        database_url,
+        autocommit=True,
+        # Without a timeout, a database that is down or unreachable (a dead host, a network partition) hangs
+        # this call forever instead of letting start-up fail and Docker's restart policy retry it.
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=LOCK_KEEPALIVE_IDLE_S,
+        keepalives_interval=LOCK_KEEPALIVE_INTERVAL_S,
+        keepalives_count=LOCK_KEEPALIVE_COUNT,
+        tcp_user_timeout=LOCK_TCP_USER_TIMEOUT_MS,
+        options=server_side,
+    )
+
+
 class WorkerIdLock:
     """A session-level Postgres advisory lock named for the worker id, held while the process lives.
 
     A worker id must belong to one process. At start-up a worker fails every job still ``running`` under its
     id and removes every sandbox container labelled with it, so a second process sharing the id would
     destroy the first one's live work. Postgres releases the lock when the connection ends, whether the
-    process exits cleanly or is killed, so a crashed worker never blocks its own restart.
+    process exits cleanly or is killed, so a crashed worker never blocks its own restart. A worker VM that
+    dies without closing its socket (power loss, a partition) is covered by the keepalives above: its backend,
+    and so the lock, is dropped within about a minute instead of hours.
     """
 
     def __init__(self, conn: psycopg.Connection[tuple[object, ...]]) -> None:
@@ -96,9 +133,7 @@ class WorkerIdLock:
 
     @classmethod
     def acquire(cls, database_url: str, worker_id: str) -> WorkerIdLock | None:
-        # Without a timeout, a database that is down or unreachable (a dead host, a network partition) hangs
-        # this call forever instead of letting start-up fail and Docker's restart policy retry it.
-        conn = psycopg.connect(database_url, autocommit=True, connect_timeout=10)  # pyright: ignore[reportArgumentType]
+        conn = _connect_for_lock(database_url)
         row = conn.execute(
             "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (f"mergit_worker:{worker_id}",)
         ).fetchone()
