@@ -7,6 +7,7 @@ const APP = appBase(IN_DEMO);
 export const paths = {
   landing: "/",
   signIn: "/signin",
+  pricing: "/pricing",
   app: APP,
   /** The demo and the real app are different page loads, so these two never depend on where this page is. */
   demo: "/demo",
