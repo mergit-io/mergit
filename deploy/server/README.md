@@ -86,26 +86,39 @@ on every push to `main` (and by hand from the Actions tab, where you can pick `s
 
 ### Upgrading an existing deployment past per-agent providers (`PLANNER_PROVIDER`)
 
-`PLANNER_PROVIDER` has no default, and `deploy/make-controlplane-env.sh` will not touch `deploy/secrets/api.env`
-or `worker.env` once they exist, so a server set up before this change has files the new `api` cannot start
-from. Nothing goes down because of it: `update.sh` builds the new images, then runs each service's own
-start-up checks in them against the real env files (`python -m mergit_cp.preflight` and
+The hosted deployment calls models through OpenRouter: `mergit-coder-0` is `provider = "openrouter"`,
+`anthropic/claude-sonnet-5` in `control-plane/agents.toml`, and the planner uses whatever `PLANNER_PROVIDER` in
+`api.env` names. `PLANNER_PROVIDER` has no default, and `deploy/make-controlplane-env.sh` will not touch
+`deploy/secrets/api.env` or `worker.env` once they exist, so a server set up before this change has files the new
+code cannot start from. Nothing goes down because of it: `update.sh` builds the new images, then runs each
+service's own start-up checks in them against the real env files (`python -m mergit_cp.preflight` and
 `python -m mergit_worker.preflight`), and only then replaces the running containers. A missing
-`PLANNER_PROVIDER`, or a deployed agent whose provider has no key (for example a `worker.env` that still has
-only `GROQ_API_KEY`, now that `mergit-coder-0` is `provider = "anthropic"`), fails the deploy with one line
-naming the setting, never its value, and the old containers keep serving. The automatic deploy then shows
-red until the files are fixed.
+`PLANNER_PROVIDER`, or a provider with no key (a `worker.env` with only `GROQ_API_KEY`, say), fails the deploy
+with one line naming the setting, never its value, and the old containers keep serving. The automatic deploy
+shows red until the files are fixed.
 
-To fix it, on the server, once:
+To move the server to OpenRouter, on the server, once (the key is read without echo and never printed):
 
 ```bash
 cd ~/mergit/mergit
-grep -q '^PLANNER_PROVIDER=' deploy/secrets/api.env || echo 'PLANNER_PROVIDER=anthropic' >> deploy/secrets/api.env
-# The planner and mergit-coder-0 are both provider = "anthropic": each file needs an Anthropic credential,
-# ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN with ANTHROPIC_BASE_URL. Add it by hand where this complains.
-for f in api worker; do grep -qE '^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)=' deploy/secrets/$f.env || echo "$f.env has no Anthropic credential" >&2; done
+read -rsp "OPENROUTER_API_KEY: " k; echo
+for f in api worker; do grep -q '^OPENROUTER_API_KEY=' deploy/secrets/$f.env || echo "OPENROUTER_API_KEY=$k" >> deploy/secrets/$f.env; done; unset k
+sed -i '/^PLANNER_PROVIDER=/d; /^PLANNER_MODEL=/d' deploy/secrets/api.env
+printf 'PLANNER_PROVIDER=openrouter\nPLANNER_MODEL=anthropic/claude-haiku-4.5\n' >> deploy/secrets/api.env
+grep '^PLANNER_MODELS=' deploy/secrets/api.env   # if set, every id in it must be an OpenRouter id (see below)
 deploy/server/update.sh services   # runs the preflight again, then deploys
 ```
+
+`PLANNER_MODELS` (the extra planner models a user may pick in Settings) are all sent to the planner's provider,
+so with OpenRouter they must be OpenRouter ids priced in `prices.toml` (`anthropic/claude-sonnet-5`, ...). A
+native id such as `claude-sonnet-5` is priced too, so the preflight passes it, but OpenRouter does not know it
+and a plan using it would answer 502. Leave `PLANNER_MODELS` unset to offer only `PLANNER_MODEL`.
+
+**Anthropic stays an option.** To call Anthropic's API directly instead, put `ANTHROPIC_API_KEY` (or
+`ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_BASE_URL`) in the env files and set `PLANNER_PROVIDER=anthropic`,
+`PLANNER_MODEL=claude-haiku-4-5` for the planner; for the agent, change `mergit-coder-0` in `agents.toml` to
+`provider = "anthropic"`, `model = "claude-sonnet-5"` and commit it. Keeping both keys in the env files means
+either can be switched to without touching secrets again.
 
 `GROQ_BASE_URL`, `GROQ_MODEL` and `LLM_PROVIDER` are no longer read; a provider's endpoint and model live in
 `control-plane/agents.toml`. Leaving them in the env files is harmless, but the API and the worker log a

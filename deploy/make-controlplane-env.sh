@@ -4,12 +4,13 @@
 #                                                       e.g. localhost:5173: sign-in checks it against window.location.host.
 # The service tokens are copied from deploy/secrets/testnet.env (run make-testnet-env.sh first) so the gateway and the
 # control plane agree. MERGIT_AGENT_KEY_1 comes from ../../mergit-contracts/.env.services. Each agent and the planner
-# name their own provider in control-plane/agents.toml's [agents.<name>]/[providers.<name>] tables now (the
-# deployed agent, mergit-coder-0, is hardcoded to Anthropic there); this script just collects whichever keys those
-# configured providers need. The model keys are read from $ANTHROPIC_API_KEY / $GROQ_API_KEY / $OPENROUTER_API_KEY
-# or asked for without echo; give whichever ones the configured providers need (Enter skips one). Prints names only,
-# never values. An Anthropic credential is required: the planner and mergit-coder-0 are both provider =
-# "anthropic" today; Groq/OpenRouter keys may still be given as extras for providers not yet deployed here.
+# name their own provider: the agents in control-plane/agents.toml (the deployed one, mergit-coder-0, is
+# provider = "openrouter"), the planner in PLANNER_PROVIDER, which this script writes. Choose it with
+# PLANNER_PROVIDER=openrouter|anthropic|groq in the environment (default openrouter); PLANNER_MODEL defaults to that
+# provider's id for Claude Haiku 4.5 (Groq: openai/gpt-oss-120b). The model keys are read from $OPENROUTER_API_KEY /
+# $ANTHROPIC_API_KEY / $GROQ_API_KEY or asked for without echo (Enter skips one); every key given is written, so a
+# deployment can switch provider later without regenerating. The planner's provider must have its key. Prints names
+# only, never values.
 set -euo pipefail
 cd "$(dirname "$0")"
 domain=${1:-mergit.site}
@@ -29,11 +30,17 @@ if [ -z "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]; then read -rsp "ANT
 if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_BASE_URL:-}" ]; then read -rp "ANTHROPIC_BASE_URL for that token: " ANTHROPIC_BASE_URL; fi
 if [ -z "${GROQ_API_KEY:-}" ]; then read -rsp "GROQ_API_KEY (input hidden, Enter to skip): " GROQ_API_KEY; echo; fi
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then read -rsp "OPENROUTER_API_KEY (input hidden, Enter to skip): " OPENROUTER_API_KEY; echo; fi
-# The planner and mergit-coder-0 are both provider = "anthropic" in agents.toml today, so this deployment
-# specifically needs an Anthropic credential; GROQ_API_KEY/OPENROUTER_API_KEY alone would pass a looser
-# check but produce env files that fail to start these actual services. Groq/OpenRouter keys are still
-# accepted above and written out as extras, for providers not yet deployed here.
-[ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ] || { echo "an Anthropic credential is required (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN): the planner and mergit-coder-0 are both provider = \"anthropic\"" >&2; exit 1; }
+planner_provider=${PLANNER_PROVIDER:-openrouter}
+case "$planner_provider" in
+  openrouter) planner_model=${PLANNER_MODEL:-anthropic/claude-haiku-4.5}; planner_key=${OPENROUTER_API_KEY:-} ;;
+  anthropic) planner_model=${PLANNER_MODEL:-claude-haiku-4-5}; planner_key=${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-} ;;
+  groq) planner_model=${PLANNER_MODEL:-openai/gpt-oss-120b}; planner_key=${GROQ_API_KEY:-} ;;
+  *) echo "PLANNER_PROVIDER must be openrouter, anthropic or groq, not $planner_provider" >&2; exit 1 ;;
+esac
+[ -n "$planner_key" ] || { echo "the planner's provider ($planner_provider) needs its key; none was given" >&2; exit 1; }
+# The deployed agent's provider is in agents.toml, not here; the worker's start-up check (and update.sh's preflight)
+# refuses a missing key exactly. This only warns early for the shipped default.
+[ -n "${OPENROUTER_API_KEY:-}" ] || echo "note: no OPENROUTER_API_KEY, but mergit-coder-0 is provider = \"openrouter\" in agents.toml: the worker will not start unless agents.toml points it elsewhere" >&2
 model_keys() { # only the keys that were given, so each configured provider gets the key it needs
   [ -z "${ANTHROPIC_API_KEY:-}" ] || echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
   [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] || echo "ANTHROPIC_AUTH_TOKEN=$ANTHROPIC_AUTH_TOKEN"
@@ -50,11 +57,8 @@ umask 077
   echo "APP_DOMAIN=$domain"
   echo "CORS_ORIGINS=$scheme://$domain"
   echo "SESSION_SECRET=$session"
-  echo "PLANNER_MODEL=claude-haiku-4-5"
-  # PLANNER_PROVIDER is hardcoded the same way PLANNER_MODEL above is: a deployment choice, not derived
-  # from which keys were given. The actual deployed agent, mergit-coder-0, is hardcoded to Anthropic the
-  # same way in agents.toml.
-  echo "PLANNER_PROVIDER=anthropic"
+  echo "PLANNER_PROVIDER=$planner_provider"
+  echo "PLANNER_MODEL=$planner_model"
   model_keys
   for t in EVENTS_TOKEN CHAIN_EVENTS_TOKEN WORKER_TOKEN; do echo "$t=$(token $t)"; done
 } > secrets/api.env

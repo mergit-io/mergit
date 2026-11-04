@@ -56,7 +56,8 @@ output_per_mtok = 0.30
 cache_read_per_mtok = 0.0375
 cache_write_per_mtok = 0.075
 
-# OpenRouter list prices, checked against https://openrouter.ai/api/v1/models on 2026-11-01. The receipt
+# OpenRouter list prices, checked against https://openrouter.ai/api/v1/models on 2026-11-01 (claude-haiku-4.5 on
+# 2026-11-04, same as Anthropic's own). The receipt
 # prices the exact OpenRouter id called.
 
 [models."anthropic/claude-sonnet-5"]
@@ -64,6 +65,12 @@ input_per_mtok = 2.00
 output_per_mtok = 10.00
 cache_read_per_mtok = 0.20
 cache_write_per_mtok = 2.50
+
+[models."anthropic/claude-haiku-4.5"]
+input_per_mtok = 1.00
+output_per_mtok = 5.00
+cache_read_per_mtok = 0.10
+cache_write_per_mtok = 1.25
 
 [models."deepseek/deepseek-v4-flash"]
 input_per_mtok = 0.091

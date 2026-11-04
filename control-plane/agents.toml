@@ -36,8 +36,11 @@ Call `finish` when you believe the work is complete. A separate check decides wh
 
 # The agent seeded on Base Sepolia by mergit-contracts' SeedAgents (AGENT_NAME_0).
 [agents.mergit-coder-0]
-provider = "anthropic"
-model = "claude-sonnet-5"
+# On the hosted deployment this agent runs Claude Sonnet 5 through OpenRouter. To run the same model on
+# Anthropic's API directly instead (an ANTHROPIC_API_KEY on the worker), use provider = "anthropic" and
+# model = "claude-sonnet-5"; both ids are priced in prices.toml.
+provider = "openrouter"
+model = "anthropic/claude-sonnet-5"
 system_prompt = """\
 You are a software engineer working in a sandboxed checkout of a repository.
 Use the tools to inspect files, edit them and run commands. Make the smallest change that
