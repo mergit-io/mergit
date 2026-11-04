@@ -2,8 +2,9 @@
 
 Three steps, none of which writes anything the others do not own:
 
-1. ``task_outcomes`` (a view, migration 0015) says which tasks are validated outcomes. Only those count
-   (invariant 4); a release nobody audited, or a deadline return, is not evidence.
+1. ``task_outcomes`` (a view, migrations 0015 and 0020) says which tasks are validated outcomes: audited, or
+   challenged and adjudicated. Only those count (invariant 4); a release nobody audited or challenged, or a
+   deadline return, is not evidence.
 2. ``record_missing_costs`` copies each such task's metered cost from the gateway's on-chain commitment
    into ``task_costs``, once. A cost that cannot be read yet leaves the outcome pending; it is never taken
    as zero.
@@ -22,6 +23,7 @@ category, and writes ``task_costs`` and ``agent_posteriors``.
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, cast
@@ -41,6 +43,17 @@ class AgentCategory:
     category: str
 
 
+class GatewayUnavailable(Exception):
+    """The gateway cannot be asked right now: unreachable, failing, refusing us, or not answering with a list
+    of commitments. Every task would get the same answer, so the pass stops and tries again next time."""
+
+
+class BadCommitment(ValueError):
+    """The gateway's answer about this one task cannot be used (another task's commitment, a cost that is not
+    a non-negative integer, a row that is not an object, a request refused for this task id). Other tasks are
+    not affected, so the pass goes on to them."""
+
+
 class GatewayCosts:
     """Reads a task's committed cost from the gateway (``GET /v0/commitments?task_id=``)."""
 
@@ -54,47 +67,84 @@ class GatewayCosts:
         await self._http.aclose()
 
     async def cost_micros(self, task_id: str) -> int | None:
-        """The cost in USDC micros, or None when the gateway has not seen the commitment yet. Anything else
-        (an unreachable gateway, an answer that is not a commitment) raises."""
-        response = await self._http.get(self._url, params={"task_id": task_id, "limit": 1})
-        response.raise_for_status()
-        rows = cast("list[dict[str, Any]]", response.json())
-        if not isinstance(rows, list):  # pyright: ignore[reportUnnecessaryIsInstance]
-            raise ValueError("the gateway's answer is not a list")
+        """The cost in USDC micros, or None when the gateway has not seen the commitment yet. Raises
+        ``GatewayUnavailable`` when the gateway as a whole cannot answer, ``BadCommitment`` when its answer
+        about this task is unusable."""
+        try:
+            response = await self._http.get(self._url, params={"task_id": task_id, "limit": 1})
+        except httpx.HTTPError as problem:
+            raise GatewayUnavailable(f"{type(problem).__name__}: {problem}") from problem
+        if response.status_code in (400, 422):  # the gateway refused this task id, not every request
+            raise BadCommitment(f"HTTP {response.status_code}")
+        if not response.is_success:
+            raise GatewayUnavailable(f"HTTP {response.status_code}")
+        try:
+            rows: object = response.json()
+        except ValueError as problem:
+            raise GatewayUnavailable("the gateway's answer is not JSON") from problem
+        if not isinstance(rows, list):
+            raise GatewayUnavailable("the gateway's answer is not a list")
         if not rows:
             return None
-        row = rows[0]
-        if row.get("task_id") != task_id:
-            raise ValueError("the gateway answered with another task's commitment")
-        cost = int(row["cost_micros"])
+        row = cast("list[object]", rows)[0]
+        if not isinstance(row, dict):
+            raise BadCommitment("the gateway's commitment is not an object")
+        fields = cast("dict[str, Any]", row)
+        if fields.get("task_id") != task_id:
+            raise BadCommitment("the gateway answered with another task's commitment")
+        raw = fields.get("cost_micros")
+        if not isinstance(raw, str | int) or isinstance(raw, bool):
+            raise BadCommitment("the commitment has no cost")
+        try:
+            cost = int(raw)
+        except ValueError as problem:
+            raise BadCommitment(f"the cost {raw!r} is not an integer") from problem
         if cost < 0:
-            raise ValueError("a negative cost")
+            raise BadCommitment("a negative cost")
         return cost
 
 
-async def record_missing_costs(pool: Pool, costs: GatewayCosts, limit: int = 50) -> int:
-    """Writes ``task_costs`` for counted outcomes that lack one. Returns how many were written. A task whose
-    commitment is not there yet, or a gateway that cannot be asked, leaves it for the next pass."""
+async def record_missing_costs(
+    pool: Pool, costs: GatewayCosts, *, batch: int = 200, budget_s: float = 10.0
+) -> int:
+    """Writes ``task_costs`` for up to ``batch`` counted outcomes that lack one, stopping early past
+    ``budget_s``. Returns how many were written.
+
+    Pending outcomes are tried oldest first. A task whose commitment is not there yet, or whose answer is
+    unusable, is left for the next pass and does not hold back the tasks after it (a commitment that never
+    arrives must not block every newer outcome). A gateway that cannot answer at all ends the pass early,
+    since every remaining task would fail the same way. ``batch`` and ``budget_s`` bound one pass to a known
+    number of sequential gateway requests and a known wall-clock time, however large the backlog (an outage,
+    or heavy volume) grows, or however slow a gateway that does answer is; the rest wait for the next poll,
+    which also serves ``GET /v0/agents/reputation`` from the same table."""
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT task_id FROM task_outcomes WHERE cost_micros IS NULL ORDER BY position LIMIT %s", (limit,)
+            "SELECT task_id FROM task_outcomes WHERE cost_micros IS NULL ORDER BY position LIMIT %s",
+            (batch,),
         )
         pending = [row[0] for row in await cur.fetchall()]
     written = 0
+    started = time.monotonic()
     for task_id in pending:
+        if time.monotonic() - started > budget_s:
+            log.warning("costs not read this pass (budget exceeded, %d left pending)", len(pending) - written)
+            break
         try:
             cost = await costs.cost_micros(task_id)
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as problem:
-            log.warning("cost of %s not read: %s: %s", task_id, type(problem).__name__, problem)
-            break  # the gateway is unwell or odd; do not hammer it for each remaining task
+        except GatewayUnavailable as problem:
+            log.warning("costs not read this pass (%d pending): %s", len(pending), problem)
+            break  # the gateway is unwell; do not hammer it for each remaining task
+        except BadCommitment as problem:
+            log.warning("cost of %s not read: %s", task_id, problem)
+            continue
         if cost is None:
             continue
         async with pool.connection() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 "INSERT INTO task_costs (task_id, cost_micros) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (task_id, cost),
             )
-        written += 1
+            written += cur.rowcount  # 0 when another instance recorded it first
     return written
 
 
@@ -103,6 +153,9 @@ async def refresh_posteriors(pool: Pool, settings: Settings) -> int:
     prior = Posterior.prior(Params(tau0=float(settings.reputation_cost_prior_micros)))
     async with pool.connection() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('reputation'))")
+        # An outcome whose cost is still pending waits (it is never taken as zero). A recorded cost of 0 is a
+        # true copy of the commitment: the outcome's success or failure counts like any other, but the cost
+        # model needs c > 0 (paper §8.3), so it adds nothing to the cost posterior rather than a made-up cost.
         cur = await conn.execute(
             "SELECT agent_id, category, success, cost_micros FROM task_outcomes"
             " WHERE funding = 'wallet' AND cost_micros IS NOT NULL ORDER BY position, task_id"
@@ -110,7 +163,7 @@ async def refresh_posteriors(pool: Pool, settings: Settings) -> int:
         folded: dict[tuple[str, str], Posterior] = {}
         for agent_id, category, success, cost in await cur.fetchall():
             key = (agent_id, category)
-            folded[key] = folded.get(key, prior).observe(bool(success), float(cost))
+            folded[key] = folded.get(key, prior).observe(bool(success), float(cost) if cost > 0 else None)
         await conn.execute("DELETE FROM agent_posteriors")
         for (agent_id, category), p in sorted(folded.items()):
             await conn.execute(
@@ -131,7 +184,12 @@ class ReputationUpdater:
         self._costs = costs
 
     async def update(self) -> None:
-        await record_missing_costs(self._pool, self._costs)
+        await record_missing_costs(
+            self._pool,
+            self._costs,
+            batch=self._settings.reputation_cost_batch,
+            budget_s=self._settings.reputation_cost_budget_s,
+        )
         await refresh_posteriors(self._pool, self._settings)
 
     async def run(self, poll_s: float, stop: asyncio.Event) -> None:

@@ -21,7 +21,7 @@
 	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self' https://gateway.mergit.site https://store.mergit.site https://sepolia.base.org https://api.github.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 	# The app is a single-page app, so its own routes fall back to index.html. Anything else that is not a file is a
 	# real 404 (not the app shell with a 200, which scanners flag and search engines index as soft 404s).
-	@spa path / /signin /signin/* /demo /demo/* /app /app/*
+	@spa path / /signin /signin/* /pricing /demo /demo/* /app /app/*
 	rewrite @spa /index.html
 }
 

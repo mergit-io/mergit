@@ -107,7 +107,13 @@ def settings(settings: Settings, tmp_path: Path) -> Settings:
         )
     )
     config = tmp_path / "two-agents.toml"
-    config.write_text("".join(f'[agents.agent-{i}]\nmodel = "m"\nsystem_prompt = "p"\n' for i in ("1", "2")))
+    config.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        + "".join(
+            f'[agents.agent-{i}]\nprovider = "anthropic"\nmodel = "m"\nsystem_prompt = "p"\n'
+            for i in ("1", "2")
+        )
+    )
     return settings.model_copy(update={"agents_file": str(chain), "agents_config": str(config)})
 
 

@@ -133,6 +133,11 @@ test("a new account chooses between the free trial and a wallet, and the trial h
   await page.goto("/app");
   const choice = page.getByRole("dialog", { name: "Choose your plan" });
   await expect(choice).toBeVisible();
+  // Three plans: Premium is shown but not available, Pay as you go offers a wallet, and the detail page is linked.
+  await expect(choice.getByRole("heading", { level: 3 })).toHaveText(["Free", "Premium", "Pay as you go"]);
+  await expect(choice.getByRole("button", { name: "Coming soon" })).toBeDisabled();
+  await expect(choice.getByRole("button", { name: /Connect a wallet/ })).toBeEnabled();
+  await expect(choice.getByRole("link", { name: "Compare plans in detail" })).toHaveAttribute("href", "/pricing");
   await choice.getByRole("button", { name: "Start free" }).click();
   await expect(choice).toBeHidden();
   expect(calls.some((c) => c.path === "/v0/account/trial")).toBe(true);

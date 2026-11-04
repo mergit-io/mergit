@@ -18,7 +18,16 @@ sync_repo ../mergit-contracts   # deployments/base-sepolia.json lives there
 
 case "$what" in
   all|services)
-    compose up -d --build
+    compose build
+    # Before anything running is replaced: run the API's and the worker's own start-up configuration checks
+    # in the images just built, against the real env files (mergit_cp/preflight.py, mergit_worker/preflight.py).
+    # A setting the new code needs and deploy/secrets/*.env lacks (PLANNER_PROVIDER, a deployed agent's model
+    # key) then fails the deploy here, with `set -e`, and the old containers keep serving, instead of `up`
+    # leaving a new api restart-looping or a new worker that refuses to start. Neither check touches the
+    # database or the network.
+    compose run --rm --no-deps -T api python -m mergit_cp.preflight
+    compose run --rm --no-deps -T worker python -m mergit_worker.preflight
+    compose up -d
     # `git pull` replaces the Caddyfile with a new file, and a single-file bind mount keeps pointing at the old one,
     # so neither `up` nor `caddy reload` (which re-reads the stale copy and still succeeds) applies a changed
     # Caddyfile. Compare what the container sees with the file on disk; if they differ, or the container cannot be
