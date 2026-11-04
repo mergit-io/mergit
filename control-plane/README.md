@@ -190,8 +190,8 @@ instance would need Postgres `LISTEN`/`NOTIFY` or a shared queue, which is out o
 **Configuration** (`mergit_cp/config.py`). Required: `DATABASE_URL`, `APP_DOMAIN`, `SESSION_SECRET` (32+
 characters), `GATEWAY_URL`, `STORE_URL`, `AGENTS_FILE`, `PLANNER_MODEL`, `PLANNER_PROVIDER`, `EVENTS_TOKEN`,
 `CHAIN_EVENTS_TOKEN`, `WORKER_TOKEN`, plus whichever model key `PLANNER_PROVIDER` needs. Defaults: `CHAIN_ID`
-(84532), `PLANS_PER_HOUR` (10),
-`PLANNER_MAX_TASKS` (8), `MAX_ATTEMPTS` (3), `REPO_HOSTS` (github.com), `CORS_ORIGINS`, `SSE_POLL_S` (1),
+(84532), `PLANS_PER_HOUR` (10), `SUGGESTIONS_PER_HOUR` (60, exploring suggestions only), `PLANNER_MAX_TASKS` (8),
+`MAX_ATTEMPTS` (3), `REPO_HOSTS` (github.com), `CORS_ORIGINS`, `SSE_POLL_S` (1),
 `OUTCOME_POLL_S` (1).
 `WORKER_TOKEN` is this deployment's own choice, like `CHAIN_EVENTS_TOKEN`: spec/events-v0.md does not name a
 token for this leg either, since the whole endpoint is new in O7. The planner model must be priced in

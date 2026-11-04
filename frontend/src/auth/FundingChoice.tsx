@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { paths } from "../app/paths";
 import { useCredits } from "../chain/useCredits";
+import { PlanCards } from "../components/PlanCards";
 import { Icon } from "../components/Icon";
 import { MergitSymbol } from "../components/MergitLogo";
 import { startTrial } from "./accountApi";
@@ -109,71 +110,38 @@ export function FundingChoice() {
             {error}
           </p>
         )}
-        <div className="plan-grid">
-          <section className="plan-card" aria-labelledby="plan-free">
-            <span className="plan-tag">No wallet needed</span>
-            <h3 id="plan-free" className="plan-name">
-              Free
-            </h3>
-            <p className="plan-price">
-              <span className="plan-amount">$0</span>
-              <span className="small c3">test credits</span>
-            </p>
-            <ul className="plan-list small c2">
-              <li>
-                <Icon name="check" size={14} stroke={2.4} />
-                Runs on free test credits
-              </li>
-              <li>
-                <Icon name="check" size={14} stroke={2.4} />
-                Every task is audited
-              </li>
-              <li>
-                <Icon name="check" size={14} stroke={2.4} />
-                No reputation is earned
-              </li>
-            </ul>
-            <button type="button" className="btn primary block" disabled={busy || exhausted} onClick={trial}>
-              {exhausted ? "Free credits used" : starting ? "Starting…" : "Start free"}
-            </button>
-          </section>
-          <section className="plan-card" aria-labelledby="plan-payg">
-            <span className="plan-tag">Wallet</span>
-            <h3 id="plan-payg" className="plan-name">
-              Pay as you go
-            </h3>
-            <p className="plan-price">
-              <span className="plan-amount">Per task</span>
-              <span className="small c3">your own test USDC</span>
-            </p>
-            <ul className="plan-list small c2">
-              <li>
-                <Icon name="check" size={14} stroke={2.4} />
-                Each plan is funded from your wallet
-              </li>
-              <li>
-                <Icon name="check" size={14} stroke={2.4} />
-                Proofs settle to your address
-              </li>
-              <li>
-                <Icon name="check" size={14} stroke={2.4} />
-                You sign one message; it costs nothing
-              </li>
-            </ul>
-            <button
-              type="button"
-              className="btn secondary block"
-              aria-expanded={walletOpen}
-              disabled={starting}
-              onClick={() => {
-                setWalletOpen((open) => !open);
-              }}
-            >
-              <Icon name="wallet" size={16} />
-              Connect a wallet
-            </button>
-            {walletOpen &&
-              (wallet.offer ? (
+        <PlanCards
+          action={(plan) => {
+            if (plan.soon)
+              return (
+                <button type="button" className="btn secondary block" disabled>
+                  Coming soon
+                </button>
+              );
+            if (plan.id === "free")
+              return (
+                <button type="button" className="btn primary block" disabled={busy || exhausted} onClick={trial}>
+                  {exhausted ? "Free credits used" : starting ? "Starting…" : "Start free"}
+                </button>
+              );
+            return (
+              <button
+                type="button"
+                className="btn secondary block"
+                aria-expanded={walletOpen}
+                disabled={starting}
+                onClick={() => {
+                  setWalletOpen((open) => !open);
+                }}
+              >
+                <Icon name="wallet" size={16} />
+                Connect a wallet
+              </button>
+            );
+          }}
+          below={(plan) =>
+            plan.id === "payg" && walletOpen ? (
+              wallet.offer ? (
                 <MergePrompt
                   offer={wallet.offer}
                   busy={wallet.busy}
@@ -182,9 +150,13 @@ export function FundingChoice() {
                 />
               ) : (
                 <WalletPicker busy={wallet.busy} onMetaMask={wallet.connect} />
-              ))}
-          </section>
-        </div>
+              )
+            ) : null
+          }
+        />
+        <Link to={paths.pricing} className="link small plan-compare">
+          Compare plans in detail
+        </Link>
         <button type="button" className="link small plan-skip" onClick={dismiss}>
           Look around first
         </button>

@@ -94,6 +94,7 @@ def test_the_apps_own_routes_still_reach_the_shell() -> None:
     for path in (
         "/",
         "/signin",
+        "/pricing",
         "/demo",
         "/demo/runs",
         "/app",
@@ -108,9 +109,8 @@ def test_the_apps_own_routes_still_reach_the_shell() -> None:
 
 def test_the_router_has_no_top_level_route_the_site_would_404() -> None:
     paths = (ROOT / "frontend" / "src" / "app" / "paths.ts").read_text()
-    top_level = {
-        m.group(1) for m in re.finditer(r'(?m)^\s+(?:landing|signIn|demo|liveApp):\s*"(/[^"]*)"', paths)
-    }
+    route = r'(?m)^\s+(?:landing|signIn|pricing|demo|liveApp):\s*"(/[^"]*)"'
+    top_level = {m.group(1) for m in re.finditer(route, paths)}
     match = re.search(r"(?m)^\t@spa path ([^\n]+)$", _snippet())
     assert match and top_level
     patterns = match.group(1).split()
