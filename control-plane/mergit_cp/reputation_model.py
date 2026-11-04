@@ -47,18 +47,20 @@ class Posterior:
             raise ValueError("every prior parameter must be positive")
         return cls(params.alpha0, params.beta0, params.kappa0, params.tau0)
 
-    def observe(self, success: bool, cost: float, gamma: float = GAMMA) -> "Posterior":
-        """One validated outcome. Every parameter decays, then the outcome adds to one Beta parameter, and the
-        cost (of a failure too) adds to the Gamma pair."""
-        if not math.isfinite(cost) or cost < 0:
-            raise ValueError("cost must be a finite, non-negative number")
+    def observe(self, success: bool, cost: float | None, gamma: float = GAMMA) -> "Posterior":
+        """One validated outcome. The Beta pair decays, then the outcome adds 1 to one of them (paper §8.2);
+        every validated outcome does this. The Gamma pair decays and gains the cost (of a failure too) only
+        when there is a cost to learn from. ``None`` means the outcome carries no usable cost (its receipt
+        metered 0, which the cost model's ``c > 0``, §8.3, cannot take) and leaves kappa and tau alone."""
+        if cost is not None and (not math.isfinite(cost) or cost <= 0):
+            raise ValueError("cost must be a finite, positive number, or None for no cost evidence")
         if not 0 < gamma <= 1:
             raise ValueError("gamma must be in (0, 1]")
         return Posterior(
             alpha=gamma * self.alpha + (1.0 if success else 0.0),
             beta=gamma * self.beta + (0.0 if success else 1.0),
-            kappa=gamma * self.kappa + 1.0,
-            tau=gamma * self.tau + cost,
+            kappa=self.kappa if cost is None else gamma * self.kappa + 1.0,
+            tau=self.tau if cost is None else gamma * self.tau + cost,
             n=self.n + 1,
         )
 
