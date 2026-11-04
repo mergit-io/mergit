@@ -24,6 +24,14 @@ model keys and one restricted database role. It has no gateway key, no treasury 
    addresses.
 5. DNS: an A record for `api` to the server (it exists today). The Hetzner firewall stays 22, 80, 443; the private network is not filtered by it.
 
+**The database link is not encrypted.** `cp_postgres` is the stock image with no server certificate, so the
+`sslmode=prefer` in the role's URL connects in cleartext: the password is not sent (SCRAM), but the rows the worker
+reads and writes (jobs, pull-request requests, plan and task text) cross the private network as they are. That is
+accepted for now because a Hetzner private network is reachable only from servers in the same project, not from the
+internet. To encrypt it: give `cp_postgres` a certificate (`ssl=on`, `ssl_cert_file`, `ssl_key_file`), change the
+`mergit_worker` line in `pg_hba.conf` from `host` to `hostssl`, and use `sslmode=verify-full` with the server's CA
+on the worker VM.
+
 ## 2. On the worker VM
 
 ```bash

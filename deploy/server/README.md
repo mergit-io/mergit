@@ -85,6 +85,25 @@ deploy/server/update.sh app        # only the frontend: web or app
 Render deployed on every push. The server does not by itself, so `.github/workflows/deploy.yml` runs `update.sh` over SSH
 on every push to `main` (and by hand from the Actions tab, where you can pick `services`, `web` or `app`).
 
+### Once, on the first deploy after the compose network was pinned
+
+`deploy/compose.controlplane.yaml` pins the stack's network to `172.30.9.0/24`, so `deploy/postgres/pg_hba.conf` can
+name that exact range instead of `samenet`. A server that already ran the stack has that network with whatever
+subnet Docker picked, so the first `update.sh` after this change has to replace it. Recent Compose (checked with
+5.6.1) does that itself: it removes and recreates the network and restarts every container on it once, a short
+outage of the whole stack; the database's data is in its volume and is kept. An older Compose may refuse instead,
+saying the network needs to be recreated. Then, on the server, once:
+
+```bash
+C="docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml"
+$C down          # stops the stack and removes its network; volumes (the databases, certificates) are kept
+deploy/server/update.sh services
+```
+
+Check first that `172.30.9.0/24` is not already in use on the host (`docker network ls -q | xargs docker network
+inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'`, and the private network's own range). If it is,
+change it in `compose.controlplane.yaml` and `pg_hba.conf` together, in one commit.
+
 ### Automatic deploys: one-time setup
 
 1. On your machine, make a key used for nothing else: `ssh-keygen -t ed25519 -N '' -f deploy_key -C github-deploy`.
