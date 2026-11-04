@@ -25,7 +25,10 @@ if [ -f worker.env ]; then
   done
   case "$(get DATABASE_URL)" in *CHANGE-ME*) fail "DATABASE_URL still has the CHANGE-ME placeholder" ;; esac
   case "$(get DATABASE_URL)" in *@127.0.0.1*|*@localhost*) fail "DATABASE_URL points at this machine: use the server's private address" ;; esac
-  [ -n "$(get ANTHROPIC_API_KEY)$(get GROQ_API_KEY)" ] && ok "a model key is set" || fail "set ANTHROPIC_API_KEY or GROQ_API_KEY"
+  # Which key is needed depends on each deployed agent's provider in agents.toml; the worker's own check below
+  # (in the image) says exactly. This only catches a worker.env with no model key at all.
+  [ -n "$(get OPENROUTER_API_KEY)$(get ANTHROPIC_API_KEY)$(get ANTHROPIC_AUTH_TOKEN)$(get GROQ_API_KEY)" ] \
+    && ok "a model key is set" || fail "no model key: set the key of the provider agents.toml gives each deployed agent (OPENROUTER_API_KEY for mergit-coder-0)"
 else
   fail "worker.env is missing: copy worker.env.example and fill it in"
 fi
@@ -60,6 +63,13 @@ for pair in "api:$api" "gateway:$gateway" "store:$store"; do
 done
 
 if docker image inspect mergit-worker:local >/dev/null 2>&1 && [ -f worker.env ]; then
+  # The worker's own start-up check, as update.sh runs it on the server: every deployed agent priced, its
+  # provider's key present, and a model id that provider serves. No database, no network.
+  if out=$(docker compose run --rm --no-deps -T worker python -m mergit_worker.preflight 2>&1); then
+    ok "${out##*$'\n'}"
+  else
+    fail "${out##*$'\n'}"
+  fi
   docker run --rm --env-file worker.env --entrypoint python mergit-worker:local -c \
     "import os, psycopg; psycopg.connect(os.environ['DATABASE_URL'], connect_timeout=8).close()" >/dev/null 2>&1 \
     && ok "the database accepts this worker's credentials" \
