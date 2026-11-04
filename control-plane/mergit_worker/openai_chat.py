@@ -144,3 +144,47 @@ def parse_reply(data: dict[str, Any]) -> ParsedReply:
         cached_tokens=int(details.get("cached_tokens") or 0),
         model=data.get("model"),
     )
+
+
+# What a provider's own status codes mean here: worth another attempt, or not.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+@dataclass(frozen=True)
+class BodyError:
+    message: str
+    retryable: bool
+
+
+def body_error(data: object) -> BodyError | None:
+    """Why an HTTP 200 body is not an answer, or None when it is one. The body is untrusted input.
+
+    Some providers, OpenRouter among them, report a failure with HTTP 200 and an `error` object carrying the
+    status they would have sent (`{"error": {"code": 429, "message": ...}}`), so a rate limit or an upstream
+    outage there is retried like the same status on its own. Both planner and worker clients use this."""
+    if not isinstance(data, dict):
+        return BodyError("the answer is not a JSON object", retryable=False)
+    error = cast("dict[str, Any]", data).get("error")
+    if not error:
+        return None
+    if not isinstance(error, dict):
+        return BodyError(str(error), retryable=False)
+    fields = cast("dict[str, Any]", error)
+    message, code = fields.get("message"), fields.get("code")
+    try:
+        status = int(code) if code is not None and not isinstance(code, bool) else None
+    except (TypeError, ValueError):
+        status = None
+    if isinstance(message, str) and message.strip():
+        text = message.strip()
+    elif code is not None:
+        text = f"error code {code}"
+    else:
+        text = "an error with no message"
+    return BodyError(text, retryable=status in RETRY_STATUSES)
+
+
+def scrub(text: str, secret: str) -> str:
+    """`text` with `secret` cut out. Error text from a provider goes into logs and `llm_check`'s output, and
+    some providers echo the key they rejected back in the body of a 401."""
+    return text.replace(secret, "[redacted]") if secret else text

@@ -49,6 +49,7 @@ class Publisher(Protocol):
 @dataclass(frozen=True, slots=True)
 class AgentSpec:
     agent_id: str
+    provider: str
     model: str
     system_prompt: str
     runtime_key_address: str  # the registered runtime key; the header's attestation.dev_key

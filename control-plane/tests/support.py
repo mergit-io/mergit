@@ -90,6 +90,7 @@ def make_job(repo_url: str, **over: Any) -> Job:
 def make_agent() -> AgentSpec:
     return AgentSpec(
         agent_id="1",
+        provider="anthropic",
         model="test-model",
         system_prompt="You fix bugs.",
         runtime_key_address=KEY_ADDRESS,

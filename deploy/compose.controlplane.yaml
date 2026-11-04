@@ -22,10 +22,12 @@ services:
     environment:
       ORCHESTRATOR_URL: http://api:8000
 
-  # The Groq key rotator (tools/keyrelay). The planner and the agents call Groq through it when GROQ_BASE_URL in
-  # secrets/api.env and secrets/worker.env is http://keyrelay:8787/v1 and their GROQ_API_KEY is its proxy token.
-  # It starts only when deploy/secrets/keyrelay/keyrelay.toml exists (update.sh adds the profile), so a checkout
-  # without it is unaffected. No port is published: only api and worker reach it, by name.
+  # The Groq key rotator (tools/keyrelay). The planner and the agents call Groq through it when the groq
+  # provider's `base_url` in control-plane/agents.toml's `[providers.groq]` table is http://keyrelay:8787/v1
+  # (no env var wires this any more: a provider's base_url is read only from agents.toml, per-provider) and
+  # their GROQ_API_KEY (named by that table's api_key_env) is its proxy token. It starts only when
+  # deploy/secrets/keyrelay/keyrelay.toml exists (update.sh adds the profile), so a checkout without it is
+  # unaffected. No port is published: only api and worker reach it, by name.
   keyrelay:
     profiles: ["keyrelay"]
     build: { context: ../tools/keyrelay }

@@ -38,6 +38,7 @@ def agent(operator: str) -> Agent:
         name=f"agent-{agent_id}",
         operator=operator,
         runtime_key="0x" + "2" * 40,
+        provider="anthropic",
         model="claude-sonnet-5",
         system_prompt="You fix failing tests.",
     )

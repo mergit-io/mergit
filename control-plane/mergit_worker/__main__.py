@@ -10,17 +10,14 @@ from dataclasses import dataclass
 
 from mergit_cp.pr_store import PgPrStore
 
-from .agents import validate_agents_are_priced
 from .config import ConfigError, WorkerConfig, load_config
 from .github import GitHubConfig, GitHubPrOpener
 from .harness import HarnessConfig
 from .jobs import PgJobStore
-from .llm import build_llm
-from .meter import PriceTable
 from .models import Job
 from .pr_worker import PrHandler
+from .preflight import check_models
 from .progress import HttpProgressReporter, NullProgressReporter, ProgressReporter
-from .providers import llm_provider
 from .publish import ReceiptPublisher
 from .sandbox import Sandbox, SandboxConfig, reap_stale
 from .tools import ToolLimits
@@ -46,6 +43,8 @@ class Built:
     worker: Worker
     jobs: PgJobStore
     prs: PgPrStore | None
+    providers: set[str]
+    stale: list[str]
 
     def close(self) -> None:
         self.jobs.close()
@@ -91,13 +90,13 @@ def build_worker(cfg: WorkerConfig, worker_id: str) -> Built:
     def make_sandbox(job: Job) -> Sandbox:
         return Sandbox.create(job.repo_url, job.ref, sandbox_cfg)
 
-    prices = PriceTable.load(cfg.prices_file)
-    validate_agents_are_priced(cfg.agents_file, cfg.agents_config, prices)
+    checked = check_models(cfg)
+    prices, models, needed = checked.prices, checked.clients, checked.providers
     store = PgJobStore.connect(cfg.database_url.get_secret_value(), worker_id)
     pr = build_pr_handler(cfg, worker_id)
     deps = WorkerDeps(
         store=store,
-        llm=build_llm(cfg.http_timeout_s * 20),
+        models=models,
         prices=prices,
         publisher=ReceiptPublisher(
             store_url=cfg.store_url,
@@ -128,7 +127,7 @@ def build_worker(cfg: WorkerConfig, worker_id: str) -> Built:
             ),
         ),
     )
-    return Built(Worker(cfg, deps), store, pr[1] if pr else None)
+    return Built(Worker(cfg, deps), store, pr[1] if pr else None, needed, checked.stale)
 
 
 def main() -> int:
@@ -141,8 +140,10 @@ def main() -> int:
         return 2
 
     worker_id = cfg.worker_id or socket.gethostname()
-    log.info("model provider: %s", llm_provider())
     built = build_worker(cfg, worker_id)
+    log.info("model providers: %s", ", ".join(sorted(built.providers)) or "(no deployed agent needs one)")
+    if built.stale:
+        log.warning("no longer read, remove from the env file: %s", ", ".join(built.stale))
     log.info("failed %d jobs this worker left running before a restart", built.jobs.fail_own_running())
     log.info(
         "reclaimed %d jobs left running past their lease by any worker",

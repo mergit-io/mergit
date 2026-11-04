@@ -237,6 +237,7 @@ def roster_agent(agent_id: str) -> Agent:
         name=f"agent-{agent_id}",
         operator=OPERATORS[agent_id],
         runtime_key="0x" + "2" * 40,
+        provider="anthropic",
         model="m",
         system_prompt="p",
     )
@@ -257,7 +258,13 @@ def roster(settings: Settings, tmp_path: Path) -> Settings:
         )
     )
     config = tmp_path / "five-agents.toml"
-    config.write_text("".join(f'[agents.agent-{i}]\nmodel = "m"\nsystem_prompt = "p"\n' for i in OPERATORS))
+    config.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        + "".join(
+            f'[agents.agent-{i}]\nprovider = "anthropic"\nmodel = "m"\nsystem_prompt = "p"\n'
+            for i in OPERATORS
+        )
+    )
     return settings.model_copy(update={"agents_file": str(chain), "agents_config": str(config)})
 
 

@@ -84,6 +84,46 @@ deploy/server/update.sh app        # only the frontend: web or app
 Render deployed on every push. The server does not by itself, so `.github/workflows/deploy.yml` runs `update.sh` over SSH
 on every push to `main` (and by hand from the Actions tab, where you can pick `services`, `web` or `app`).
 
+### Upgrading an existing deployment past per-agent providers (`PLANNER_PROVIDER`)
+
+The hosted deployment calls models through OpenRouter: `mergit-coder-0` is `provider = "openrouter"`,
+`anthropic/claude-sonnet-5` in `control-plane/agents.toml`, and the planner uses whatever `PLANNER_PROVIDER` in
+`api.env` names. `PLANNER_PROVIDER` has no default, and `deploy/make-controlplane-env.sh` will not touch
+`deploy/secrets/api.env` or `worker.env` once they exist, so a server set up before this change has files the new
+code cannot start from. Nothing goes down because of it: `update.sh` builds the new images, then runs each
+service's own start-up checks in them against the real env files (`python -m mergit_cp.preflight` and
+`python -m mergit_worker.preflight`), and only then replaces the running containers. A missing
+`PLANNER_PROVIDER`, or a provider with no key (a `worker.env` with only `GROQ_API_KEY`, say), fails the deploy
+with one line naming the setting, never its value, and the old containers keep serving. The automatic deploy
+shows red until the files are fixed.
+
+To move the server to OpenRouter, on the server, once (the key is read without echo and never printed):
+
+```bash
+cd ~/mergit/mergit
+read -rsp "OPENROUTER_API_KEY: " k; echo
+for f in api worker; do grep -q '^OPENROUTER_API_KEY=' deploy/secrets/$f.env || echo "OPENROUTER_API_KEY=$k" >> deploy/secrets/$f.env; done; unset k
+sed -i '/^PLANNER_PROVIDER=/d; /^PLANNER_MODEL=/d' deploy/secrets/api.env
+printf 'PLANNER_PROVIDER=openrouter\nPLANNER_MODEL=anthropic/claude-haiku-4.5\n' >> deploy/secrets/api.env
+grep '^PLANNER_MODELS=' deploy/secrets/api.env   # if set, every id in it must be an OpenRouter id (see below)
+deploy/server/update.sh services   # runs the preflight again, then deploys
+```
+
+`PLANNER_MODELS` (the extra planner models a user may pick in Settings) are all sent to the planner's provider,
+so with OpenRouter they must be OpenRouter ids priced in `prices.toml` (`anthropic/claude-sonnet-5`, ...). A
+native id such as `claude-sonnet-5` is priced too, so the preflight passes it, but OpenRouter does not know it
+and a plan using it would answer 502. Leave `PLANNER_MODELS` unset to offer only `PLANNER_MODEL`.
+
+**Anthropic stays an option.** To call Anthropic's API directly instead, put `ANTHROPIC_API_KEY` (or
+`ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_BASE_URL`) in the env files and set `PLANNER_PROVIDER=anthropic`,
+`PLANNER_MODEL=claude-haiku-4-5` for the planner; for the agent, change `mergit-coder-0` in `agents.toml` to
+`provider = "anthropic"`, `model = "claude-sonnet-5"` and commit it. Keeping both keys in the env files means
+either can be switched to without touching secrets again.
+
+`GROQ_BASE_URL`, `GROQ_MODEL` and `LLM_PROVIDER` are no longer read; a provider's endpoint and model live in
+`control-plane/agents.toml`. Leaving them in the env files is harmless, but the API and the worker log a
+warning at start-up naming any that are still set, so delete them.
+
 ### Automatic deploys: one-time setup
 
 1. On your machine, make a key used for nothing else: `ssh-keygen -t ed25519 -N '' -f deploy_key -C github-deploy`.
@@ -179,15 +219,23 @@ $C build keyrelay
 $C run --rm keyrelay check --config /etc/keyrelay/keyrelay.toml      # valid / dead / limited per key, by index
 TOKEN=$(cat deploy/secrets/keyrelay/proxy-token.txt)
 sed -i "s|^GROQ_API_KEY=.*|GROQ_API_KEY=$TOKEN|" deploy/secrets/api.env deploy/secrets/worker.env
-grep -q '^GROQ_BASE_URL=' deploy/secrets/api.env    || echo 'GROQ_BASE_URL=http://keyrelay:8787/v1' >> deploy/secrets/api.env
-grep -q '^GROQ_BASE_URL=' deploy/secrets/worker.env || echo 'GROQ_BASE_URL=http://keyrelay:8787/v1' >> deploy/secrets/worker.env
-$C up -d --force-recreate keyrelay api worker
+```
+
+A provider's endpoint is no longer an env var read at container start: each provider's `base_url` lives in
+`control-plane/agents.toml`'s `[providers.<name>]` table (control-plane/README.md, "Model provider"), baked into
+the `api` and `worker` images at build time. To route Groq traffic through the rotator, set `[providers.groq]`'s
+`base_url` to `http://keyrelay:8787/v1` in `agents.toml` and commit it — an edit made only on the server would be
+reverted by the next deploy, since `update.sh` mirrors `origin/main` — then rebuild and recreate:
+
+```bash
+$C up -d --force-recreate --build keyrelay api worker
 $C exec keyrelay keyrelay status --config /etc/keyrelay/keyrelay.toml   # which keys are ok / cooling / dead
 $C logs --tail 20 keyrelay                                              # indexes only, never a key
 ```
 
 If keyrelay is down, planning fails with a 502 and the API logs `planner model unavailable: ...`. To go back, restore
-a real `GROQ_API_KEY` in `api.env` and `worker.env`, remove `GROQ_BASE_URL`, and recreate `api` and `worker`.
+a real `GROQ_API_KEY` in `api.env` and `worker.env`, set `[providers.groq]`'s `base_url` in `agents.toml` back to
+Groq's own endpoint (`https://api.groq.com/openai/v1`), commit, and rebuild and recreate `api` and `worker`.
 
 ## Free credits and redeem codes
 
