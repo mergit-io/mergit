@@ -24,7 +24,7 @@ from pydantic import ValidationError
 
 from mergit_worker.config import ConfigError, describe_invalid_settings
 from mergit_worker.meter import PriceTable
-from mergit_worker.providers import load_providers, stale_settings
+from mergit_worker.providers import check_model_id, load_providers, stale_settings
 
 from .agents import Agent, load_agents
 from .config import Settings
@@ -49,7 +49,12 @@ def check_config(settings: Settings, environ: Mapping[str, str] | None = None) -
     prices = PriceTable.load(Path(settings.prices_file))
     for model in settings.model_choices:  # every planner model a user may choose must have a price
         prices.model_call_cost(model, 0, 0, 0)
-    stale = stale_settings(load_providers(Path(settings.agents_config)), {settings.planner_provider}, env)
+    providers = load_providers(Path(settings.agents_config))
+    planner = providers.get(settings.planner_provider)
+    if planner is not None:  # an undefined provider is build_planner_llm's own clear error
+        for model in settings.model_choices:
+            check_model_id(planner, model)
+    stale = stale_settings(providers, {settings.planner_provider}, env)
     return Checked(agents, prices, stale)
 
 

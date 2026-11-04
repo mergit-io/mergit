@@ -180,3 +180,39 @@ def test_a_failed_worker_preflight_names_the_setting_and_prints_no_value(
     out = capsys.readouterr()
     assert "GATEWAY_URL" in out.err
     assert SECRET[:12] not in out.err + out.out
+
+
+def _with_openrouter(files: tuple[Path, Path], agent_model: str) -> tuple[Path, Path]:
+    """The same roster with the agent on OpenRouter and both providers defined, as on the hosted site."""
+    chain, config = files
+    config.write_text(
+        '[providers.anthropic]\nkind = "anthropic"\n\n'
+        '[providers.openrouter]\nkind = "openai_chat"\nbase_url = "https://openrouter.ai/api/v1"\n'
+        'api_key_env = "OPENROUTER_API_KEY"\n\n'
+        f'[agents.coder-a]\nprovider = "openrouter"\nmodel = "{agent_model}"\nsystem_prompt = "p"\n'
+    )
+    return chain, config
+
+
+def test_api_preflight_refuses_a_native_planner_model_on_openrouter(
+    clean_env: pytest.MonkeyPatch, agent_files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+):
+    """The upgrade trap: PLANNER_PROVIDER switched to openrouter while PLANNER_MODEL keeps the native id.
+    Both are priced and the key is there, so only this check stops every plan from failing at OpenRouter."""
+    _api_env(clean_env, _with_openrouter(agent_files, "anthropic/claude-sonnet-5"))
+    clean_env.setenv("OPENROUTER_API_KEY", "k")
+    clean_env.setenv("PLANNER_PROVIDER", "openrouter")
+    clean_env.setenv("PLANNER_MODEL", "claude-haiku-4-5")
+    assert api_preflight.main() == 1
+    assert "not an OpenRouter id" in capsys.readouterr().err
+    clean_env.setenv("PLANNER_MODEL", "anthropic/claude-haiku-4.5")
+    assert api_preflight.main() == 0
+
+
+def test_worker_preflight_refuses_a_native_agent_model_on_openrouter(
+    clean_env: pytest.MonkeyPatch, agent_files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+):
+    _worker_env(clean_env, _with_openrouter(agent_files, "claude-sonnet-5"))
+    clean_env.setenv("OPENROUTER_API_KEY", "k")
+    assert worker_preflight.main() == 1
+    assert "not an OpenRouter id" in capsys.readouterr().err

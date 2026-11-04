@@ -15,7 +15,7 @@ from mergit_worker.agents import (
 )
 from mergit_worker.config import ConfigError
 from mergit_worker.meter import PriceTable
-from mergit_worker.providers import ProviderSpec, load_providers, provider_key, stale_settings
+from mergit_worker.providers import ProviderSpec, check_model_id, load_providers, provider_key, stale_settings
 from tests.support import KEY, KEY_ADDRESS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -305,3 +305,35 @@ def test_a_registry_entry_that_is_not_an_object_is_a_config_error_for_every_read
     chain, config = _deploy(tmp_path, ["coder"], '[agents.coder]\nprovider = "anthropic"\n')
     with pytest.raises(ConfigError, match="object"):
         _every_reader(chain, config)[index]()  # type: ignore[operator]
+
+
+OPENROUTER = ProviderSpec("openrouter", "openai_chat", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
+ANTHROPIC = ProviderSpec("anthropic", "anthropic", None, None)
+
+
+@pytest.mark.parametrize(
+    ("spec", "model"),
+    [
+        (OPENROUTER, "anthropic/claude-haiku-4.5"),
+        (OPENROUTER, "deepseek/deepseek-v4-flash"),
+        (ANTHROPIC, "claude-haiku-4-5"),
+        (GROQ, "openai/gpt-oss-120b"),  # Groq ids may or may not have a slash: no rule
+        (GROQ, "llama-3.3-70b-versatile"),
+    ],
+)
+def test_a_model_id_the_provider_serves_passes(spec: ProviderSpec, model: str):
+    check_model_id(spec, model)
+
+
+@pytest.mark.parametrize(
+    ("spec", "model"),
+    [
+        (OPENROUTER, "claude-haiku-4-5"),  # a native id left over after switching the planner to OpenRouter
+        (ANTHROPIC, "anthropic/claude-haiku-4.5"),  # the other way round
+    ],
+)
+def test_a_model_id_from_the_other_provider_is_refused(spec: ProviderSpec, model: str):
+    """Both ids are priced and a key would be present, so nothing else at start-up catches this: every plan or
+    job would fail at the provider instead."""
+    with pytest.raises(ConfigError, match=model.replace(".", r"\.")):
+        check_model_id(spec, model)

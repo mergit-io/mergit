@@ -15,11 +15,11 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .agents import validate_agents_are_priced, validate_agents_have_keys
+from .agents import deployed_agents, validate_agents_are_priced, validate_agents_have_keys
 from .config import ConfigError, WorkerConfig, load_config
 from .llm import ModelClients
 from .meter import PriceTable
-from .providers import load_providers, stale_settings
+from .providers import check_model_id, load_providers, stale_settings
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,10 @@ def check_models(cfg: WorkerConfig, environ: Mapping[str, str] | None = None) ->
     validate_agents_are_priced(cfg.agents_file, cfg.agents_config, prices)
     needed = validate_agents_have_keys(cfg.agents_file, cfg.agents_config)
     providers = load_providers(cfg.agents_config)
+    for _entry, agent in deployed_agents(cfg.agents_file, cfg.agents_config):
+        spec = providers.get(str(agent.get("provider"))) if agent else None
+        if agent and spec is not None:
+            check_model_id(spec, str(agent.get("model")))
     stale = stale_settings(providers, needed, env)
     clients = ModelClients.build(providers, needed, cfg.http_timeout_s * 20, env)
     return Models(prices, clients, needed, stale)

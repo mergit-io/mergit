@@ -166,7 +166,13 @@ def test_missing_planner_key_answers_502(
         Path(settings.agents_config).read_text() + '\n[providers.openrouter]\nkind = "openai_chat"\n'
         'base_url = "https://openrouter.ai/api/v1"\napi_key_env = "OPENROUTER_API_KEY"\n'
     )
-    missing_key = settings.model_copy(update={"planner_provider": "openrouter", "agents_config": str(config)})
+    missing_key = settings.model_copy(
+        update={
+            "planner_provider": "openrouter",
+            "planner_model": "anthropic/claude-sonnet-5",  # an OpenRouter id: the native default is refused
+            "agents_config": str(config),
+        }
+    )
     with TestClient(create_app(missing_key, deliver_events=False), base_url="https://testserver") as c:
         assert c.get("/v0/agents").status_code == 200
         _sign_in(c)

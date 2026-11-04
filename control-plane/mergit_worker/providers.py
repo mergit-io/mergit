@@ -103,6 +103,25 @@ def load_providers(agents_config: Path) -> dict[str, ProviderSpec]:
     return providers
 
 
+def check_model_id(spec: ProviderSpec, model: str) -> None:
+    """Refuse a model id the provider cannot have, before anything is called with it. A priced id with a
+    key present passes every other start-up check, so a native id sent to OpenRouter (``claude-haiku-4-5``)
+    or an OpenRouter id sent to Anthropic (``anthropic/claude-haiku-4.5``) would otherwise surface only as a
+    failed call on every plan or job. OpenRouter ids are always ``vendor/model``; Anthropic's never have a
+    slash."""
+    host = (urlsplit(spec.base_url).hostname or "").lower() if spec.base_url else ""
+    if spec.kind == "anthropic" and "/" in model:
+        raise ConfigError(
+            f"model {model!r} looks like an OpenRouter id, but provider {spec.name!r} is Anthropic's own "
+            "API, which names models without a vendor prefix (claude-...)"
+        )
+    if host == "openrouter.ai" and "/" not in model:
+        raise ConfigError(
+            f"model {model!r} is not an OpenRouter id: provider {spec.name!r} is OpenRouter, whose ids are "
+            "vendor/model (anthropic/claude-haiku-4.5, ...)"
+        )
+
+
 def provider_key(spec: ProviderSpec, environ: Mapping[str, str]) -> str | None:
     """The credential this provider's client should send. `anthropic` with no `api_key_env` falls back to
     `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, which the SDK also reads itself."""
