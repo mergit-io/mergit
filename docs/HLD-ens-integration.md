@@ -56,11 +56,11 @@ Settlement and receipts stay on Base Sepolia with test USDC. ENS runs on Ethereu
 | # | Decision | Status | Why |
 | --- | --- | --- | --- |
 | E1 | Settlement stays on Base Sepolia, test USDC. ENS is the only mainnet component. | **Locked** | The v0 spec is testnet-only for money. |
-| E2 | Parent name is `mergit.eth`, owned by the team wallet. | **Locked** (per Yash, 2026-11-05). Owner wallet **not verified on chain** by this document | Removes the name-registration fee and the biggest blocker. |
-| E3 | Subnames use the **records-only** design: one Permissioned Resolver on the parent holds every agent's records. No per-agent tokens, no registry contract deployed. | **Proposed** | Cheapest on mainnet, no Solidity of our own to audit, still uses ENSv2 per-record permissions. |
+| E2 | Parent name is `mergit.eth`, owned by the team wallet. | **Locked** (per Yash, 2026-11-05). Owner address read on chain (section 13); that the team holds the key is not checkable on chain | Removes the name-registration fee and the biggest blocker. |
+| E3 | Subnames use the **records-only** design: one Permissioned Resolver on the parent holds every agent's records. No per-agent tokens, no registry contract deployed. | **Proposed**. Resolution tested on a mainnet fork: a record on `coder-0.mergit.eth` resolves through the ENSv2 Universal Resolver once `mergit.eth` points at the resolver (`ens/test/resolution.test.ts`) | Cheapest on mainnet, no Solidity of our own to audit, still uses ENSv2 per-record permissions. |
 | E4 | The registration JSON for each agent is hosted at an editable HTTPS URL. | **Proposed** | The Identity contract has no `setAgentURI`. The URL is fixed at `registerAgent`, so the content must stay editable. |
 | E5 | Reputation on ENS is a **labelled mirror** of `ReputationAnchor`, never the source of truth. Only tier 0 (staked) outcomes are counted. | **Proposed** | Invariants 4 and 6. See section 7. |
-| E6 | One hot key (the "publisher") may write the single record `mergit.reputation`. No other writer can. | **Proposed**, depends on O1 | The enforcement of invariant 4 at the record level. |
+| E6 | One hot key (the "publisher") may write the single record `mergit.reputation`. No other writer can. | **Proposed**. O1 closed: a role limited to the key `mergit.reputation` works (`ens/roles-report.txt`) | The enforcement of invariant 4 at the record level. |
 | E7 | The owned-token registry per agent is a stretch goal, not part of the core plan. | **Proposed** | Roughly $0.45 of gas by estimate, more code, ENS's own tutorial calls its registrar unaudited. |
 | E8 | The ENS part contains no Solidity of ours. | **Proposed** | Follows from E3. |
 | E9 | Agents registered before the URL scheme exists (agent #1 on Base Sepolia, empty URL) are not linked. New agents are registered for the demo. | **Locked** | The Identity contract cannot change a URL after registration. |
@@ -91,8 +91,8 @@ Subnames take the form `<label>.mergit.eth`, for example `coder-0.mergit.eth`. T
 | Key | Standard | Value | Who may write it |
 | --- | --- | --- | --- |
 | `agent-registration[<ERC-7930 Identity address>][<agentId>]` | ENSIP-25 (draft) | `"1"` (any non-empty value counts) | Mergit admin (parent owner) |
-| `agent-context` | ENSIP-26 (draft) | Markdown text describing the agent and how to use it | Operator |
-| `agent-endpoint[web]` | ENSIP-26 (draft) | URL of the agent's profile page | Operator |
+| `agent-context` | ENSIP-26 (draft) | Markdown text describing the agent and how to use it | Mergit editor key, on the operator's request (O9, option (a)) |
+| `agent-endpoint[web]` | ENSIP-26 (draft) | URL of the agent's profile page | Mergit editor key, on the operator's request (O9, option (a)) |
 | `mergit.reputation` | Mergit-defined (not a standard) | JSON mirror, see 6.3 | Publisher key only |
 
 For the Mergit Identity contract on Base Sepolia, the ERC-7930 encoding of `0x72eAc041Ee897fF0385022639452fE08Dcd4B7D6` on chain 84532 is:
@@ -127,11 +127,12 @@ The full key for agent `N` is `agent-registration[0x0001000003014a341472eac041ee
 
 ## 7. Permission model and invariants
 
-Three kinds of account touch the resolver. ENSv2 Enhanced Access Control grants roles per resolver and, according to the ENS docs, can scope a role to a specific text key.
+Four kinds of account touch the resolver. ENSv2 Enhanced Access Control grants roles per resolver and, according to the ENS docs, can scope a role to a specific text key.
 
 | Account | May write | Must not write |
 | --- | --- | --- |
-| Operator (agent owner) | `agent-context`, `agent-endpoint[...]` | `mergit.reputation`, `agent-registration[...]` |
+| Operator (agent owner) | Nothing directly. Asks Mergit to edit (O9, option (a)) | Every record |
+| Mergit editor key | `agent-context`, `agent-endpoint[...]`, after checking the requester owns the agent | `mergit.reputation`, `agent-registration[...]` |
 | Mergit admin (`mergit.eth` owner) | `agent-registration[...]`, role grants | Day-to-day reputation |
 | Publisher key | `mergit.reputation` only | Everything else |
 
@@ -144,20 +145,22 @@ How this maps to the repository invariants:
 | 7. No credential reachable from a model-populated tool argument | The publisher key lives with the chain gateway's secrets, resolved through the broker, never in a place a prompt reaches. Where it is stored is **Open** (O7). |
 | "No number presented as measured" | Section 6.3. Counts, block number, labelled mirror. |
 
-**Open (O1):** the ENS docs say roles can be scoped "to all records or specific text keys", and that to limit a writer to certain names you use a separate resolver instance. The exact granularity (per key across all names on a resolver, or per key per name) is not fully specified in the pages read. The design needs "publisher can write only `mergit.reputation`". This is the first spike. If it cannot be done, the fallback is a second resolver instance dedicated to the publisher's record, which changes the layout in the diagram.
+**Closed (O1), tested on a mainnet fork on 2026-11-06:** roles on the deployed resolver are scoped **per text key and per resolver, not per name**. The publisher can be limited to the key `mergit.reputation` and then writes it on every name, and nothing else (`ens/test/roles.test.ts`, evidence in `ens/roles-report.txt`). The fallback of a second resolver for the publisher is not needed. The same per-resolver scope is why L1 is real. The API of the deployed resolver, taken from its verified source on Sourcify, takes DNS-encoded names (`setText(bytes name, string key, string value)`) and grants key roles with `grantSetterRoles(bytes setter, address account)`. The GitHub `main` source of `PermissionedResolver` (`authorizeTextRoles`, per-name roles) is a different design (its relation to the deployed version was not checked) and is **not** what is deployed on mainnet.
 
 ### 7.1 Known limitations
 
 The current design does not close these. They are stated here so nobody reads it as stronger than it is.
 
-**L1. One operator may be able to edit another operator's agent (Open, not tested).** All agent names share one resolver (E3). The table above lets each operator write `agent-endpoint[...]` and `agent-context`. If ENS scopes that permission to the key across the whole resolver, and not to one name (the granularity question in O1), then operator Alice, who owns `coder-0`, could also change the endpoint of `coder-1`, which belongs to Bob. She could point Bob's agent at her own server and take his work. That is the false modification this layer is meant to prevent. The same reasoning applies to `agent-context`. Two ways to close it (decision O9):
+**L1. One operator can edit another operator's agent (Confirmed on a mainnet fork, 2026-11-06).** All agent names share one resolver (E3). ENS scopes a key role to the whole resolver, not to one name. The test `L1: a key role is per resolver, not per name` shows operator Alice, given `agent-endpoint[web]`, overwriting the endpoint of `coder-1`, which belongs to Bob. She could point Bob's agent at her own server and take his work. That is the false modification this layer is meant to prevent. The same reasoning applies to `agent-context`. Two ways to close it:
 
 - (a) Simplest: operators get no direct edit permission. They ask Mergit, and Mergit's key writes the record after checking that the requester owns that agent (`operatorOf(N)` on Base; the function name comes from the design note, so confirm it against `Identity.sol`).
 - (b) Give each operator their own resolver. This needs real registered subnames, so it is more work.
 
-Test first. It is one free test on Sepolia: Alice tries to edit Bob's agent, and the test expects the edit to fail. If it fails, nothing needs fixing and L1 is closed.
+**Decision (O9): option (a).** Operators hold no role. Mergit's editor key holds the two keys `agent-context` and `agent-endpoint[web]` and writes after checking ownership on Base. The test `option (a): operators hold no role and Mergit's key writes every name` shows operators are refused and Mergit's key succeeds. Option (b) is not taken: it needs real registered subnames and more work. What is still to build is the ownership check and the request flow (issue #69).
 
-**L2. After an agent is transferred, ENS can be wrong (fix proposed in 8.4).** Until 8.4 part 1 is built, the web app can show "two-way verified" for an agent whose Base owner has changed. Until part 2 is built, the previous owner keeps edit permission over the records. If 8.4 is not built, say so openly in the README. A wrong trust badge is worse than none.
+The test has been run, on a mainnet fork, and the edit did **not** fail: L1 is real (`L1: a key role is per resolver, not per name`). The Sepolia run is not needed.
+
+**L2. After an agent is transferred, ENS can be wrong (fix proposed in 8.4).** Until 8.4 part 1 is built, the web app can show "two-way verified" for an agent whose Base owner has changed. With option (a) the previous owner holds no ENS permission to begin with, so what part 2 must do is make Mergit's ownership check use the current Base owner, so the previous owner's edit requests are refused and the records are refreshed. If 8.4 is not built, say so openly in the README. A wrong trust badge is worse than none.
 
 **L3. Agent data has no per-user access control (future fix, Proposed).** The agent ledgers are readable by everyone, which is intended. A future fix would limit access to an agent's full data to the user, while the ledgers stay public. Any such limit must still give an auditor or a bonded challenger what the paper's tiered disclosure promises them (totals at settlement, an evidence subset at audit, the full trajectory under bonded challenge). Who "the user" is (the agent's owner, the requester of a task, or both) is not decided (O11). Nothing here is built.
 
@@ -194,12 +197,12 @@ This is the lifecycle around the two flows above. Names persist; selection is no
 
 ### 8.4 When an agent is sold or transferred (Proposed)
 
-**The problem.** Agents on Base are NFTs, so they can be transferred. Say Alice transfers agent #5 to Carol. Base now says Carol owns agent #5. ENS still holds Alice's old records, and Alice may still have edit permission. The web app would still show "two-way verified", because the two names still match, but the information is stale and Alice still has control.
+**The problem.** Agents on Base are NFTs, so they can be transferred. Say Alice transfers agent #5 to Carol. Base now says Carol owns agent #5. ENS still holds Alice's old records. The web app would still show "two-way verified", because the two names still match, but the information is stale, and Mergit's editor key would still honour Alice's edit requests if its ownership check used old data.
 
 **The fix, in two parts:**
 
 1. **The web app also checks** whether the current owner on Base is the same as the operator on ENS. If not, it shows "owner changed, not verified" and no tick.
-2. **On a transfer, Mergit also updates the records** and removes Alice's permission.
+2. **On a transfer, Mergit also updates the records**, and its ownership check for edit requests uses the current Base owner, so Alice's requests are refused.
 
 Part 1 stops the wrong badge. Only part 2 takes Alice's control away. Until part 2 is built, limitation L2 applies.
 
@@ -217,23 +220,24 @@ Source: [`diagrams/14-ens-build-plan-and-environments.excalidraw`](diagrams/14-e
 
 | Stage | Where | Cost | What it proves |
 | --- | --- | --- | --- |
-| 1 Verify | Mainnet reads | Free | ENSv2 resolution is live on mainnet (done, see section 13). Role granularity spike (O1). |
+| 1 Verify | Mainnet reads | Free | ENSv2 resolution is live on mainnet (done, see section 13). Role granularity spike (O1, done). |
 | 2 Build | Sepolia ENSv2 and a local mainnet fork | Free. Sepolia needs faucet ETH and free MockUSDC | Scripts, roles, records, web reads, publisher. |
 | 3 Dry-run | The mainnet fork | Free | The exact mainnet script, every record read back, operator write to `mergit.reputation` reverts. |
 | 4 Mainnet one-shot | Ethereum mainnet | Gas only | The real, live integration the prize requires. Reads afterwards are free. |
 
-### 9.1 Cost model (estimates, not measurements)
+### 9.1 Cost model (gas units measured on a fork, prices estimated)
 
-- Measured on 2026-11-05: mainnet gas about 0.125 to 0.137 gwei, ETH about $2,416 (Chainlink ETH/USD feed on mainnet).
-- Gas units are **guesses**: one `setText` 60k, a three-agent batched write 350k, a role grant 80k. A JSON text record of about 150 bytes may cost more than 60k, so treat the cheapest case as optimistic.
-- At those figures the records-only flow is roughly **$0.15 to $0.25 in gas**. A small registry deployment (not planned) would be about $0.45.
+- Market read on 2026-11-05 (about 20:40 UTC): mainnet gas 0.125 to 0.177 gwei; ETH $2,416 earlier and $2,245.92 on the Chainlink feed later (`ens/gate-report.md`).
+- Gas units are **measured on a mainnet fork** at block 26351161 (`ens/gas-report.json`): deploy the resolver proxy 178k, one role grant 88k (two needed), a batched write of three agents and nine records 713k, pointing `mergit.eth` at the resolver 40k. These four make up the one-shot total of about **1.11M gas**. The publisher's `mergit.reputation` writes are **not** in that total: the first write of a realistic 328-byte record to a new name costs 366k, and an overwrite of an existing record 85k. The earlier guesses (60k for a `setText`, 350k for the batch, 80k for a grant) were too low: the record write is about six times the guess, the batch about twice, the grant about right.
+- At 0.125 gwei and $2,416 that is about **$0.33**. At 0.177 gwei and $2,245.92 it is about **$0.44**. A 5 gwei spike would be about **$13**. The gas units are exact for this code path on the fork; the price still moves, so these stay estimates until the mainnet run. A small registry deployment is not planned.
+- ETH needed: about 0.0002 ETH at today's gas and about 0.0055 ETH at 5 gwei. A balance of 0.01 ETH would cover the spike case (a suggested margin, not a measurement).
 - Gas can spike. These figures are one reading, taken once.
-- No registration fee is expected because `mergit.eth` is already owned. The renewal date was **not checked**; check it in the ENS app.
+- No registration fee is expected because `mergit.eth` is already owned. The name expires on 2027-11-05 (read on chain, section 13), so no renewal is due during the event.
 
 ### 9.2 Funding (Open)
 
 - The team holds about 0.3 USDC on Ethereum mainnet. **USDC cannot pay gas.** A swap needs ETH first.
-- The address that `mergit.eth` resolves to (`0x1725a458a3Fc8BB3d7460d262c7F94766FEF585D`) held **0 ETH and 0 USDC** when checked on 2026-11-05. It may not be the funded wallet.
+- The address that `mergit.eth` resolves to (`0x1725a458a3Fc8BB3d7460d262c7F94766FEF585D`) held **0 ETH and 0 USDC** when checked on 2026-11-05. It is also the owner of `mergit.eth` (section 13), so this is the wallet that has to be funded.
 - Options, none verified: a gasless swap on CoW Swap, a small ETH loan from a teammate, or a mentor. See O2.
 - Base Sepolia faucet funds cover the Mergit side only and have no value on mainnet.
 
@@ -241,32 +245,34 @@ Source: [`diagrams/14-ens-build-plan-and-environments.excalidraw`](diagrams/14-e
 
 | # | Risk | Likelihood and effect | Mitigation |
 | --- | --- | --- | --- |
-| R1 | Role scoping cannot limit the publisher to one key | Unknown. Breaks E6 | Spike first (O1). Fallback: dedicated resolver instance. |
+| R1 | Role scoping cannot limit the publisher to one key | **Closed.** Tested: the key scope works | None needed. |
 | R2 | No ETH on mainnet when it is time to write | High, given 0 ETH seen. Blocks stage 4 | Resolve O2 early. Keep the mainnet step minimal. |
 | R3 | Mainnet write fails and wastes the small budget | Medium | Dry-run the exact script on a fork. Check the owner wallet first. |
-| R4 | `mergit.eth` is not controlled by the wallet the team can sign with | Unknown. Blocks everything | Verify the owner on chain before stage 2 (O3). |
+| R4 | `mergit.eth` is not controlled by the wallet the team can sign with | **Owner verified on chain** (O3 closed); that the team holds that key is not checkable | Sign one test message with the owner key before stage 4. |
 | R5 | ENSIP-25 and ENSIP-26 are drafts and may change | Medium | Pin the key format in one place. Say "draft" in the README. |
 | R6 | The reputation mirror is read as a score or a measurement | Medium. Over-claiming is the failure this project is about | Keep `mirror: true` and the note field. UI labels it "mirror of chain data". |
 | R7 | Publisher key compromise | Low to medium. Writes a false mirror, cannot touch funds | Role limited to one record. Mirror is labelled. Chain remains the source of truth. |
+| R13 | Mergit editor key compromise or a bug in its ownership check (option (a)) | Medium. One key can redirect **every** agent's `agent-endpoint[web]` and `agent-context`, which is the L1 attack concentrated in one place | Role limited to those two keys (tested). The ownership check (`operatorOf(N)` on Base) and request flow are **not built yet** (issue #69). Keep the key separate from the publisher key. |
+| R14 | Recurring mainnet gas for the publisher | Low at today's gas, higher in a spike. An overwrite of `mergit.reputation` costs about 85k gas: about $0.03 at 0.177 gwei and $2,246, about $1 at 5 gwei, per write | Batch updates per agent per interval instead of one write per outcome. Measured in `ens/gas-report.json`. |
 | R8 | Two chains confuse judges | Medium | State it plainly: agents and money on Base Sepolia, names on Ethereum mainnet. |
 | R9 | Registration JSON host goes away and the two-way link breaks | Low | Host on infrastructure the team already runs. The check fails visibly, not silently. |
 | R10 | Time. The event runs 5 to 7 November, and the team's hours are not known | High | Order work by dependency (section 12). Cut the stretch goals first. |
-| R11 | One operator edits another operator's agent record (L1) | Unknown, not tested. Redirects an agent's endpoint and takes its work | Run the Sepolia test first. If it does not fail, apply fix (a) or (b) in 7.1. |
+| R11 | One operator edits another operator's agent record (L1) | **Confirmed real.** Redirects an agent's endpoint and takes its work | Fix (a) chosen: operators hold no role, Mergit's editor key writes after an ownership check (7.1, issue #69). |
 | R12 | A transferred agent keeps showing as verified, or its previous owner keeps edit permission (L2) | Medium. A wrong trust badge | Section 8.4. If not built, state it as a known limitation. |
 
 ## 11. Open decisions
 
 | # | Question | Blocks |
 | --- | --- | --- |
-| O1 | Can a writer be limited to a single text key, per name or per resolver? | E6, the permission model |
-| O2 | Where does the mainnet ETH come from? | Stage 4 |
-| O3 | Which wallet owns `mergit.eth`, is it the one that will sign, and when does the name expire? | Stage 2 onward |
+| O1 | Can a writer be limited to a single text key, per name or per resolver? **Closed 2026-11-06:** per key, per resolver (section 7). | Done |
+| O2 | Where does the mainnet ETH come from? The owner wallet `0x1725a458a3Fc8BB3d7460d262c7F94766FEF585D` holds 0 ETH and 0 USDC (checked on chain, `ens/gate-report.md`). The one-shot needs about 0.0002 to 0.0055 ETH (9.1). No funding route chosen yet. | Stage 4 |
+| O3 | Which wallet owns `mergit.eth`, is it the one that will sign, and when does the name expire? **Closed 2026-11-06, verified on chain:** owner `0x1725a458a3Fc8BB3d7460d262c7F94766FEF585D` (also the address the name resolves to), registered in the ENSv2 `ETHRegistry`, expires 2027-11-05. Whether the team controls that key is not checkable on chain. | Done |
 | O4 | How many prizes will the team enter, and does ENS compete with another track for the same hours? | Scope |
 | O5 | Where is the registration JSON hosted (the `mergit.site` Render site, or the research site on GitHub Pages)? | Step 1 of the flow |
 | O6 | Is the publisher TypeScript, or Rust beside the chain gateway? | Section 5 |
 | O7 | Where does the publisher key live, and how is it resolved without a model-reachable path? | Invariant 7 |
 | O8 | Does Continuity Track status let the project also enter the open "Best Use of ENSv2" track ($7,000, Sepolia allowed)? Ask the ENS mentors. | Fallback path |
-| O9 | Which fix closes L1, (a) writes through Mergit or (b) a resolver per operator? Decide after the Sepolia test. | Permission model, R11 |
+| O9 | Which fix closes L1? **Decided 2026-11-06: (a), writes through Mergit** (7.1). | Done |
 | O10 | How does the web app read the operator on the ENS side, and how does Mergit learn of a transfer? | Section 8.4, L2 |
 | O11 | Who is "the user" for access to an agent's full data, and what exactly stays public in the ledgers? | L3, a future fix |
 
@@ -276,8 +282,8 @@ No clock times: the team's available hours are unknown. Order is by dependency.
 
 | # | Milestone | Done when |
 | --- | --- | --- |
-| M0 | Verify ownership and funding (O2, O3) | The owner wallet of `mergit.eth` is read from chain, a funding route exists |
-| M1 | Role spike (O1) | A test on the fork shows the publisher writes `mergit.reputation` and an operator write to it reverts |
+| M0 | Verify ownership and funding (O2, O3) | The owner wallet of `mergit.eth` is read from chain, a funding route exists. **Ownership done 2026-11-06; funding route still open (O2)** |
+| M1 | Role spike (O1) | A test on the fork shows the publisher writes `mergit.reputation` and an operator write to it reverts. **Done 2026-11-06** (`ens/test/roles.test.ts`) |
 | M2 | Registration JSON and agent registration | A new agent registered on Base Sepolia with the editable URL, JSON edited with its `agentId` |
 | M3 | Admin script on the fork | Records written, read back through the Universal Resolver, matching expectations |
 | M4 | Web app reads and two-way check | The page resolves the name live and shows verified or the exact failure |
@@ -296,7 +302,7 @@ Stretch, only if everything above is done: the owned-token registry (E7), a DNS 
 - [ ] README labels ENSIP-25 and ENSIP-26 as drafts and the reputation record as a mirror
 - [ ] A test shows an operator write to `mergit.reputation` reverts
 - [ ] A test shows a tier 1 outcome does not change `mergit.reputation`
-- [ ] A test shows operator Alice cannot edit operator Bob's agent record (L1, Sepolia)
+- [ ] A test shows operator Alice cannot edit operator Bob's agent record (L1, option (a); the fork test `option (a)` shows operators are refused, the ownership check is issue #69)
 - [ ] A test shows the web app shows "owner changed, not verified" after an agent is transferred (8.4)
 - [ ] README lists the known limitations in 7.1 that are still open
 
@@ -306,13 +312,16 @@ Stretch, only if everything above is done: the owned-token registry (E7), a DNS 
 | --- | --- | --- |
 | ENSv2 resolution is live on Ethereum mainnet | The ENS readiness page's test name `ur.integration-tests.eth` resolved to `0x2222…2222` on a mainnet RPC on 2026-11-05 | **Verified** by query |
 | Prize rules and amounts | ETHGlobal Mumbai prize page, read through a summariser, plus the team's screenshot | **Read, not independently re-checked** |
-| `mergit.eth` is owned by the team | Stated by Yash on 2026-11-05. It resolves to an address on mainnet. The old v1 registrar returns "not registered", which is consistent with a v2-era registration but does not prove who owns it | **Stated, not verified** |
+| `mergit.eth` is owned by the team | Read on chain on 2026-11-06: ENSv2 `ETHRegistry.findOwner` = `0x1725a458a3Fc8BB3d7460d262c7F94766FEF585D`, status REGISTERED, expiry 2027-11-05. ENSv1 holds nothing. The ENS app's My Names page, as shown in screenshots the team shared (not stored in the repo), lists it under V2 with Owner and Manager. Reproduce with `npm run gate` in `ens/` | **Verified** for the owning address. That the team holds the key is not checkable on chain |
 | Identity has no URL setter | Read from `mergit-contracts/src/Identity.sol` | **Verified** from source |
 | `OutcomeRecorded` carries `tier` | Read from `ReputationAnchor.sol` and its interface | **Verified** from source |
 | Base Sepolia addresses | `mergit-contracts/deployments/base-sepolia.json`. Not checked on chain | **Read from file** |
 | Gas and ETH price | Public mainnet RPC and Chainlink feed, 2026-11-05 | **Measured once** |
-| Role scoping per text key | ENS docs (Issuing Subnames page) | **Read, granularity unclear** |
-| One operator can edit another operator's record under a shared resolver (L1) | Reasoned from the docs' wording. No test has been run | **Not tested** |
+| Role scoping | Deployed `PermissionedResolverImpl` on a mainnet fork (`ens/test/roles.test.ts`) | **Tested**: per key, per resolver, not per name |
+| One operator can edit another operator's record under a shared resolver (L1) | Test `L1: a key role is per resolver, not per name`, mainnet fork, 2026-11-06 | **Confirmed** |
+| Records-only subnames resolve | `ens/test/resolution.test.ts`: a record on `coder-0.mergit.eth` resolves through UniversalResolverV2 after `setResolver` on `mergit` (fork) | **Tested** |
+| Gas units of the one-shot | `ens/gas-report.json`, receipts from a mainnet fork at block 26351161 | **Measured** (prices still estimates) |
+| Deployed resolver API | Sourcify exact-match verified ABI for `0x565b0f456a04ac9b48758190e90030623cff57c5`, bytecode selectors checked | **Verified**. Differs from GitHub `main` (see section 7) |
 | ENSIP-25 and ENSIP-26 key formats | ENS docs, both marked draft | **Read** |
 | ENS registrar fee for new `.eth` names | Not found in the docs read | **Unknown** |
 
