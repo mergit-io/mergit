@@ -8,6 +8,8 @@ import socket
 import threading
 from dataclasses import dataclass
 
+import psycopg
+
 from mergit_cp.pr_store import PgPrStore
 
 from .config import ConfigError, WorkerConfig, load_config
@@ -20,7 +22,14 @@ from .preflight import check_models
 from .progress import HttpProgressReporter, NullProgressReporter, ProgressReporter
 from .publish import ReceiptPublisher
 from .sandbox import Sandbox, SandboxConfig, reap_stale
-from .startup import WorkerIdLock, agents_without_key, sweep_workspaces
+from .startup import (
+    LOCK_CHECK_INTERVAL_S,
+    WATCHER_JOIN_S,
+    WorkerIdLock,
+    agents_without_key,
+    sweep_workspaces,
+    watch_lock,
+)
 from .tools import ToolLimits
 from .worker import Worker, WorkerDeps
 from .workspace import GitLimits
@@ -161,7 +170,12 @@ def main() -> int:
         log.warning(
             "no usable key for agent(s) %s: a job for them fails, and the requester loses an attempt", names
         )
-    lock = WorkerIdLock.acquire(cfg.database_url.get_secret_value(), worker_id)
+    try:
+        lock = WorkerIdLock.acquire(cfg.database_url.get_secret_value(), worker_id)
+    except psycopg.Error as exc:
+        # Exit non-zero without a traceback; Docker's restart policy is the retry loop.
+        log.error("cannot reach the database at start-up: %s", " ".join(str(exc).split()))
+        return 1
     if lock is None:
         log.error(
             "another worker process is already running as %r. Starting here would fail its running jobs and "
@@ -169,7 +183,12 @@ def main() -> int:
             worker_id,
         )
         return 2
-    built = build_worker(cfg, worker_id)
+    try:
+        built = build_worker(cfg, worker_id)
+    except psycopg.Error as exc:
+        log.error("cannot reach the database at start-up: %s", " ".join(str(exc).split()))
+        lock.close()
+        return 1
     log.info("model providers: %s", ", ".join(sorted(built.providers)) or "(no deployed agent needs one)")
     if built.stale:
         log.warning("no longer read, remove from the env file: %s", ", ".join(built.stale))
@@ -202,12 +221,41 @@ def main() -> int:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, request_stop)
+    lost = threading.Event()
+
+    def on_lost() -> None:
+        # Exit 2 comes only after the current job ends, so that job's result is published after another
+        # process already owns the id (and has failed the job on its side). Accepted: stopping mid-job would
+        # leave its sandbox and workspace for the next start to sweep, and stop_grace_period (40 minutes)
+        # lets it finish.
+        log.error(
+            "another process took the worker id %r while the database was unreachable, and has failed this "
+            "worker's running jobs. Stopping after the current job.",
+            worker_id,
+        )
+        lost.set()
+        stop.set()
+
+    watcher = threading.Thread(
+        target=watch_lock,
+        args=(lock, stop, LOCK_CHECK_INTERVAL_S, on_lost),
+        name="worker-id-lock",
+        daemon=True,
+    )
+    watcher.start()
     try:
         built.worker.run_forever(stop)
     finally:
+        stop.set()
+        # Join the watcher before closing the lock: inside still_held() it could otherwise reconnect and
+        # store a new connection after close() dropped the old one, leaking it. Bounded: a still_held()
+        # blocked on the network fails within the lock connection's keepalive window, and if it somehow
+        # outlives the join the process exits right after, which closes every socket and so releases the
+        # lock anyway.
+        watcher.join(WATCHER_JOIN_S)
         built.close()
         lock.close()
-    return 0
+    return 2 if lost.is_set() else 0
 
 
 if __name__ == "__main__":
