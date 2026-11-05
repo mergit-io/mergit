@@ -55,6 +55,11 @@ in
   security.sudo.wheelNeedsPassword = false;
 
   virtualisation.docker.enable = true;
+  # Without this, every dockerd restart stops all containers AND cancels their restart policy, so `restart:
+  # unless-stopped` does not bring them back. On 2026-11-05 a build crashed dockerd (buildkit race); systemd restarted
+  # it in 2 s, the containers had survived, and the new dockerd stopped them anyway ("stopping restart-manager") and
+  # the stack stayed down until someone ran `up -d`. NixOS defaults this to false for stateVersion >= 24.11.
+  virtualisation.docker.daemon.settings."live-restore" = true;
 
   environment.systemPackages = with pkgs; [
     git curl python3 vim
