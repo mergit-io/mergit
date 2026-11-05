@@ -1,6 +1,6 @@
 """Typed configuration. Every value comes from the environment; nothing here is a deployment fact."""
 
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -122,6 +122,25 @@ class Settings(BaseSettings):
     """GitHub and Google sign-in are offered only when both halves of a pair are set."""
     oauth_state_ttl_s: int = Field(default=600, gt=0)
 
+    world_app_id: str | None = None
+    world_rp_id: str | None = None
+    world_signing_key: SecretStr | None = None
+    """IDKit (plan sec 1.2/1.3): the signing key the RP context is signed with server-side. Offered only
+    when `world_app_id`, `world_rp_id` and this are all set (`world_idkit_enabled`)."""
+    world_environment: Literal["production", "staging", "sandbox"] = "production"
+    world_verify_base: str = "https://developer.world.org"
+    world_trial_action: str = "mergit-free-trial"
+    world_trial_preset: Literal["selfie_check", "proof_of_human"] = "selfie_check"
+    world_max_sybil_score: int | None = Field(default=None, ge=0)
+
+    world_idp_issuer: str = "https://auth.world.org"
+    world_idp_client_id: str | None = None
+    world_idp_client_secret: SecretStr | None = None
+    """Agent Pass OIDC (plan sec 1.2/1.3). Offered only when both halves of the pair are set
+    (`world_idp_enabled`)."""
+    world_approval_ttl_s: int = Field(default=300, gt=0)
+    world_max_auth_age_s: int = Field(default=120, gt=0)
+
     smtp_host: str | None = None
     smtp_port: int = 587
     """587 means STARTTLS; 465 means TLS from the first byte."""
@@ -175,6 +194,18 @@ class Settings(BaseSettings):
     @property
     def google_enabled(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def world_idkit_enabled(self) -> bool:
+        """IDKit (sec 1.2/1.3): a signed RP context, and so the free-trial sybil check, is only offered
+        once the app id, RP id and signing key are all set."""
+        return bool(self.world_app_id and self.world_rp_id and self.world_signing_key)
+
+    @property
+    def world_idp_enabled(self) -> bool:
+        """Agent Pass OIDC (sec 1.2/1.3): the human-approval checkpoints are only offered once both halves
+        of the client credential are set."""
+        return bool(self.world_idp_client_id and self.world_idp_client_secret)
 
     @property
     def email_enabled(self) -> bool:

@@ -21,6 +21,7 @@ from . import (
     routes_reputation,
     routes_routing,
     routes_runs,
+    routes_world,
     wallet_interest,
 )
 from .config import Settings
@@ -114,6 +115,7 @@ def create_app(
     app.include_router(routes_account.router)
     app.include_router(redeem.router)
     app.include_router(oauth.router)
+    app.include_router(routes_world.router)
     app.include_router(otp.router)
     app.include_router(wallet_interest.router)
     app.include_router(routes_plans.router)
