@@ -67,10 +67,13 @@ export function FundingChoice() {
     clearReopenRequest(); // used: a later visit starts with the list closed
   }, []);
   const [trialError, setTrialError] = useState<string | null>(null);
-  // Asked once per mount and shared across re-renders, the same cached-promise pattern `fetchProviders` uses
-  // for sign-in methods: a reload or a second open of this dialog must not ask `/v0/world/config` again.
+  // Asked once the dialog is actually open (never on pages that only mount it closed -- the demo must call
+  // no backend at all), then shared across re-renders through the same cached-promise pattern
+  // `fetchProviders` uses for sign-in methods: a second open of this dialog does not ask `/v0/world/config`
+  // again.
   const [idkit, setIdkit] = useState<IdkitConfig | null>(null);
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     void fetchWorldConfig().then((config) => {
       if (!cancelled) setIdkit(config?.idkit ?? null);
@@ -78,7 +81,7 @@ export function FundingChoice() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [open]);
   const busy = starting || wallet.busy;
   const error = trialError ?? wallet.error;
   if (!open) return null;
