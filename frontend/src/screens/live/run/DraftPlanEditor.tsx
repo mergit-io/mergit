@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { isTrialSession } from "../../../auth/account";
@@ -11,7 +11,7 @@ import { useCredits } from "../../../chain/useCredits";
 import { Icon } from "../../../components/Icon";
 import { Segmented } from "../../../components/Segmented";
 import { HumanApprovalDialog } from "../../../world/HumanApprovalDialog";
-import { withHumanApproval, type ApprovalOutcome, type ApprovalRequired } from "../../../world/humanApproval";
+import { useHumanApproval } from "../../../world/useHumanApproval";
 import {
   editProblems,
   hasEdits,
@@ -57,20 +57,9 @@ export function DraftPlanEditor({
   const [chosen, setFunding] = useState<FundingOption>("Wallet");
   const funding: FundingOption = trial ? "Free credits" : chosen;
   const { busy, problems, setProblems, submit } = useSubmit();
-  // A fresh World ID check (plan sec 1.7), asked for only when `approvePlan` 428s: `confirmApproval` shows
-  // the dialog and resolves when its own button is clicked.
-  const [approvalReq, setApprovalReq] = useState<ApprovalRequired | null>(null);
-  const approvalResolve = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
-  const confirmApproval = (req: ApprovalRequired) =>
-    new Promise<ApprovalOutcome>((resolve) => {
-      approvalResolve.current = resolve;
-      setApprovalReq(req);
-    });
-  const settleApproval = (outcome: ApprovalOutcome) => {
-    setApprovalReq(null);
-    approvalResolve.current?.(outcome);
-    approvalResolve.current = null;
-  };
+  // A fresh World ID check (plan sec 1.7), asked for only when `approvePlan` 428s: `world.prompt` is the
+  // dialog to show, first to confirm and then while waiting on the World ID window.
+  const world = useHumanApproval();
   const edited = hasEdits(plan, forms);
   const total = totalBudget(forms);
   // The API refuses an over-limit credits plan too; saying so here keeps the button from inviting a refusal.
@@ -100,10 +89,7 @@ export function DraftPlanEditor({
     }
     void submit(async () => {
       if (edited) await editPlan(plan.plan_uuid, toEdits(forms));
-      await withHumanApproval(
-        (approvalId) => approvePlan(plan.plan_uuid, toApproval(forms, FUNDING[funding]), approvalId),
-        confirmApproval,
-      );
+      await world.guard((approvalId) => approvePlan(plan.plan_uuid, toApproval(forms, FUNDING[funding]), approvalId));
       onChanged();
     });
   };
@@ -176,15 +162,12 @@ export function DraftPlanEditor({
           </div>
         </aside>
       </section>
-      {approvalReq && (
+      {world.prompt && (
         <HumanApprovalDialog
-          req={approvalReq}
-          onApprove={(popup) => {
-            settleApproval({ approved: true, popup });
-          }}
-          onCancel={() => {
-            settleApproval({ approved: false });
-          }}
+          req={world.prompt.req}
+          waiting={world.prompt.waiting}
+          onApprove={world.approve}
+          onCancel={world.cancel}
         />
       )}
     </>

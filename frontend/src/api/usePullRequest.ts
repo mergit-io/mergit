@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, errorMessage, getPlanDiff, getPullRequest, openPullRequest } from "./client";
 import type { PlanDiff, PullRequest } from "./pullRequest";
-import { withHumanApproval, type ApprovalOutcome, type ApprovalRequired } from "../world/humanApproval";
+import { useHumanApproval } from "../world/useHumanApproval";
 
 const POLL_MS = 3000;
 
@@ -16,24 +16,9 @@ export function usePullRequest(planUuid: string, ready: boolean) {
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
   // A fresh World ID check (plan sec 1.7), asked for only when `openPullRequest` 428s: the caller renders
-  // `HumanApprovalDialog` while `approvalReq` is set, and `confirmApproval` resolves when it is answered.
-  const [approvalReq, setApprovalReq] = useState<ApprovalRequired | null>(null);
-  const approvalResolve = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
-  // Memoized (unlike `DraftPlanEditor.tsx`'s equivalent, which has nothing downstream that cares): `open`
-  // below is itself a `useCallback` and would otherwise be recreated every render for no reason.
-  const confirmApproval = useCallback(
-    (req: ApprovalRequired) =>
-      new Promise<ApprovalOutcome>((resolve) => {
-        approvalResolve.current = resolve;
-        setApprovalReq(req);
-      }),
-    [],
-  );
-  const settleApproval = useCallback((outcome: ApprovalOutcome) => {
-    setApprovalReq(null);
-    approvalResolve.current?.(outcome);
-    approvalResolve.current = null;
-  }, []);
+  // `HumanApprovalDialog` from `approval.prompt`, first to confirm and then while waiting on World.
+  const approval = useHumanApproval();
+  const { guard } = approval;
 
   useEffect(() => {
     alive.current = true;
@@ -76,7 +61,7 @@ export function usePullRequest(planUuid: string, ready: boolean) {
   const open = useCallback(() => {
     setError(null);
     setBusy(true);
-    withHumanApproval((approvalId) => openPullRequest(planUuid, approvalId), confirmApproval)
+    guard((approvalId) => openPullRequest(planUuid, approvalId))
       .then((p) => {
         if (alive.current) setPr(p);
       })
@@ -86,20 +71,7 @@ export function usePullRequest(planUuid: string, ready: boolean) {
       .finally(() => {
         if (alive.current) setBusy(false);
       });
-  }, [planUuid, confirmApproval]);
+  }, [planUuid, guard]);
 
-  return {
-    diff,
-    pr,
-    error,
-    busy,
-    open,
-    approvalReq,
-    approveApproval: (popup: Window | null) => {
-      settleApproval({ approved: true, popup });
-    },
-    cancelApproval: () => {
-      settleApproval({ approved: false });
-    },
-  };
+  return { diff, pr, error, busy, open, approval };
 }

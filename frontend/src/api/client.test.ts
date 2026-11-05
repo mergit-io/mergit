@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, createPlan, discardPlan, listPlans, onSessionEnded } from "./client";
+import { ApiError, approvePlan, createPlan, discardPlan, listPlans, onSessionEnded, openPullRequest } from "./client";
 
 const answer = (status: number, body: unknown) =>
   Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
@@ -116,5 +116,43 @@ describe("drafting and discarding a plan", () => {
   it("surfaces a refusal to discard", async () => {
     vi.stubGlobal("fetch", () => answer(409, { detail: "the plan is approved; only a draft can change" }));
     await expect(discardPlan("p")).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe("a refused World ID approval (403 human_approval_invalid)", () => {
+  const approve = { agents: { "0": ["1"] }, funding: "wallet" as const };
+  const refuse = (reason: string) => () => answer(403, { detail: { code: "human_approval_invalid", reason } });
+
+  it("says what was wrong with the approval, not that only the requester may do this", async () => {
+    vi.stubGlobal("fetch", refuse("action_mismatch"));
+    const error = (await approvePlan("p", approve, "a1").catch((e: unknown) => e)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(403);
+    expect(error.message).not.toContain("Only the requester");
+    expect(error.message).toContain("changed after you approved it");
+    // DraftPlanEditor shows `problems`, so the same words must be there too.
+    expect(error.problems).toEqual([error.message]);
+  });
+
+  it("names an expired approval on the pull-request route too", async () => {
+    vi.stubGlobal("fetch", refuse("expired"));
+    await expect(openPullRequest("p", "a1")).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("expired") as string,
+    });
+  });
+
+  it("still shows a reason it has no words for, rather than dropping it", async () => {
+    vi.stubGlobal("fetch", refuse("something_new"));
+    await expect(approvePlan("p", approve, "a1")).rejects.toMatchObject({
+      message: expect.stringContaining("something_new") as string,
+    });
+  });
+
+  it("leaves every other 403 as it was", async () => {
+    vi.stubGlobal("fetch", () => answer(403, { detail: "only the requester can approve this plan" }));
+    await expect(approvePlan("p", approve)).rejects.toMatchObject({
+      message: "Only the requester who created this plan can do that.",
+    });
   });
 });

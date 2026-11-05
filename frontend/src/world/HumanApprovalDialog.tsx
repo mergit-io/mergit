@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { formatUsdc } from "../chain/funding";
 import { Icon } from "../components/Icon";
 import { resolveApiUrl } from "./api";
@@ -7,6 +8,9 @@ import type { ApprovalRequired } from "./humanApproval";
 /** The popup's window name (so a second click reuses it instead of opening another) and size. */
 const POPUP_TARGET = "mergit-world-approval";
 const POPUP_FEATURES = "width=480,height=760";
+
+/** A 64-character diff hash or a long repo URL has no spaces to break at; without this it runs off the dialog. */
+const WRAP = { overflowWrap: "anywhere" } as const;
 
 type TaskSummary = { index?: unknown; title?: unknown; agents?: unknown; budget_usdc_units?: unknown };
 
@@ -35,13 +39,19 @@ function usdcLine(units: unknown): string | null {
  * "Continue to World ID" opens the popup itself, synchronously inside its own click handler, and hands the
  * result (including a blocked `null`) to `onApprove`: a popup blocker only reliably honors `window.open`
  * called directly inside the gesture that triggered it, not a later `await`-ed continuation.
+ *
+ * After that the dialog stays up, `waiting`, until World answers: "Waiting for World ID…" and a Cancel button
+ * (`onCancel` again), so a person who closed the World ID window, or changed their mind, is never left
+ * waiting on a page that cannot tell (a closed popup is not reliably detectable, see `humanApproval.ts`).
  */
 export function HumanApprovalDialog({
   req,
+  waiting = false,
   onApprove,
   onCancel,
 }: {
   req: ApprovalRequired;
+  waiting?: boolean;
   onApprove: (popup: Window | null) => void;
   onCancel: () => void;
 }) {
@@ -65,7 +75,16 @@ export function HumanApprovalDialog({
     };
   }, [onCancel]);
 
-  return (
+  // "Continue" is gone once waiting, and focus with it; keep it in the dialog, where Cancel is.
+  useEffect(() => {
+    if (waiting) dialogRef.current?.focus();
+  }, [waiting]);
+
+  // Rendered into <body>, not where the caller sits: the page content around it carries an entrance
+  // animation on `transform`, which makes it the containing block for anything `position: fixed` inside it.
+  // In place, the backdrop then centres the dialog on the whole page instead of the screen, and on a long,
+  // scrolled page the dialog -- and its Cancel -- can end up out of view.
+  return createPortal(
     <div className="connect-backdrop">
       <div
         ref={dialogRef}
@@ -79,12 +98,19 @@ export function HumanApprovalDialog({
         <div className="row g12">
           <Icon name="check" size={20} />
           <h2 id="world-approval-title" className="connect-title">
-            Confirm with World ID
+            {waiting ? "Waiting for World ID…" : "Confirm with World ID"}
           </h2>
         </div>
-        <p id="world-approval-desc" className="small c2 connect-desc">
-          World&rsquo;s own screen will not show this — check it here before you continue.
-        </p>
+        {waiting ? (
+          <p id="world-approval-desc" className="small c2 connect-desc" role="status">
+            Finish the check in the World ID window. This page carries on by itself once World answers. Closed that
+            window, or changed your mind? Cancel — nothing is done unless World approves.
+          </p>
+        ) : (
+          <p id="world-approval-desc" className="small c2 connect-desc">
+            World&rsquo;s own screen will not show this — check it here before you continue.
+          </p>
+        )}
         <div className="col g4 small">
           {goal && (
             <div>
@@ -95,7 +121,9 @@ export function HumanApprovalDialog({
           {repoUrl && (
             <div>
               <span className="c3">Repo </span>
-              <span className="mono">{repoUrl}</span>
+              <span className="mono" style={WRAP}>
+                {repoUrl}
+              </span>
             </div>
           )}
           {funding && (
@@ -113,7 +141,9 @@ export function HumanApprovalDialog({
           {diffHash && (
             <div>
               <span className="c3">Diff </span>
-              <span className="mono">{diffHash}</span>
+              <span className="mono" style={WRAP}>
+                {diffHash}
+              </span>
             </div>
           )}
           {tasks.length > 0 && (
@@ -132,20 +162,23 @@ export function HumanApprovalDialog({
           )}
         </div>
         <div className="row g8">
-          <button
-            type="button"
-            className="btn primary compact"
-            onClick={() => {
-              onApprove(window.open(resolveApiUrl(req.start_url), POPUP_TARGET, POPUP_FEATURES));
-            }}
-          >
-            Continue to World ID
-          </button>
+          {!waiting && (
+            <button
+              type="button"
+              className="btn primary compact"
+              onClick={() => {
+                onApprove(window.open(resolveApiUrl(req.start_url), POPUP_TARGET, POPUP_FEATURES));
+              }}
+            >
+              Continue to World ID
+            </button>
+          )}
           <button type="button" className="btn secondary compact" onClick={onCancel}>
             Cancel
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

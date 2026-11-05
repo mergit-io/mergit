@@ -1,0 +1,66 @@
+/**
+ * What a World ID approval's `reason` means, in words the person can act on (plan sec 1.7/1.8). The API
+ * gives a short stable code -- on the polled approval (`GET /v0/world/approvals/{id}`) when the check was
+ * denied or failed, and on a `403 human_approval_invalid` when a finished approval could not be used -- and
+ * a person should see which one it was, not one generic "approval was not given" for all of them:
+ * "that is not the World ID linked to your account" and "World is down, try again" need different actions.
+ *
+ * No imports on purpose: `api/client.ts` uses this, and `world/humanApproval.ts` imports `api/client.ts`.
+ */
+
+const NOTHING_DONE = "Nothing was done.";
+const TRY_AGAIN = "Nothing was done — try again.";
+const TRY_LATER = "Nothing was done — try again in a moment.";
+
+/** `[what happened, what to do]` per reason code. Codes not listed here still reach the person, verbatim. */
+const REASONS: Record<string, readonly [string, string]> = {
+  // Denied at the callback (`world/approvals.py` `record`): the token was genuine, the check was not passed.
+  access_denied: ["You cancelled at World ID.", NOTHING_DONE],
+  different_human: ["That World ID is not the one linked to your Mergit account.", NOTHING_DONE],
+  linked_to_another_account: ["That World ID is already linked to a different Mergit account.", NOTHING_DONE],
+  stale_auth_time: [
+    "World ID did not sign you in fresh for this approval. Sign in again at World, not from a saved session.",
+    TRY_AGAIN,
+  ],
+  missing_pop: ["World ID did not confirm you were present for this check.", TRY_AGAIN],
+  acr_not_allowed: ["World ID did not report a verification Mergit accepts (Orb or Selfie Check).", NOTHING_DONE],
+  nonce_mismatch: ["World ID answered for a different sign-in than this one.", TRY_AGAIN],
+  replayed_jti: ["That World ID sign-in was already used for another approval.", TRY_AGAIN],
+  // Failed at the callback: World itself could not be reached or did not finish (fail closed, plan sec 1.8).
+  world_unreachable: ["World ID is unreachable right now.", TRY_LATER],
+  jwks_unreachable: ["World ID is unreachable right now.", TRY_LATER],
+  code_exchange_failed: ["World ID did not finish the sign-in.", TRY_AGAIN],
+  no_code: ["World ID did not finish the sign-in.", TRY_AGAIN],
+  // A finished approval that the protected action refused (`403 human_approval_invalid`).
+  expired: ["The World ID approval expired before it was used.", TRY_AGAIN],
+  used: ["That World ID approval was already used.", TRY_AGAIN],
+  action_mismatch: [
+    "What you approved with World ID changed after you approved it. Approve what is on screen now.",
+    TRY_AGAIN,
+  ],
+  not_yours: ["That World ID approval belongs to a different request.", TRY_AGAIN],
+  denied: ["World ID approval was not given.", NOTHING_DONE],
+  failed: ["The World ID check did not finish.", TRY_AGAIN],
+  // Only on this page: the person pressed Cancel while the World ID window was still open.
+  cancelled: ["You cancelled the World ID check.", NOTHING_DONE],
+};
+
+/** The message for a World ID check that did not end in `approved`. `status` is the approval's own
+ * (`denied`, `failed`, ...) and decides the wording when `reason` is missing or not one this page knows. */
+export function worldApprovalMessage(status: string, reason: string | null | undefined): string {
+  const known = reason ? REASONS[reason] : undefined;
+  if (known) return `${known[0]} ${known[1]}`;
+  const code = reason ? ` (${reason})` : "";
+  if (status === "failed") return `World ID could not finish the check${code}. ${TRY_AGAIN}`;
+  return `World ID approval was not given${code}. ${NOTHING_DONE}`;
+}
+
+/** The message for an API error body `{code: "human_approval_invalid", reason}`, or `null` for any other
+ * body. Without this a 403 here reads as the generic 403 ("Only the requester who created this plan can do
+ * that."), which is false: the requester is the one asking, it is the World ID approval that was refused. */
+export function invalidApprovalMessage(detail: unknown): string | null {
+  if (!detail || typeof detail !== "object") return null;
+  const { code, reason } = detail as { code?: unknown; reason?: unknown };
+  if (code !== "human_approval_invalid") return null;
+  return worldApprovalMessage("denied", typeof reason === "string" ? reason : null);
+}

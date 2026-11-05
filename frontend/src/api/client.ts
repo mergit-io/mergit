@@ -1,5 +1,6 @@
 import { apiBase } from "../chain/wallet";
 import { LIVE } from "../config/live";
+import { invalidApprovalMessage } from "../world/reasons";
 import { parseDiff, parsePullRequest, type PlanDiff, type PullRequest } from "./pullRequest";
 import type {
   AgentInfo,
@@ -65,7 +66,13 @@ function problemsOf(detail: unknown): string[] {
 async function toError(response: Response): Promise<ApiError> {
   const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
   const problems = problemsOf(body?.detail);
-  const message = STATUS_MESSAGE[response.status] ?? problems[0] ?? `Mergit answered ${String(response.status)}.`;
+  // A refused World ID approval is a 403 too, but not the requester-only one STATUS_MESSAGE[403] describes:
+  // it says which approval problem it was (expired, used, changed since approving, ...) in its own `reason`.
+  const message =
+    invalidApprovalMessage(body?.detail) ??
+    STATUS_MESSAGE[response.status] ??
+    problems[0] ??
+    `Mergit answered ${String(response.status)}.`;
   return new ApiError(response.status, message, problems, body?.detail);
 }
 

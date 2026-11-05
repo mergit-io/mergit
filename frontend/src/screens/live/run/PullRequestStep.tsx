@@ -9,10 +9,7 @@ import { HumanApprovalDialog } from "../../../world/HumanApprovalDialog";
  * are labelled unattested there.
  */
 export function PullRequestStep({ planUuid }: { planUuid: string }) {
-  const { diff, pr, error, busy, open, approvalReq, approveApproval, cancelApproval } = usePullRequest(
-    planUuid,
-    true,
-  );
+  const { diff, pr, error, busy, open, approval } = usePullRequest(planUuid, true);
   if (!diff && !pr && !error) return null;
   const waiting = pr?.status === "queued" || pr?.status === "running";
 
@@ -67,7 +64,14 @@ export function PullRequestStep({ planUuid }: { planUuid: string }) {
           )
         )}
       </section>
-      {approvalReq && <HumanApprovalDialog req={approvalReq} onApprove={approveApproval} onCancel={cancelApproval} />}
+      {approval.prompt && (
+        <HumanApprovalDialog
+          req={approval.prompt.req}
+          waiting={approval.prompt.waiting}
+          onApprove={approval.approve}
+          onCancel={approval.cancel}
+        />
+      )}
     </>
   );
 }
