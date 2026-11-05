@@ -54,5 +54,7 @@ wait_healthy() {  # name url [tries]
 }
 
 compose ps
-for h in gateway store; do printf '%s: ' "$h"; curl -fsS "https://$h.mergit.site/healthz"; echo; done
+# A single curl right after `up -d` caught gateway and store before they were ready, failing a deploy that
+# then came up fine seconds later (api already retried; this just makes the other two services do the same).
+for h in gateway store; do wait_healthy "$h" "https://$h.mergit.site"; done
 wait_healthy api https://api.mergit.site
