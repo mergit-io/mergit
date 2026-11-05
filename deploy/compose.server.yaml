@@ -20,6 +20,10 @@ services:
       - /srv/mergit/sites:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
+    environment:
+      # The agent worker's VM (deploy/worker-vm/README.md): the only address allowed to call the API's internal
+      # routes. The default is a documentation address nothing can use, i.e. nobody.
+      WORKER_VM_IP: ${WORKER_VM_IP:-192.0.2.1}
     depends_on: [store, gateway]
 
 volumes: { caddy_data: {}, caddy_config: {} }

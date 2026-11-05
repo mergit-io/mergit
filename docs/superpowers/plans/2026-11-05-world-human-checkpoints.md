@@ -146,7 +146,7 @@ Any non-consumed row past `expires_at` is treated as expired (no background job;
 - Approval TTL `WORLD_APPROVAL_TTL_S = 300`; freshness `WORLD_MAX_AUTH_AGE_S = 120`; trial action `WORLD_TRIAL_ACTION = "mergit-free-trial"`.
 - IdP issuer `https://auth.world.org` (sandbox `https://sandbox.auth.world.org`); endpoints `/api/v1/authorize`, `/api/v1/token`, `/.well-known/jwks.json`; `scope=openid`; PKCE `S256`; `response_type=code`.
 - Register the IdP client with **`client_secret_post`** (Mergit's `_exchange` sends the secret in the body; World's method cannot be changed after registration).
-- Callback URL registered exactly: `https://mergit.site/v0/world/callback` (built from `Settings.public_origin`).
+- Callback URL registered exactly: `https://app.mergit.site/v0/world/callback` (built from `Settings.public_origin`, which is `https://{APP_DOMAIN}` and production's `APP_DOMAIN` is `app.mergit.site`; `mergit.site` is an `EXTRA_DOMAINS` host, so registering it would make World refuse the real `redirect_uri`).
 - IDKit verify: `POST {WORLD_VERIFY_BASE}/api/v4/verify/{WORLD_RP_ID}` with the IDKit result forwarded unchanged; require `success == true` and `environment == WORLD_ENVIRONMENT`.
 - Python: ruff + pyright strict clean; Postgres tests marked `@pytest.mark.postgres`; World HTTP mocked with respx; ID tokens signed in tests with a locally generated RSA key.
 - Git: branch `feat/world-human-checkpoints` from `origin/main` in a new worktree; GPG-signed commits; **no Co-Authored-By lines**; explicit file paths in `git add` (never `-A`); ask before any push or PR. Main requires PRs.
@@ -211,7 +211,7 @@ WORLD_FEEDBACK.md, CHANGELOG-mumbai.md, README.md                      (new/mod)
 - [ ] **Step 1:** `git -C /data/Projects/mergit-io/mergit-main fetch origin && git -C /data/Projects/mergit-io/mergit-main worktree add -b feat/world-human-checkpoints /data/Projects/mergit-io/mergit-world origin/main`. Record the start time (debrief "time to first success").
 - [ ] **Step 2:** At the World booth, get answers to: (a) how to complete a mocked proof for IDKit (`staging` + simulator vs `sandbox`) and for Agent Pass; (b) whether a personal Google account can register at `auth.world.org/portal`; (c) whether IDKit 4.x nullifiers are stable per human per action (needed for the trial gate); (d) whether one project can win both Agent Pass and IDKit; (e) whether `sybil_score` is returned by `/api/v4/verify`. Write the answers down.
 - [ ] **Step 3:** Register the IDKit app at `developer.world.org`: create action `mergit-free-trial` with max verifications **1**; save `app_id`, `rp_id`, `signing_key` (shown once) into the password manager.
-- [ ] **Step 4:** Register the Agent Pass client at `auth.world.org/portal`: redirect URI `https://mergit.site/v0/world/callback`, client auth `client_secret_post`; save `client_id` and the `worldidp_client_secret_…` secret.
+- [ ] **Step 4:** Register the Agent Pass client at `auth.world.org/portal`: redirect URI `https://app.mergit.site/v0/world/callback` (the `public_origin`, not `mergit.site`), client auth `client_secret_post`; save `client_id` and the `worldidp_client_secret_…` secret.
 - [ ] **Step 5:** Smoke-test by hand: open `https://auth.world.org/api/v1/authorize?client_id=…&redirect_uri=…&response_type=code&scope=openid&state=x&nonce=y&code_challenge=…&code_challenge_method=S256&max_age=0` and confirm World shows its approval screen. Record the time of first success.
 
 ### Task 1: Settings, schema and the shared skeleton (PR 1, foundation)
