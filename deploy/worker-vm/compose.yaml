@@ -1,0 +1,45 @@
+# The agent worker on its own VM (plan task O10). Runbook: deploy/worker-vm/README.md.
+#   cd deploy/worker-vm && ./preflight.sh && docker compose up -d --build
+# The build context is the repository root (mergit_receipt is a path dependency on ../runtime/py), so run this from
+# a full checkout of this repository, not a copy of this folder.
+#
+# Why its own machine: the worker starts sandbox containers through the host's Docker socket, and the sandboxes run
+# code a model wrote. Whoever controls this process controls this host. Here that is a VM with nothing else on it:
+# no database, no gateway key, no treasury key. What it holds is its agent keys, model keys and one restricted
+# database role (db-role.sql), all in worker.env, which is copied by hand and never committed.
+
+services:
+  worker:
+    build: { context: ../.., dockerfile: control-plane/worker.Dockerfile }
+    image: mergit-worker:local
+    restart: unless-stopped
+    init: true
+    env_file: worker.env
+    environment:
+      REQUIRE_ALL_AGENT_KEYS: "true"
+      GATEWAY_URL: https://gateway.mergit.site
+      STORE_URL: https://store.mergit.site
+      CONTROL_PLANE_URL: https://api.mergit.site
+      DEPLOYMENT_FILE: /deployments/base-sepolia.json
+      AGENTS_FILE: /agents.json
+      SANDBOX_IMAGE: mergit-sandbox:dev
+      SANDBOX_WORKSPACE_ROOT: /var/lib/mergit/workspaces
+    # A job runs for up to job_deadline_s (25 minutes) plus checking and publishing. On SIGTERM the worker finishes
+    # the job it is on and then exits, so give it longer than any job. Docker's default of 10 seconds would SIGKILL
+    # it mid-job: the job stays `running` until its lease expires and the requester loses an attempt.
+    stop_grace_period: 40m
+    stop_signal: SIGTERM
+    security_opt: ["no-new-privileges:true"]
+    # A worker that logs a lot must not fill the VM's disk.
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The identical path on the host and in the container: sandboxes are started through the host daemon, which
+      # resolves this bind source itself (control-plane/README.md).
+      - /var/lib/mergit/workspaces:/var/lib/mergit/workspaces
+      # Copied from mergit-contracts/deployments by hand (README step 4). Missing files make Docker create empty
+      # DIRECTORIES here, so preflight.sh checks they are real files first.
+      - ./deployments/base-sepolia.json:/deployments/base-sepolia.json:ro
+      - ./deployments/agents-base-sepolia.json:/agents.json:ro

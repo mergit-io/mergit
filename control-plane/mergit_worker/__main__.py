@@ -20,6 +20,7 @@ from .preflight import check_models
 from .progress import HttpProgressReporter, NullProgressReporter, ProgressReporter
 from .publish import ReceiptPublisher
 from .sandbox import Sandbox, SandboxConfig, reap_stale
+from .startup import WorkerIdLock, agents_without_key, sweep_workspaces
 from .tools import ToolLimits
 from .worker import Worker, WorkerDeps
 from .workspace import GitLimits
@@ -140,6 +141,34 @@ def main() -> int:
         return 2
 
     worker_id = cfg.worker_id or socket.gethostname()
+    if not cfg.worker_id:
+        log.warning(
+            "WORKER_ID is not set, so this worker is named after its hostname (%s). A container's hostname "
+            "changes whenever it is recreated, and a restarted worker would then no longer find the jobs and "
+            "sandbox containers its previous run left. Set WORKER_ID to a fixed name, one per process.",
+            worker_id,
+        )
+    try:
+        no_key = agents_without_key(cfg.agents_file)
+    except ConfigError as exc:
+        log.error("configuration error: %s", exc)
+        return 2
+    if no_key:
+        names = ", ".join(f"MERGIT_AGENT_KEY_{i}" for i in no_key)
+        if cfg.require_all_agent_keys:
+            log.error("REQUIRE_ALL_AGENT_KEYS is set and these are missing or malformed: %s", names)
+            return 2
+        log.warning(
+            "no usable key for agent(s) %s: a job for them fails, and the requester loses an attempt", names
+        )
+    lock = WorkerIdLock.acquire(cfg.database_url.get_secret_value(), worker_id)
+    if lock is None:
+        log.error(
+            "another worker process is already running as %r. Starting here would fail its running jobs and "
+            "remove its sandbox containers. Give each process its own WORKER_ID.",
+            worker_id,
+        )
+        return 2
     built = build_worker(cfg, worker_id)
     log.info("model providers: %s", ", ".join(sorted(built.providers)) or "(no deployed agent needs one)")
     if built.stale:
@@ -161,6 +190,10 @@ def main() -> int:
     else:
         log.info("no GITHUB_TOKEN: pull-request requests will not be handled by this worker")
     log.info("removed %d stale sandbox containers", reap_stale(worker_id))
+    log.info(
+        "removed %d abandoned workspace directories",
+        sweep_workspaces(cfg.sandbox_workspace_root, cfg.job_lease_s),
+    )
 
     stop = threading.Event()
 
@@ -173,6 +206,7 @@ def main() -> int:
         built.worker.run_forever(stop)
     finally:
         built.close()
+        lock.close()
     return 0
 
 

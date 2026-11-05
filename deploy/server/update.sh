@@ -41,12 +41,18 @@ case "$what" in
 esac
 case "$what" in all) deploy/server/build-sites.sh all ;; web|app) deploy/server/build-sites.sh "$what" ;; esac
 
+# `up -d` returns when the containers have started, not when the API has run its start-up migrations, so give it a
+# moment instead of failing a good deploy on the first request.
+wait_healthy() {  # name url [tries]
+  local tries=${3:-30}
+  for _ in $(seq "$tries"); do
+    if curl -fsS -m 5 "$2/healthz" >/dev/null 2>&1; then echo "$1: ok"; return 0; fi
+    sleep 2
+  done
+  echo "$1 did not become healthy at $2/healthz" >&2
+  return 1
+}
+
 compose ps
 for h in gateway store; do printf '%s: ' "$h"; curl -fsS "https://$h.mergit.site/healthz"; echo; done
-# The control-plane API has no /healthz; GET /v0/agents is public and answers 200 once the app has started.
-# A just-recreated api takes a while (migrations, the healthcheck's start_period), so retry for up to about
-# 90 s before calling it down. `-f` then makes curl, and with `set -e` this script, fail on a non-2xx or an
-# unreachable api, instead of exiting 0 over one that never came up.
-printf 'api: '
-curl -fsS --retry 30 --retry-delay 3 --retry-max-time 90 --retry-all-errors -o /dev/null -w '%{http_code}\n' \
-  "https://app.mergit.site/v0/agents"
+wait_healthy api https://api.mergit.site
