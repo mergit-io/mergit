@@ -74,13 +74,14 @@ def do_trial(
     client: TestClient,
     settings: Settings,
     *,
-    nullifier_hash: str = "0xaaa111",
+    nullifier: str = "0xaaa111",
     success: bool = True,
-    sybil_score: int | None = None,
+    sybil_score: int = 0,
     body: dict[str, Any] | None = None,
 ) -> httpx.Response:
-    """Posts `/v0/account/trial` with a World proof, World's verify endpoint mocked to answer for it.
-    `body=...` overrides the request body outright (e.g. to send no proof at all)."""
+    """Posts `/v0/account/trial` with a World proof (an IDKit 4.x Selfie Check result, the default preset),
+    World's verify endpoint mocked to answer for it. `body=...` overrides the request body outright (e.g.
+    to send no proof at all)."""
     assert settings.world_rp_id
     with respx.mock(assert_all_called=False) as router:
         respx_world_verify(
@@ -91,11 +92,21 @@ def do_trial(
                 success=success,
                 environment=settings.world_environment,
                 action=settings.world_trial_action,
-                nullifier_hash=nullifier_hash,
-                sybil_score=sybil_score,
+                nullifier=nullifier,
             ),
         )
-        sent = body if body is not None else {"world_proof": a_proof(nullifier_hash=nullifier_hash)}
+        sent = (
+            body
+            if body is not None
+            else {
+                "world_proof": a_proof(
+                    nullifier=nullifier,
+                    sybil_score=sybil_score,
+                    action=settings.world_trial_action,
+                    environment=settings.world_environment,
+                )
+            }
+        )
         return client.post("/v0/account/trial", json=sent)
 
 
@@ -134,11 +145,11 @@ def test_trial_starts_with_a_valid_proof(world_client: TestClient, settings: Set
 
 def test_same_human_on_a_second_account_is_refused(world_client: TestClient, settings: Settings) -> None:
     github_login(world_client, subject=1, login="human-one")
-    assert do_trial(world_client, settings, nullifier_hash="0xaaaaaa1").status_code == 200
+    assert do_trial(world_client, settings, nullifier="0xaaaaaa1").status_code == 200
     world_client.cookies.clear()
 
     github_login(world_client, subject=2, login="human-two")
-    response = do_trial(world_client, settings, nullifier_hash="0xaaaaaa1")
+    response = do_trial(world_client, settings, nullifier="0xaaaaaa1")
     assert response.status_code == 403, response.text
     assert response.json()["detail"] == ALREADY_USED
     assert me(world_client)["trial"] is None
@@ -149,12 +160,12 @@ def test_trial_refused_for_same_nullifier_after_account_deletion(
     world_client: TestClient, settings: Settings
 ) -> None:
     github_login(world_client, subject=1, login="human-one")
-    assert do_trial(world_client, settings, nullifier_hash="0xbbbbbb1").status_code == 200
+    assert do_trial(world_client, settings, nullifier="0xbbbbbb1").status_code == 200
     assert world_client.request("DELETE", "/v0/account", json={"confirm": "delete"}).status_code == 204
     world_client.cookies.clear()
 
     github_login(world_client, subject=2, login="human-two")
-    response = do_trial(world_client, settings, nullifier_hash="0xbbbbbb1")
+    response = do_trial(world_client, settings, nullifier="0xbbbbbb1")
     assert response.status_code == 403, response.text
     assert response.json()["detail"] == ALREADY_USED
     assert me(world_client)["trial"] is None
@@ -200,9 +211,9 @@ def test_a_sybil_score_above_the_cap_leaves_the_trial_unstarted(
 
 def test_retrying_with_the_same_proof_is_idempotent(world_client: TestClient, settings: Settings) -> None:
     github_login(world_client)
-    first = do_trial(world_client, settings, nullifier_hash="0xccccccc1")
+    first = do_trial(world_client, settings, nullifier="0xccccccc1")
     assert first.status_code == 200, first.text
-    second = do_trial(world_client, settings, nullifier_hash="0xccccccc1")
+    second = do_trial(world_client, settings, nullifier="0xccccccc1")
     assert second.status_code == 200, second.text
     assert second.json()["started_at"] == first.json()["started_at"]
     assert nullifier_count(settings) == 1
@@ -228,7 +239,7 @@ def test_credits_funding_succeeds_once_the_nullifier_is_claimed(
     world_client: TestClient, settings: Settings
 ) -> None:
     sign_in(world_client)
-    assert do_trial(world_client, settings, nullifier_hash="0xddddddd1").status_code == 200
+    assert do_trial(world_client, settings, nullifier="0xddddddd1").status_code == 200
     plan = world_client.post("/v0/plans", json=BODY).json()
     response = _approve_with_credits(world_client, plan)
     assert response.status_code == 200, response.text
@@ -238,9 +249,7 @@ def test_credits_funding_succeeds_once_the_nullifier_is_claimed(
 
 
 def test_trial_is_unchanged_when_world_is_off(settings: Settings, llm: FakeLLM) -> None:
-    off = settings.model_copy(
-        update={"world_app_id": None, "world_rp_id": None, "world_signing_key": None}
-    )
+    off = settings.model_copy(update={"world_app_id": None, "world_rp_id": None, "world_signing_key": None})
     assert not off.world_idkit_enabled
     app = create_app(off, llm=llm, deliver_events=False)
     with TestClient(app, base_url="https://testserver", follow_redirects=False) as client:

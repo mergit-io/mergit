@@ -66,7 +66,7 @@ export async function submitEmailCode(email: string, code: string, intent: Inten
 }
 
 /**
- * Chooses the free trial. `worldProof` is IDKit's `ISuccessResult`, forwarded to the server unchanged, once
+ * Chooses the free trial. `worldProof` is IDKit 4.x's `IDKitResult`, forwarded to the server unchanged, once
  * World ID is wired in (`TrialVerify`); omitted (sent as `world_proof: null`, never left out of the body —
  * unambiguous either way the field is read) when it is off, or the widget was cancelled before it produced
  * one. The server only ever asks for one (428) when it has World ID configured, so this call behaves exactly

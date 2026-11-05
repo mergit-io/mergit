@@ -309,9 +309,10 @@ async def merge_accounts(
 
 class TrialBody(BaseModel):
     world_proof: dict[str, Any] | None = None
-    """The IDKit widget's `ISuccessResult`, forwarded unchanged to World. Required when
-    ``settings.world_idkit_enabled`` -- its absence (no proof at all, e.g. the widget was cancelled) is a
-    428 asking for one, not a 403; a proof that World itself rejects is the 403."""
+    """The IDKit 4.x widget's `IDKitResult` (what it hands `handleVerify`: `protocol_version`, `nonce`,
+    `action`, `environment`, `responses`, ...; see `world/idkit.py`), forwarded unchanged to World.
+    Required when ``settings.world_idkit_enabled`` -- its absence (no proof at all, e.g. the widget was
+    cancelled) is a 428 asking for one, not a 403; a proof that World itself rejects is the 403."""
 
 
 _ALREADY_USED = "the free credits were already used by this person"

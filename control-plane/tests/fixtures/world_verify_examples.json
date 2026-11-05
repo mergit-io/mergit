@@ -1,0 +1,181 @@
+{
+  "_source": "https://docs.world.org/api-reference/developer-portal/verify (OpenAPI for POST /api/v4/verify/{rp_id}), fetched 2026-11-06 as https://docs.world.org/api-reference/developer-portal/verify.md. Every value below is extracted verbatim (YAML-parsed, not retyped) from that page's `requestBody.examples` and `responses.400.examples`; `success_response_schema` and `result_schema` are the page's own `VerifyV4SuccessResponse` / `VerifyV4Result` schemas. The page publishes no 200 example, only that schema.",
+  "request_examples": {
+    "uniqueness_v3": {
+      "protocol_version": "3.0",
+      "nonce": "0xabc123",
+      "action": "my_action",
+      "responses": [
+        {
+          "identifier": "orb",
+          "merkle_root": "0x2264a66d162d7893e12ea8e3c072c51e785bc085ad655f64c10c1a61e00f0bc2",
+          "nullifier": "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8",
+          "proof": "0x1aa8b8f3b2d2de5ff452c0e1a83e29d6bf46fb83ef35dc5957121ff3d3698a1119090fb...",
+          "signal_hash": "0x00c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a4",
+          "max_age": 304200
+        }
+      ],
+      "environment": "production"
+    },
+    "uniqueness_v4": {
+      "protocol_version": "4.0",
+      "nonce": "0xabc123",
+      "action": "my_action",
+      "responses": [
+        {
+          "identifier": "proof_of_human",
+          "issuer_schema_id": 1,
+          "nullifier": "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8",
+          "expires_at_min": 49012345,
+          "proof": [
+            "0x111",
+            "0x222",
+            "0x333",
+            "0x444",
+            "0x555"
+          ],
+          "signal_hash": "0x0"
+        }
+      ]
+    },
+    "selfie_check_v4": {
+      "protocol_version": "4.0",
+      "nonce": "0xabc123",
+      "action": "selfie-check-2026-09-02",
+      "integrity_bundle": {
+        "version": 2,
+        "signature_format": "apple_app_attest",
+        "timestamp": 1788302923,
+        "signature": "a1b2c3d4",
+        "jwt": "eyJ..."
+      },
+      "responses": [
+        {
+          "identifier": "selfie",
+          "issuer_schema_id": 11,
+          "nullifier": "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8",
+          "expires_at_min": 1788302888,
+          "proof": [
+            "0x111",
+            "0x222",
+            "0x333",
+            "0x444",
+            "0x555"
+          ],
+          "signal_hash": "0x0",
+          "sybil_score": 10
+        }
+      ]
+    },
+    "session_v4": {
+      "protocol_version": "4.0",
+      "nonce": "0xabc123",
+      "session_id": "session_5f3a9c2e...8d1b0a",
+      "responses": [
+        {
+          "identifier": "proof_of_human",
+          "issuer_schema_id": 1,
+          "session_nullifier": [
+            "0xaaa",
+            "0xbbb"
+          ],
+          "expires_at_min": 49012345,
+          "proof": [
+            "0x111",
+            "0x222",
+            "0x333",
+            "0x444",
+            "0x555"
+          ]
+        }
+      ]
+    }
+  },
+  "error_examples": {
+    "app_not_migrated": {
+      "success": false,
+      "code": "app_not_migrated",
+      "detail": "This app has not been migrated to World ID 4.0. Please use the v2 verify endpoint."
+    },
+    "all_verifications_failed": {
+      "success": false,
+      "code": "all_verifications_failed",
+      "detail": "All proof verifications failed.",
+      "results": [
+        {
+          "identifier": "orb",
+          "success": false,
+          "code": "verification_error",
+          "detail": "On-chain proof verification failed."
+        }
+      ]
+    }
+  },
+  "success_response_schema": {
+    "type": "object",
+    "required": [
+      "success",
+      "results"
+    ],
+    "properties": {
+      "success": {
+        "type": "boolean",
+        "enum": [
+          true
+        ]
+      },
+      "action": {
+        "type": "string"
+      },
+      "nullifier": {
+        "type": "string"
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "environment": {
+        "type": "string",
+        "enum": [
+          "production",
+          "staging",
+          "sandbox"
+        ]
+      },
+      "session_id": {
+        "type": "string",
+        "description": "Opaque session ID in the format session_<128 hex characters>.",
+        "example": "session_5f3a9c2e...8d1b0a"
+      },
+      "results": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VerifyV4Result"
+        }
+      },
+      "message": {
+        "type": "string"
+      }
+    }
+  },
+  "result_schema": {
+    "type": "object",
+    "properties": {
+      "identifier": {
+        "type": "string"
+      },
+      "success": {
+        "type": "boolean"
+      },
+      "nullifier": {
+        "type": "string"
+      },
+      "code": {
+        "type": "string"
+      },
+      "detail": {
+        "type": "string"
+      }
+    }
+  }
+}

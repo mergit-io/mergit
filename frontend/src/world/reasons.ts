@@ -75,6 +75,8 @@ const PROOF_REASONS: Record<string, string> = {
   sybil_score: "World ID flagged that as not a unique human.",
   world_unreachable: "World ID is unreachable right now.",
   malformed_proof: "That proof was not in a shape World ID recognizes.",
+  legacy_proof: "That was a World ID 3.0 proof, and Mergit only accepts World ID 4.0. Update World App first.",
+  wrong_credential: "World ID verified a different kind of check than the one Mergit asks for.",
 };
 
 /** The message for a rejected World ID proof. `reason` codes not listed here still reach the person,

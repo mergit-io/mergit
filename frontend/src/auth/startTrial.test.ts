@@ -24,7 +24,32 @@ describe("startTrial", () => {
 
   it("sends the proof unchanged", async () => {
     fetchMock.mockImplementation(() => reply(200, { started_at: "2026-11-06T00:00:00Z" }));
-    const proof = { merkle_root: "0xabc", nullifier_hash: "0xdef", proof: "0x123", verification_level: "orb" };
+    // An IDKit 4.x `IDKitResultV4`, as `@worldcoin/idkit@4.6.0` hands `handleVerify` (World's own
+    // `selfie_check_v4` example from docs.world.org/api-reference/developer-portal/verify).
+    const proof = {
+      protocol_version: "4.0",
+      nonce: "0xabc123",
+      action: "mergit-free-trial",
+      environment: "production",
+      integrity_bundle: {
+        version: 2,
+        signature_format: "apple_app_attest",
+        timestamp: 1788302923,
+        signature: "a1b2c3d4",
+        jwt: "eyJ...",
+      },
+      responses: [
+        {
+          identifier: "selfie",
+          issuer_schema_id: 11,
+          nullifier: "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8",
+          expires_at_min: 1788302888,
+          proof: ["0x111", "0x222", "0x333", "0x444", "0x555"],
+          signal_hash: "0x0",
+          sybil_score: 10,
+        },
+      ],
+    };
     await startTrial(proof);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -56,8 +81,16 @@ describe("startTrial", () => {
     await expect(startTrial({})).rejects.toThrow(/unique human/i);
 
     fetchMock.mockImplementationOnce(() =>
-      reply(403, { detail: "the free credits were already used by this person" }),
+      reply(403, { detail: { code: "world_proof_rejected", reason: "legacy_proof" } }),
     );
+    await expect(startTrial({})).rejects.toThrow(/World ID 4\.0/);
+
+    fetchMock.mockImplementationOnce(() =>
+      reply(403, { detail: { code: "world_proof_rejected", reason: "wrong_credential" } }),
+    );
+    await expect(startTrial({})).rejects.toThrow(/different kind of check/i);
+
+    fetchMock.mockImplementationOnce(() => reply(403, { detail: "the free credits were already used by this person" }));
     await expect(startTrial({})).rejects.toThrow("the free credits were already used by this person");
   });
 
