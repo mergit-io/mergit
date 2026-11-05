@@ -187,3 +187,31 @@ def test_callback_fails_closed_when_jwks_is_unreachable() -> None:
     with pytest.raises(idp.TokenInvalid) as excinfo:
         asyncio.run(go())
     assert excinfo.value.reason == "jwks_unreachable"
+
+
+@pytest.mark.parametrize(
+    "malformed_key",
+    [
+        {"kty": "RSA", "kid": "test-key-1", "use": "sig", "alg": "RS256", "e": "AQAB"},  # missing `n`
+        {"kid": "test-key-1", "use": "sig", "alg": "RS256", "n": "AQAB", "e": "AQAB"},  # missing `kty`
+        {"kty": "RSA", "kid": "test-key-1", "use": "sig", "alg": "RS256", "n": "@@@@", "e": "AQAB"},  # bad n
+    ],
+    ids=["missing_n", "missing_kty", "bad_n"],
+)
+def test_malformed_jwks_key_is_rejected_not_raised(malformed_key: dict[str, str]) -> None:
+    """`PyJWK.from_dict` raises `InvalidKeyError` for a missing `kty`/`n` and `PyJWKError` for others, and
+    neither is a subclass of the other — a `JwksCache` that only caught one of them would leak a raw PyJWT
+    exception out of `verify_id_token` instead of failing closed with `TokenInvalid`."""
+    key = rsa_key()
+    moment = 1_700_000_000
+    token = mint_id_token(key, now=moment)
+
+    async def go() -> None:
+        with respx.mock(assert_all_called=False) as router:
+            router.get(JWKS_URL).respond(json={"keys": [malformed_key]})
+            cache = idp.JwksCache(TEST_ISSUER)
+            await idp.verify_id_token(SETTINGS, cache, token, now=moment)
+
+    with pytest.raises(idp.TokenInvalid) as excinfo:
+        asyncio.run(go())
+    assert excinfo.value.reason == "malformed_jwks_key"

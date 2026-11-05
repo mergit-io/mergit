@@ -144,7 +144,10 @@ class JwksCache:
             raise TokenInvalid("unknown_kid")
         try:
             return jwt.PyJWK.from_dict(raw)
-        except jwt.PyJWKError as exc:
+        except jwt.PyJWTError as exc:
+            # `PyJWK.from_dict` raises `InvalidKeyError` for most malformed shapes (missing `kty`, a
+            # non-base64 `n`, wrong curve fields, ...) and `PyJWKError` for others; neither is a subclass
+            # of the other, so the common base is what actually makes this catch-all fail closed.
             raise TokenInvalid("malformed_jwks_key") from exc
 
 
