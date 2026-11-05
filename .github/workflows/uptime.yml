@@ -1,0 +1,54 @@
+name: uptime
+
+# Probes the public URLs from outside the server every 5 minutes. A red run is the alert.
+#
+# Why it exists: on 2026-11-05 the whole stack was down for about 32 minutes (dockerd crashed during a deploy and the
+# restarted daemon stopped the containers), and the gateway for about 25 more (a network change left postgres without its
+# DNS alias). Both were found by someone probing the sites by hand; nothing on the server or in CI was watching.
+#
+# Notes:
+#   - GitHub runs `schedule` on the default branch only, and on a busy runner a run can start several minutes late, so this
+#     detects an outage within roughly 5-15 minutes, not instantly. It is a floor, not a monitoring product.
+#   - GitHub emails a failed scheduled run to whoever last edited the cron line, subject to their notification settings.
+#   - Each URL is tried 3 times, 10 s apart, so the seconds a deploy takes to replace a container do not page anyone.
+#   - These are the URLs update.sh checks after a deploy, plus the two sites.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe the public URLs
+        run: |
+          failed=0
+          for url in \
+            https://mergit.site/ \
+            https://app.mergit.site/ \
+            https://gateway.mergit.site/healthz \
+            https://store.mergit.site/healthz \
+            https://api.mergit.site/healthz \
+            https://app.mergit.site/v0/agents; do
+            code=000
+            for attempt in 1 2 3; do
+              code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$url" || true)
+              case "$code" in 2??) break ;; esac
+              [ "$attempt" = 3 ] || sleep 10
+            done
+            case "$code" in
+              2??) echo "ok    $code  $url" ;;
+              *)   echo "::error::$url answered $code (000 = no connection) after 3 tries"; failed=1 ;;
+            esac
+          done
+          exit "$failed"
