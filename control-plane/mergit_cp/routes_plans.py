@@ -253,6 +253,13 @@ async def approve_plan(
         if body.funding == "credits" and principal.user_id is not None
         else None
     )
+    # Set inside the transaction below when a fresh (or renewed) human approval is needed; `create_approval`
+    # itself is only ever called afterwards, once that transaction has closed (Important #1 of the fix-round
+    # review: calling it from inside this transaction held a second connection from the same pool for the
+    # whole World round trip, and ~`db_pool_max` concurrent header-less approves exhausted the pool).
+    pending_fields: dict[str, Any] | None = None
+    pending_summary: dict[str, Any] | None = None
+
     async with pool.connection() as conn, conn.transaction():
         plan = await _owned_draft(conn, plan_uuid, principal)
         drafts = [t.draft for t in plan.tasks]
@@ -292,73 +299,119 @@ async def approve_plan(
         ):
             raise HTTPException(status_code=403, detail="the free credits were already used by this person")
 
+        # The exact approve_plan phi_hashes (plan.phi_hash binding): computed once, used both to bind the
+        # World approval to this precise task content (Important #4) and for the real `plans.approve` below.
+        phi_hashes = {t.index: mergit_receipt.phi_hash(plans.phi_json(t.phi)) for t in drafts}
+
         if settings.world_idp_enabled:
             if principal.user_id is None:
                 raise HTTPException(status_code=401, detail="sign in again")
-            action_fields = {
+            # Binds plan_uuid/agents/funding/total *and* every task's budget and exact phi (what the agent is
+            # contractually allowed to do) and instructions, so editing a draft after approval — even while
+            # keeping the same total, agent picks and funding — invalidates the approval (Important #4).
+            action_fields: dict[str, Any] = {
                 "plan_uuid": str(plan_uuid),
                 "agents": body.agents,
                 "funding": body.funding,
                 "total_budget_usdc_units": str(total),
+                "tasks": [
+                    {
+                        "index": t.index,
+                        "title": t.title,
+                        "instructions": t.instructions,
+                        "phi_hash": phi_hashes[t.index],
+                        "budget_usdc_units": t.budget_usdc_units,
+                        "depends_on": t.depends_on,
+                    }
+                    for t in drafts
+                ],
             }
-            if x_world_approval is None:
-                pending = await approvals.create_approval(
-                    pool,
-                    settings,
-                    user_id=principal.user_id,
-                    kind="approve_plan",
-                    plan_uuid=plan_uuid,
-                    fields=action_fields,
-                    summary={
-                        "plan_id": plan.plan_id,
-                        "total_budget_usdc_units": str(total),
-                        "funding": body.funding,
-                    },
-                )
-                raise pending.required_error()
-            try:
-                await approvals.consume(
-                    conn,
-                    x_world_approval,
-                    user_id=principal.user_id,
-                    kind="approve_plan",
-                    plan_uuid=plan_uuid,
-                    fields=action_fields,
-                    now=datetime.now(UTC),
-                )
-            except approvals.ApprovalInvalid as invalid:
-                raise HTTPException(
-                    status_code=403,
-                    detail={"code": "human_approval_invalid", "reason": invalid.reason},
-                ) from invalid
+            needs_fresh_approval = x_world_approval is None
+            if not needs_fresh_approval:
+                assert x_world_approval is not None
+                try:
+                    await approvals.consume(
+                        conn,
+                        x_world_approval,
+                        user_id=principal.user_id,
+                        kind="approve_plan",
+                        plan_uuid=plan_uuid,
+                        fields=action_fields,
+                        now=datetime.now(UTC),
+                    )
+                except approvals.ApprovalInvalid as invalid:
+                    if invalid.reason != "unknown":
+                        raise HTTPException(
+                            status_code=403,
+                            detail={"code": "human_approval_invalid", "reason": invalid.reason},
+                        ) from invalid
+                    # The header named an approval that does not exist at all (plan sec 1.7): the same 428
+                    # retry path as no header, not a 403 (Important #5). An approval that exists but belongs
+                    # to someone else, or is in the wrong state, still 403s above.
+                    needs_fresh_approval = True
+            if needs_fresh_approval:
+                pending_fields = action_fields
+                pending_summary = {
+                    "plan_id": plan.plan_id,
+                    "goal": plan.goal,
+                    "repo_url": plan.repo_url,
+                    "ref": plan.ref,
+                    "funding": body.funding,
+                    "total_budget_usdc_units": str(total),
+                    "tasks": [
+                        {
+                            "index": t.index,
+                            "title": t.title,
+                            "agents": body.agents.get(str(t.index), []),
+                            "budget_usdc_units": str(t.budget_usdc_units),
+                        }
+                        for t in drafts
+                    ],
+                }
 
-        await plans.approve(
-            conn,
-            plan.plan_uuid,
-            picks={int(i): picked for i, picked in body.agents.items()},
-            phi_hashes={t.index: mergit_receipt.phi_hash(plans.phi_json(t.phi)) for t in drafts},
-            funding=body.funding,
-            total_budget_usdc_units=total,
+        if pending_fields is None:
+            await plans.approve(
+                conn,
+                plan.plan_uuid,
+                picks={int(i): picked for i, picked in body.agents.items()},
+                phi_hashes=phi_hashes,
+                funding=body.funding,
+                total_budget_usdc_units=total,
+            )
+            payload = {
+                "plan_id": plan.plan_id,
+                "plan_uuid": plan.plan_uuid,
+                "requester": plan.requester,
+                "total_budget_usdc_units": str(total),
+                "funding": body.funding,
+            }
+            if body.funding == "credits" and principal.user_id is not None:
+                # The free credits belong to the account, not to whichever address requests: one grant per
+                # person, however many wallets they link. (A session from before accounts has none, and the
+                # gateway then falls back to the requester address.)
+                payload["credit_account"] = str(principal.user_id)
+            await enqueue(
+                conn,
+                "plan.approved",
+                payload,
+                plan_id=plan.plan_id,
+                retry_window_s=settings.event_retry_window_s,
+            )
+
+    if pending_fields is not None:
+        assert pending_summary is not None
+        assert principal.user_id is not None
+        pending = await approvals.create_approval(
+            pool,
+            settings,
+            user_id=principal.user_id,
+            kind="approve_plan",
+            plan_uuid=plan_uuid,
+            fields=pending_fields,
+            summary=pending_summary,
         )
-        payload = {
-            "plan_id": plan.plan_id,
-            "plan_uuid": plan.plan_uuid,
-            "requester": plan.requester,
-            "total_budget_usdc_units": str(total),
-            "funding": body.funding,
-        }
-        if body.funding == "credits" and principal.user_id is not None:
-            # The free credits belong to the account, not to whichever address requests: one grant per person,
-            # however many wallets they link. (A session from before accounts has none, and the gateway then
-            # falls back to the requester address.)
-            payload["credit_account"] = str(principal.user_id)
-        await enqueue(
-            conn,
-            "plan.approved",
-            payload,
-            plan_id=plan.plan_id,
-            retry_window_s=settings.event_retry_window_s,
-        )
+        raise pending.required_error()
+
     return {"plan_id": plan.plan_id, "total_budget_usdc_units": str(total)}
 
 

@@ -539,6 +539,31 @@ def test_consume_refuses_an_expired_approval(database_url: str) -> None:
     run(database_url, body)
 
 
+def test_consume_of_a_nonexistent_approval_is_unknown_not_not_yours(database_url: str) -> None:
+    """Fix-round Important #5: an approval_id that does not exist at all gets a distinct reason from one
+    that exists but belongs to someone else — `routes_plans.approve_plan` maps `unknown` to a fresh 428,
+    and `not_yours` (tested just below) to a 403."""
+
+    async def body(pool: Pool) -> None:
+        user_id = await _user(pool)
+        plan_uuid = uuid.uuid4()
+        fields = FIELDS | {"plan_uuid": str(plan_uuid)}
+        async with pool.connection() as conn, conn.transaction():
+            with pytest.raises(approvals.ApprovalInvalid) as excinfo:
+                await approvals.consume(
+                    conn,
+                    uuid.uuid4(),  # never created
+                    user_id=user_id,
+                    kind="approve_plan",
+                    plan_uuid=plan_uuid,
+                    fields=fields,
+                    now=datetime.now(UTC),
+                )
+        assert excinfo.value.reason == "unknown"
+
+    run(database_url, body)
+
+
 def test_consume_refuses_someone_elses_approval(database_url: str) -> None:
     async def body(pool: Pool) -> None:
         owner = await _user(pool)

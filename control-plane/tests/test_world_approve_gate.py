@@ -8,6 +8,7 @@ lifecycle functions directly against Postgres; this file proves the HTTP wiring 
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from mergit_cp.config import Settings
 from mergit_cp.world import idp
 from tests.cp_fakes import FakeLLM, result
 from tests.test_plans import APPROVE, create, outbox, planned, sign_in, tasks_body
-from tests.world_fakes_idp import TEST_ISSUER, jwks_json, mint_id_token, respx_world_idp, rsa_key
+from tests.world_fakes_idp import TEST_ISSUER, TOKEN_URL, jwks_json, mint_id_token, respx_world_idp, rsa_key
 
 pytestmark = pytest.mark.postgres
 
@@ -138,6 +139,24 @@ def test_approve_without_header_persists_the_approval_row(app_client: TestClient
     assert row == ("pending",)
 
 
+def test_approve_without_header_does_not_hold_a_second_pool_connection(settings: Settings) -> None:
+    """Fix-round Important #1: `create_approval` used to run while `approve_plan`'s own transaction still
+    held a connection checked out from the same pool, so a header-less approve needed *two* connections at
+    once. With `db_pool_max=1` that nested checkout could never be granted — the request would hang until
+    the pool's checkout timeout fired, starving every other endpoint on the process meanwhile. After the fix,
+    the outer connection is released before `create_approval` ever asks the pool for one, so this completes
+    immediately even with a pool of size 1."""
+    starved = settings.model_copy(update={"db_pool_max": 1})
+    llm = FakeLLM([result(planned())])
+    app = create_app(starved, llm=llm, deliver_events=False)
+    with TestClient(app, base_url="https://testserver") as client:
+        sign_in(client)
+        plan = create(client)
+        response = client.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=APPROVE)
+        assert response.status_code == 428, response.text
+    _truncate(settings)
+
+
 # --- the full journey -----------------------------------------------------------------------------------
 
 
@@ -227,6 +246,125 @@ def test_changed_budget_after_approval_is_refused(app_client: TestClient, settin
     with psycopg.connect(settings.database_url) as conn:
         row = conn.execute("SELECT state FROM plans WHERE plan_uuid = %s", (plan["plan_uuid"],)).fetchone()
     assert row == ("draft",)
+
+
+def test_changed_instructions_after_approval_is_refused(app_client: TestClient, settings: Settings) -> None:
+    """Fix-round Important #4: the action_hash binds each task's instructions (not just its budget and phi),
+    so rewriting a task's instructions — with the total, agent picks and funding all unchanged — still
+    invalidates a stale approval. This is the exact scenario the review named: same total/agents/funding,
+    different content."""
+    sign_in(app_client)
+    plan = create(app_client)
+    detail = require_approval(app_client, plan["plan_uuid"])
+    approval_id = detail["approval_id"]
+
+    state, nonce = start_world(app_client, approval_id)
+    key = rsa_key()
+    assert world_callback(app_client, key, state=state, nonce=nonce).status_code == 302
+
+    same_budget_different_instructions = {
+        "tasks": [
+            {
+                "title": t["title"],
+                "instructions": "Rewritten instructions, same budget, same phi, same agents, same funding.",
+                "phi": t["phi"],
+                "budget_usdc_units": t["budget_usdc_units"],
+                "depends_on": t["depends_on"],
+            }
+            for t in plan["tasks"]
+        ]
+    }
+    edited = app_client.patch(f"/v0/plans/{plan['plan_uuid']}", json=same_budget_different_instructions)
+    assert edited.status_code == 200, edited.text
+    # sum of per-task budgets is unchanged (only instructions differ) — the approval's recorded total still
+    # matches; only the per-task content binding (Important #4) should trip the mismatch below.
+    edited_total = sum(int(t["budget_usdc_units"]) for t in edited.json()["tasks"])
+    original_total = sum(int(t["budget_usdc_units"]) for t in plan["tasks"])
+    assert edited_total == original_total
+
+    mismatched = app_client.post(
+        f"/v0/plans/{plan['plan_uuid']}/approve", json=APPROVE, headers={"X-World-Approval": approval_id}
+    )
+    assert mismatched.status_code == 403
+    assert mismatched.json()["detail"] == {"code": "human_approval_invalid", "reason": "action_mismatch"}
+
+    with psycopg.connect(settings.database_url) as conn:
+        row = conn.execute("SELECT state FROM plans WHERE plan_uuid = %s", (plan["plan_uuid"],)).fetchone()
+    assert row == ("draft",)
+
+
+# --- World is unreachable ---------------------------------------------------------------------------------
+
+
+def test_callback_fails_closed_when_world_is_unreachable(app_client: TestClient, settings: Settings) -> None:
+    """Fix-round Important #2: a transport error talking to World's token endpoint must not escape as a bare
+    500 and leave the approval `pending` — it must land `failed` (plan sec 1.8: "World unreachable ->
+    failed") and the popup must still get its redirect, not a crash."""
+    sign_in(app_client)
+    plan = create(app_client)
+    detail = require_approval(app_client, plan["plan_uuid"])
+    approval_id = detail["approval_id"]
+    state, _nonce = start_world(app_client, approval_id)
+
+    with respx.mock(assert_all_called=False) as router:
+        router.post(TOKEN_URL).mock(side_effect=httpx.ConnectError("boom"))
+        callback = app_client.get("/v0/world/callback", params={"code": "test-code", "state": state})
+
+    assert callback.status_code == 302
+    want = f"{settings.public_origin}/world/approved?approval={approval_id}&status=failed"
+    assert callback.headers["location"] == want
+
+    with psycopg.connect(settings.database_url) as conn:
+        row = conn.execute(
+            "SELECT status FROM world_approvals WHERE approval_id = %s", (approval_id,)
+        ).fetchone()
+    assert row == ("failed",)
+
+    refused = app_client.post(
+        f"/v0/plans/{plan['plan_uuid']}/approve", json=APPROVE, headers={"X-World-Approval": approval_id}
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == {"code": "human_approval_invalid", "reason": "failed"}
+
+
+# --- an unknown X-World-Approval vs. one that belongs to someone else -------------------------------------
+
+
+def test_unknown_approval_header_gets_a_fresh_428_not_403(app_client: TestClient) -> None:
+    """Fix-round Important #5 (plan sec 1.7): a header naming an approval_id that does not exist at all gets
+    the same 428 retry path as no header — not a 403 — so a client has exactly one way to recover."""
+    sign_in(app_client)
+    plan = create(app_client)
+    bogus = str(uuid.uuid4())
+
+    response = app_client.post(
+        f"/v0/plans/{plan['plan_uuid']}/approve", json=APPROVE, headers={"X-World-Approval": bogus}
+    )
+    assert response.status_code == 428, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "human_approval_required"
+    assert detail["approval_id"] != bogus  # a freshly created approval, not the bogus id echoed back
+
+
+def test_an_approval_that_exists_for_someone_else_still_gets_403(
+    app_client: TestClient, settings: Settings
+) -> None:
+    """The distinction Important #5 preserves: an approval_id that *does* exist, but belongs to a different
+    account, is still a 403 `not_yours` — only a genuinely unknown id gets the 428 treatment."""
+    sign_in(app_client)
+    owners_plan = create(app_client)
+    owners_detail = require_approval(app_client, owners_plan["plan_uuid"])
+
+    sign_in(app_client)  # a second, different account (fresh wallet) on the same client
+    other_plan = create(app_client)
+
+    response = app_client.post(
+        f"/v0/plans/{other_plan['plan_uuid']}/approve",
+        json=APPROVE,
+        headers={"X-World-Approval": owners_detail["approval_id"]},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == {"code": "human_approval_invalid", "reason": "not_yours"}
 
 
 # --- the state cookie -----------------------------------------------------------------------------------

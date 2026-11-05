@@ -30,8 +30,8 @@ JWKS_TTL_S = 600.0
 
 class TokenInvalid(Exception):
     """The ID token (or the code exchange that produced it) cannot be trusted. ``reason`` is a short,
-    stable code a caller can branch or log on, e.g. ``"jwks_unreachable"``, ``"unknown_kid"``,
-    ``"token_expired"``, ``"token_invalid"``, ``"code_exchange_failed"``."""
+    stable code a caller can branch or log on, e.g. ``"jwks_unreachable"``, ``"world_unreachable"``,
+    ``"unknown_kid"``, ``"token_expired"``, ``"token_invalid"``, ``"code_exchange_failed"``."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -75,20 +75,29 @@ def authorize_url(settings: Settings, *, state: str, nonce: str, code_challenge:
 
 async def exchange_code(settings: Settings, http: httpx.AsyncClient, code: str, verifier: str) -> str:
     """Trades the authorization code for an ID token. World's client is registered `client_secret_post`
-    (plan Global Constraints), so the secret goes in the form body, not a header."""
+    (plan Global Constraints), so the secret goes in the form body, not a header.
+
+    Fails closed the same way `JwksCache._fetch` does: a connection error, timeout or other transport
+    failure talking to World becomes `TokenInvalid("world_unreachable")` rather than a bare `httpx.HTTPError`
+    escaping to the caller (fix-round Important #2 — this used to propagate past the callback's `except
+    TokenInvalid`, leaving the approval `pending` and the browser with a raw 500 instead of a `failed`
+    redirect)."""
     assert settings.world_idp_client_id and settings.world_idp_client_secret
-    reply = await http.post(
-        f"{settings.world_idp_issuer}{EXCHANGE_PATH}",
-        headers={"Accept": "application/json"},
-        data={
-            "client_id": settings.world_idp_client_id,
-            "client_secret": settings.world_idp_client_secret.get_secret_value(),
-            "code": code,
-            "redirect_uri": _redirect_uri(settings),
-            "code_verifier": verifier,
-            "grant_type": "authorization_code",
-        },
-    )
+    try:
+        reply = await http.post(
+            f"{settings.world_idp_issuer}{EXCHANGE_PATH}",
+            headers={"Accept": "application/json"},
+            data={
+                "client_id": settings.world_idp_client_id,
+                "client_secret": settings.world_idp_client_secret.get_secret_value(),
+                "code": code,
+                "redirect_uri": _redirect_uri(settings),
+                "code_verifier": verifier,
+                "grant_type": "authorization_code",
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise TokenInvalid("world_unreachable") from exc
     try:
         raw_body: Any = reply.json()
     except ValueError as exc:

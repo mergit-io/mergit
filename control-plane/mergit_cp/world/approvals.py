@@ -44,7 +44,8 @@ Kind = Literal["approve_plan", "open_pr"]
 class ApprovalInvalid(Exception):
     """The approval named by `X-World-Approval` cannot be used for this action right now. `reason` is one of
     `expired | denied | failed | used | action_mismatch | not_yours` (plan sec 1.7), stable enough for a
-    caller to map straight onto the `403 human_approval_invalid` body."""
+    caller to map straight onto the `403 human_approval_invalid` body — except `unknown` (the approval_id
+    does not exist at all), which a caller maps onto a fresh `428` instead (fix-round Important #5)."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -291,7 +292,11 @@ async def consume(
     )
     row = await cur.fetchone()
     if row is None:
-        raise ApprovalInvalid("not_yours")
+        # Not merely "belongs to someone else" (that's `not_yours`, 403): this approval_id does not exist at
+        # all. Plan sec 1.7 wants the same 428 retry path as no header for this case (fix-round Important
+        # #5) — `routes_plans.approve_plan` special-cases this reason to create a fresh approval instead of
+        # mapping it to a 403.
+        raise ApprovalInvalid("unknown")
     status, expires_at, stored_hash = cast(str, row[0]), cast(datetime, row[1]), cast(str, row[2])
     stored_user, stored_kind, stored_plan = cast(UUID, row[3]), cast(str, row[4]), cast(UUID, row[5])
     if stored_user != user_id or stored_kind != kind or stored_plan != plan_uuid:

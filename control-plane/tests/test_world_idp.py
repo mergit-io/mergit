@@ -19,6 +19,7 @@ from mergit_cp.config import Settings
 from mergit_cp.world import idp
 from tests.world_fakes_idp import (
     TEST_ISSUER,
+    TOKEN_URL,
     jwks_json,
     mint_id_token,
     respx_world_idp,
@@ -83,6 +84,21 @@ def test_exchange_posts_the_secret_in_the_body() -> None:
             return result
 
     assert asyncio.run(go()) == "minted-id-token"
+
+
+def test_exchange_fails_closed_when_the_token_endpoint_is_unreachable() -> None:
+    """Fix-round Important #2: a transport error (not merely a bad HTTP response) talking to World's token
+    endpoint must become `TokenInvalid`, never a bare `httpx.HTTPError` escaping to the caller — the same
+    fail-closed contract `JwksCache._fetch` already upholds for the JWKS endpoint."""
+
+    async def go() -> None:
+        async with httpx.AsyncClient() as http, respx.mock(assert_all_called=False) as router:
+            router.post(TOKEN_URL).mock(side_effect=httpx.ConnectError("boom"))
+            await idp.exchange_code(SETTINGS, http, "auth-code-1", "verifier-1")
+
+    with pytest.raises(idp.TokenInvalid) as excinfo:
+        asyncio.run(go())
+    assert excinfo.value.reason == "world_unreachable"
 
 
 # --- verify_id_token --------------------------------------------------------------------------------------
