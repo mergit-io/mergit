@@ -16,6 +16,22 @@ case "$what" in all|services|web|app) ;; *) echo "usage: $0 [all|services|web|ap
 sync_repo .
 sync_repo ../mergit-contracts   # deployments/base-sepolia.json lives there
 
+. deploy/server/stack-check.sh
+# A failed deploy reaches the Actions log as only "Process completed with exit code N" (run #67 said 22: a gateway
+# 502), and whoever reads it cannot reach the server. Print which services are down and their last log lines, so the
+# log says why.
+report_on_failure() {
+  local status=$? s
+  [ "$status" = 0 ] && return
+  echo "update.sh failed (exit $status). Stack state:" >&2
+  compose ps -a >&2 || true
+  for s in $(compose ps -a --format "$STACK_PS_FORMAT" 2>/dev/null | unhealthy_services || true); do
+    echo "--- last log lines of $s" >&2
+    compose logs --no-log-prefix --tail 30 "$s" >&2 || true
+  done
+}
+trap report_on_failure EXIT
+
 case "$what" in
   all|services)
     compose build
@@ -54,5 +70,10 @@ wait_healthy() {  # name url [tries]
 }
 
 compose ps
-for h in gateway store; do printf '%s: ' "$h"; curl -fsS "https://$h.mergit.site/healthz"; echo; done
+wait_healthy gateway https://gateway.mergit.site
+wait_healthy store https://store.mergit.site
 wait_healthy api https://api.mergit.site
+
+# The URLs above can answer while another service is restart-looping (the worker has no URL), so check them all.
+bad=$(compose ps -a --format "$STACK_PS_FORMAT" | unhealthy_services)
+[ -z "$bad" ] || { echo "Not running, or unhealthy, after the deploy: $bad" >&2; exit 1; }
