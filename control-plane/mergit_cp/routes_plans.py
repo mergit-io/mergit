@@ -8,6 +8,7 @@ in the same transaction. Inputs that would waste a planner call are rejected bef
 import logging
 import re
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -23,6 +24,7 @@ from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .events import enqueue
 from .llm import LLM, LLMUnavailable
 from .planner import CostSink, PlanningFailed, TaskDraft, check_tasks, plan_goal
+from .world import approvals
 
 log = logging.getLogger(__name__)
 
@@ -241,6 +243,7 @@ async def approve_plan(
     settings: SettingsDep,
     pool: PoolDep,
     agents: Annotated[list[Agent], Depends(get_agents)],
+    x_world_approval: Annotated[UUID | None, Header()] = None,
 ) -> dict[str, str]:
     known = {a.agent_id for a in agents}
     # Read before the transaction opens, so a slow gateway holds no row lock. None: unreachable, and the
@@ -288,6 +291,46 @@ async def approve_plan(
             and await accounts.credits_forfeited(conn, settings, principal.user_id)
         ):
             raise HTTPException(status_code=403, detail="the free credits were already used by this person")
+
+        if settings.world_idp_enabled:
+            if principal.user_id is None:
+                raise HTTPException(status_code=401, detail="sign in again")
+            action_fields = {
+                "plan_uuid": str(plan_uuid),
+                "agents": body.agents,
+                "funding": body.funding,
+                "total_budget_usdc_units": str(total),
+            }
+            if x_world_approval is None:
+                pending = await approvals.create_approval(
+                    pool,
+                    settings,
+                    user_id=principal.user_id,
+                    kind="approve_plan",
+                    plan_uuid=plan_uuid,
+                    fields=action_fields,
+                    summary={
+                        "plan_id": plan.plan_id,
+                        "total_budget_usdc_units": str(total),
+                        "funding": body.funding,
+                    },
+                )
+                raise pending.required_error()
+            try:
+                await approvals.consume(
+                    conn,
+                    x_world_approval,
+                    user_id=principal.user_id,
+                    kind="approve_plan",
+                    plan_uuid=plan_uuid,
+                    fields=action_fields,
+                    now=datetime.now(UTC),
+                )
+            except approvals.ApprovalInvalid as invalid:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "human_approval_invalid", "reason": invalid.reason},
+                ) from invalid
 
         await plans.approve(
             conn,
