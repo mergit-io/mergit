@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { approvePlan, editPlan } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { isTrialSession } from "../../../auth/account";
@@ -10,6 +10,8 @@ import { formatUsdc } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon } from "../../../components/Icon";
 import { Segmented } from "../../../components/Segmented";
+import { HumanApprovalDialog } from "../../../world/HumanApprovalDialog";
+import { withHumanApproval, type ApprovalRequired } from "../../../world/humanApproval";
 import {
   editProblems,
   hasEdits,
@@ -55,6 +57,20 @@ export function DraftPlanEditor({
   const [chosen, setFunding] = useState<FundingOption>("Wallet");
   const funding: FundingOption = trial ? "Free credits" : chosen;
   const { busy, problems, setProblems, submit } = useSubmit();
+  // A fresh World ID check (plan sec 1.7), asked for only when `approvePlan` 428s: `confirmApproval` shows
+  // the dialog and resolves when its own button is clicked.
+  const [approvalReq, setApprovalReq] = useState<ApprovalRequired | null>(null);
+  const approvalResolve = useRef<((ok: boolean) => void) | null>(null);
+  const confirmApproval = (req: ApprovalRequired) =>
+    new Promise<boolean>((resolve) => {
+      approvalResolve.current = resolve;
+      setApprovalReq(req);
+    });
+  const settleApproval = (ok: boolean) => {
+    setApprovalReq(null);
+    approvalResolve.current?.(ok);
+    approvalResolve.current = null;
+  };
   const edited = hasEdits(plan, forms);
   const total = totalBudget(forms);
   // The API refuses an over-limit credits plan too; saying so here keeps the button from inviting a refusal.
@@ -84,77 +100,93 @@ export function DraftPlanEditor({
     }
     void submit(async () => {
       if (edited) await editPlan(plan.plan_uuid, toEdits(forms));
-      await approvePlan(plan.plan_uuid, toApproval(forms, FUNDING[funding]));
+      await withHumanApproval(
+        (approvalId) => approvePlan(plan.plan_uuid, toApproval(forms, FUNDING[funding]), approvalId),
+        confirmApproval,
+      );
       onChanged();
     });
   };
 
   return (
-    <section className="lr-draft">
-      <div className="col g16 min0">
-        {forms.map((form) => (
-          <TaskDraftCard key={form.index} form={form} agents={agents ?? []} onChange={update} />
-        ))}
-      </div>
-      <aside className="card pad24 col g16 lr-approve" aria-label="Approve the plan">
-        <h2 className="title">Approve and pay</h2>
-        <div className="col g4">
-          <span className="small c2">Total for {forms.length} tasks</span>
-          <span className="stat" data-testid="plan-total">
-            {formatUsdc(total)} <span className="small c2">USDC</span>
-          </span>
-          <span className="small c3">of {formatUsdc(BigInt(plan.budget_usdc_units))} USDC you offered</span>
+    <>
+      <section className="lr-draft">
+        <div className="col g16 min0">
+          {forms.map((form) => (
+            <TaskDraftCard key={form.index} form={form} agents={agents ?? []} onChange={update} />
+          ))}
         </div>
-        <SuggestAgents
-          planUuid={plan.plan_uuid}
-          onUse={(suggestions) => {
-            setForms((list) => applySuggestions(list, suggestions));
-          }}
-        />
-        <div className="col g8">
-          <span className="cap">Pay with</span>
-          <Segmented
-            options={trial ? CREDITS_ONLY : FUNDING_OPTIONS}
-            value={funding}
-            onChange={setFunding}
-            label="Pay with"
-          />
-          <span className="small c3">
-            {funding === "Wallet"
-              ? "You fund the plan from your wallet after approving. Nothing moves until you confirm it there."
-              : creditsError
-                ? creditsError
-                : `Free credits left: ${credits ? formatUsdc(credits.remaining) : "…"} USDC. Tasks paid with credits are always audited.`}
-          </span>
-        </div>
-        {creditLimit && (
-          <p className="small ca" role="alert">
-            {creditLimit}
-          </p>
-        )}
-        <Problems items={problems} />
-        <div className="col g8">
-          <button
-            type="button"
-            className="btn primary block"
-            disabled={busy || !agents || creditLimit !== null}
-            onClick={approve}
-          >
-            <Icon name="check" size={16} />
-            {busy ? "Working…" : "Approve plan"}
-          </button>
-          <button type="button" className="btn secondary block" disabled={busy || !edited} onClick={save}>
-            Save changes
-          </button>
-          <span className="small c3">Approving locks the tasks, their checks and your agent picks.</span>
-          <DiscardDraft
+        <aside className="card pad24 col g16 lr-approve" aria-label="Approve the plan">
+          <h2 className="title">Approve and pay</h2>
+          <div className="col g4">
+            <span className="small c2">Total for {forms.length} tasks</span>
+            <span className="stat" data-testid="plan-total">
+              {formatUsdc(total)} <span className="small c2">USDC</span>
+            </span>
+            <span className="small c3">of {formatUsdc(BigInt(plan.budget_usdc_units))} USDC you offered</span>
+          </div>
+          <SuggestAgents
             planUuid={plan.plan_uuid}
-            onDiscarded={() => {
-              void navigate(paths.runs);
+            onUse={(suggestions) => {
+              setForms((list) => applySuggestions(list, suggestions));
             }}
           />
-        </div>
-      </aside>
-    </section>
+          <div className="col g8">
+            <span className="cap">Pay with</span>
+            <Segmented
+              options={trial ? CREDITS_ONLY : FUNDING_OPTIONS}
+              value={funding}
+              onChange={setFunding}
+              label="Pay with"
+            />
+            <span className="small c3">
+              {funding === "Wallet"
+                ? "You fund the plan from your wallet after approving. Nothing moves until you confirm it there."
+                : creditsError
+                  ? creditsError
+                  : `Free credits left: ${credits ? formatUsdc(credits.remaining) : "…"} USDC. Tasks paid with credits are always audited.`}
+            </span>
+          </div>
+          {creditLimit && (
+            <p className="small ca" role="alert">
+              {creditLimit}
+            </p>
+          )}
+          <Problems items={problems} />
+          <div className="col g8">
+            <button
+              type="button"
+              className="btn primary block"
+              disabled={busy || !agents || creditLimit !== null}
+              onClick={approve}
+            >
+              <Icon name="check" size={16} />
+              {busy ? "Working…" : "Approve plan"}
+            </button>
+            <button type="button" className="btn secondary block" disabled={busy || !edited} onClick={save}>
+              Save changes
+            </button>
+            <span className="small c3">Approving locks the tasks, their checks and your agent picks.</span>
+            <DiscardDraft
+              planUuid={plan.plan_uuid}
+              onDiscarded={() => {
+                void navigate(paths.runs);
+              }}
+            />
+          </div>
+        </aside>
+      </section>
+      {approvalReq && (
+        <HumanApprovalDialog
+          req={approvalReq}
+          onApprove={() => {
+            settleApproval(true);
+          }}
+          onCancel={() => {
+            settleApproval(false);
+          }}
+        />
+      )}
+    </>
   );
 }

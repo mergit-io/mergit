@@ -28,6 +28,7 @@ import { LiveRuns } from "../screens/live/run/LiveRuns";
 import { HardNavigate } from "./HardNavigate";
 import { paths } from "./paths";
 import { RootLayout } from "./RootLayout";
+import { WorldApproved } from "../world/WorldApproved";
 
 const live = DATA_MODE === "live";
 
@@ -45,6 +46,9 @@ export const router = createBrowserRouter([
       { path: paths.landing, element: IN_DEMO ? <HardNavigate /> : <LandingPage /> },
       { path: paths.signIn, element: IN_DEMO ? <HardNavigate /> : <SignIn /> },
       { path: paths.pricing, element: IN_DEMO ? <HardNavigate /> : <Pricing /> },
+      // The World sign-in popup's own page (plan sec 1.7): no sign-in gate, same on every build -- the
+      // popup may never have a session the way the main tab does.
+      { path: paths.worldApproved, element: <WorldApproved /> },
       { path: IN_DEMO ? `${paths.liveApp}/*` : `${paths.demo}/*`, element: <HardNavigate /> },
       {
         path: paths.app,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, errorMessage, getPlanDiff, getPullRequest, openPullRequest } from "./client";
 import type { PlanDiff, PullRequest } from "./pullRequest";
+import { withHumanApproval, type ApprovalRequired } from "../world/humanApproval";
 
 const POLL_MS = 3000;
 
@@ -14,6 +15,23 @@ export function usePullRequest(planUuid: string, ready: boolean) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
+  // A fresh World ID check (plan sec 1.7), asked for only when `openPullRequest` 428s: the caller renders
+  // `HumanApprovalDialog` while `approvalReq` is set, and `confirmApproval` resolves when it is answered.
+  const [approvalReq, setApprovalReq] = useState<ApprovalRequired | null>(null);
+  const approvalResolve = useRef<((ok: boolean) => void) | null>(null);
+  const confirmApproval = useCallback(
+    (req: ApprovalRequired) =>
+      new Promise<boolean>((resolve) => {
+        approvalResolve.current = resolve;
+        setApprovalReq(req);
+      }),
+    [],
+  );
+  const settleApproval = useCallback((ok: boolean) => {
+    setApprovalReq(null);
+    approvalResolve.current?.(ok);
+    approvalResolve.current = null;
+  }, []);
 
   useEffect(() => {
     alive.current = true;
@@ -56,7 +74,7 @@ export function usePullRequest(planUuid: string, ready: boolean) {
   const open = useCallback(() => {
     setError(null);
     setBusy(true);
-    openPullRequest(planUuid)
+    withHumanApproval((approvalId) => openPullRequest(planUuid, approvalId), confirmApproval)
       .then((p) => {
         if (alive.current) setPr(p);
       })
@@ -66,7 +84,20 @@ export function usePullRequest(planUuid: string, ready: boolean) {
       .finally(() => {
         if (alive.current) setBusy(false);
       });
-  }, [planUuid]);
+  }, [planUuid, confirmApproval]);
 
-  return { diff, pr, error, busy, open };
+  return {
+    diff,
+    pr,
+    error,
+    busy,
+    open,
+    approvalReq,
+    approveApproval: () => {
+      settleApproval(true);
+    },
+    cancelApproval: () => {
+      settleApproval(false);
+    },
+  };
 }

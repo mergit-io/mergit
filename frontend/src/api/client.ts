@@ -14,16 +14,21 @@ import type {
   TaskEdit,
 } from "./types";
 
-/** A failed API call. `problems` lists every reason the API gave, for forms that show them all. */
+/** A failed API call. `problems` lists every reason the API gave, for forms that show them all. `detail` is
+ * the API's `detail` field exactly as parsed, before `problemsOf` reduces it to strings -- callers that need
+ * to recognize a specific shape in it (e.g. World's 428 `human_approval_required` body) read this instead of
+ * re-parsing the response themselves. */
 export class ApiError extends Error {
   readonly status: number;
   readonly problems: string[];
+  readonly detail: unknown;
 
-  constructor(status: number, message: string, problems: string[] = []) {
+  constructor(status: number, message: string, problems: string[] = [], detail?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.problems = problems.length > 0 ? problems : [message];
+    this.detail = detail;
   }
 }
 
@@ -61,7 +66,7 @@ async function toError(response: Response): Promise<ApiError> {
   const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
   const problems = problemsOf(body?.detail);
   const message = STATUS_MESSAGE[response.status] ?? problems[0] ?? `Mergit answered ${String(response.status)}.`;
-  return new ApiError(response.status, message, problems);
+  return new ApiError(response.status, message, problems, body?.detail);
 }
 
 /** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal. */
@@ -103,8 +108,15 @@ export const discardPlan = (planUuid: string) => request<undefined>("DELETE", pl
 /** Replaces a draft's tasks. The API checks them exactly as it checks a planner answer. */
 export const editPlan = (planUuid: string, tasks: TaskEdit[]) => request<Plan>("PATCH", planPath(planUuid), { tasks });
 
-export const approvePlan = (planUuid: string, body: ApproveRequest) =>
-  request<ApproveResponse>("POST", `${planPath(planUuid)}/approve`, body);
+/** `approvalId`, when a fresh World ID check has already been done for this exact action (plan sec 1.7),
+ * is sent as `X-World-Approval`; omitted, the API answers 428 when World Agent Pass is configured. */
+export const approvePlan = (planUuid: string, body: ApproveRequest, approvalId?: string) =>
+  request<ApproveResponse>(
+    "POST",
+    `${planPath(planUuid)}/approve`,
+    body,
+    approvalId ? { "X-World-Approval": approvalId } : {},
+  );
 
 /** Closes a plan the requester gives up on; the gateway returns what is left of its funds. */
 export const abandonPlan = (planUuid: string) =>
@@ -137,9 +149,18 @@ export async function getPlanDiff(planUuid: string): Promise<PlanDiff> {
   return diff;
 }
 
-/** The requester's approval: queues the pull request for the worker, which holds the GitHub token. */
-export async function openPullRequest(planUuid: string): Promise<PullRequest> {
-  const pr = parsePullRequest(await request<unknown>("POST", `${planPath(planUuid)}/open-pr`));
+/** The requester's approval: queues the pull request for the worker, which holds the GitHub token.
+ * `approvalId`, when a fresh World ID check has already been done for this exact diff (plan sec 1.7), is
+ * sent as `X-World-Approval`; omitted, the API answers 428 when World Agent Pass is configured. */
+export async function openPullRequest(planUuid: string, approvalId?: string): Promise<PullRequest> {
+  const pr = parsePullRequest(
+    await request<unknown>(
+      "POST",
+      `${planPath(planUuid)}/open-pr`,
+      undefined,
+      approvalId ? { "X-World-Approval": approvalId } : {},
+    ),
+  );
   if (!pr) throw new ApiError(0, "Mergit's API did not answer like the pull request service.");
   return pr;
 }

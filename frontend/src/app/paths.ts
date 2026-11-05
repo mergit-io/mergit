@@ -8,6 +8,8 @@ export const paths = {
   landing: "/",
   signIn: "/signin",
   pricing: "/pricing",
+  /** Where World's callback sends the popup (plan sec 1.7): a bare top-level route, same on every build. */
+  worldApproved: "/world/approved",
   app: APP,
   /** The demo and the real app are different page loads, so these two never depend on where this page is. */
   demo: "/demo",
