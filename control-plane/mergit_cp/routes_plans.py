@@ -24,7 +24,7 @@ from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .events import enqueue
 from .llm import LLM, LLMUnavailable
 from .planner import CostSink, PlanningFailed, TaskDraft, check_tasks, plan_goal
-from .world import approvals
+from .world import approvals, idkit
 
 log = logging.getLogger(__name__)
 
@@ -295,7 +295,13 @@ async def approve_plan(
         if (
             body.funding == "credits"
             and principal.user_id is not None
-            and await accounts.credits_forfeited(conn, settings, principal.user_id)
+            and (
+                await accounts.credits_forfeited(conn, settings, principal.user_id)
+                or (
+                    settings.world_idkit_enabled
+                    and not await idkit.has_claimed(conn, settings.world_trial_action, principal.user_id)
+                )
+            )
         ):
             raise HTTPException(status_code=403, detail="the free credits were already used by this person")
 

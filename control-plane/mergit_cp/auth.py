@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from siwe import SiweMessage, VerificationError, generate_nonce  # pyright: ignore[reportMissingTypeStubs]
@@ -21,6 +22,7 @@ from .accounts import COOKIE, token_hash
 from .config import Settings
 from .db import Pool
 from .deps import get_pool, get_settings
+from .world import idkit
 
 router = APIRouter(prefix="/v0/auth", tags=["auth"])
 account_router = APIRouter(prefix="/v0/account", tags=["account"])
@@ -305,14 +307,55 @@ async def merge_accounts(
     return {"address": address}
 
 
+class TrialBody(BaseModel):
+    world_proof: dict[str, Any] | None = None
+    """The IDKit widget's `ISuccessResult`, forwarded unchanged to World. Required when
+    ``settings.world_idkit_enabled`` -- its absence (no proof at all, e.g. the widget was cancelled) is a
+    428 asking for one, not a 403; a proof that World itself rejects is the 403."""
+
+
+_ALREADY_USED = "the free credits were already used by this person"
+
+
 @account_router.post("/trial")
-async def start_trial(principal: PrincipalDep, settings: SettingsDep, pool: PoolDep) -> dict[str, str]:
-    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet. Refused when one
-    of the account's sign-in methods belonged to a deleted account: the free credits are once per person."""
+async def start_trial(
+    principal: PrincipalDep, settings: SettingsDep, pool: PoolDep, body: TrialBody | None = None
+) -> dict[str, str]:
+    """Chooses the free trial: plans funded from the treasury's free credits, with no wallet. Refused when
+    one of the account's sign-in methods belonged to a deleted account (``credits_forfeited``) -- or, once
+    IDKit is configured, when the human behind this account already claimed the free trial's World ID
+    nullifier under a different account (``world_nullifiers``), which survives account deletion.
+
+    The World round trip happens before any pool connection is opened (the same "hold no connection while
+    World is on the line" rule ``routes_world.callback`` follows), so a slow or unreachable World never
+    holds a row lock. The nullifier claim and ``accounts.start_trial`` then run in one transaction: a
+    rejected or never-submitted proof leaves the trial fully unstarted, never partially.
+    """
     user_id = _member(principal)
-    async with pool.connection() as conn:
+    proof: idkit.VerifiedProof | None = None
+    if settings.world_idkit_enabled:
+        world_proof = body.world_proof if body is not None else None
+        if world_proof is None:
+            raise HTTPException(status_code=428, detail="world_proof_required")
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                proof = await idkit.verify_proof(
+                    settings, http, world_proof, action=settings.world_trial_action
+                )
+        except idkit.ProofRejected as rejected:
+            raise HTTPException(
+                status_code=403, detail={"code": "world_proof_rejected", "reason": rejected.reason}
+            ) from rejected
+
+    async with pool.connection() as conn, conn.transaction():
         if await accounts.credits_forfeited(conn, settings, user_id):
-            raise HTTPException(status_code=403, detail="the free credits were already used by this person")
+            raise HTTPException(status_code=403, detail=_ALREADY_USED)
+        if proof is not None:
+            already = await idkit.has_claimed(conn, settings.world_trial_action, user_id)
+            if not already and not await idkit.claim_nullifier(
+                conn, settings.world_trial_action, proof, user_id
+            ):
+                raise HTTPException(status_code=403, detail=_ALREADY_USED)
         started = await accounts.start_trial(conn, user_id)
     return {"started_at": started.isoformat()}
 
