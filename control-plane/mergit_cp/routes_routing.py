@@ -204,7 +204,10 @@ async def arkiv_suggestions(
     """The owner's own exploring-suggestion mirror, as stored on Arkiv's Rabdi testnet rather than in
     `routing_decisions` — proof that the write side (`_mirror_decisions`) is actually read somewhere a
     user sees, not merely written and ignored (the Arkiv prize's own distinction). ``enabled: false`` when
-    `Settings.arkiv_enabled` is false; the frontend then hides the panel instead of calling this at all."""
+    `Settings.arkiv_enabled` is false; the frontend then hides the panel instead of calling this at all.
+    A reachability failure (bad key, unreachable RPC) is reported in ``error``, not a 500: this read is
+    advisory, same as the write it reads back, and a misconfigured or down testnet must not break the
+    page for every other, unrelated feature on it."""
     if arkiv is None:
         return {"enabled": False, "decisions": []}
     async with pool.connection() as conn:
@@ -215,10 +218,15 @@ async def arkiv_suggestions(
             raise HTTPException(
                 status_code=403, detail="only the requester may see suggestions for this plan"
             )
-    decisions = await arkiv.read_decisions(plan.plan_id)
+    query = f'kind = "mergit.routing_decision" AND planId = "{plan.plan_id}"'
+    try:
+        decisions = await arkiv.read_decisions(plan.plan_id)
+    except Exception:  # any SDK/RPC failure; see the docstring
+        log.warning("arkiv read failed for plan %s", plan.plan_id, exc_info=True)
+        return {"enabled": True, "query": query, "decisions": [], "error": "could not reach Arkiv"}
     return {
         "enabled": True,
-        "query": f'kind = "mergit.routing_decision" AND planId = "{plan.plan_id}"',
+        "query": query,
         "decisions": [
             {
                 "entity_key": d.entity_key,

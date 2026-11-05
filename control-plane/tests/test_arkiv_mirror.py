@@ -33,6 +33,8 @@ class FakeRawClient:
         self.entities: list[FakeEntity] = []
         self.queries: list[str] = []
         self.next_key = 0
+        self.raises: Exception | None = None
+        """Set to make every call fail, as if the RPC were unreachable or the key were bad."""
 
     def create_entity(
         self,
@@ -41,6 +43,8 @@ class FakeRawClient:
         attributes: dict[str, str | int] | None = None,
         expires_in: int | None = None,
     ) -> tuple[str, object]:
+        if self.raises is not None:
+            raise self.raises
         self.next_key += 1
         key = f"0xentity{self.next_key}"
         self.created.append(
@@ -55,6 +59,8 @@ class FakeRawClient:
         return key, object()
 
     def query_entities(self, query: str) -> list[FakeEntity]:
+        if self.raises is not None:
+            raise self.raises
         self.queries.append(query)
         return self.entities
 

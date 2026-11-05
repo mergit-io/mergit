@@ -126,7 +126,12 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
               {arkiv && !arkiv.enabled && (
                 <span className="small c3">Arkiv mirroring is off on this deployment.</span>
               )}
-              {arkiv?.enabled && (
+              {arkiv?.enabled && arkiv.error && (
+                <span className="small ca" role="alert">
+                  Arkiv's testnet could not be reached just now; try again shortly.
+                </span>
+              )}
+              {arkiv?.enabled && !arkiv.error && (
                 <div className="col g4" data-testid="arkiv-suggestions">
                   <span className="small c3">
                     {arkiv.decisions.length === 0

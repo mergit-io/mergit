@@ -619,6 +619,26 @@ def test_an_exploring_suggestion_is_mirrored_to_arkiv_and_readable_back(settings
         assert {d["task_index"] for d in mirrored["decisions"]} == {0, 1}
 
 
+def test_arkiv_suggestions_degrades_instead_of_500_when_arkiv_is_unreachable(
+    settings: Settings, llm: FakeLLM
+):
+    """A bad key or a down RPC must not 500 the page for an unrelated feature; the owner still sees
+    their plan, just told Arkiv could not be reached."""
+    with arkiv_client(settings, llm) as (c, raw):
+        sign_in(c)
+        plan = create(c)
+        c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"})
+
+        raw.raises = ConnectionError("rpc unreachable")
+        resp = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["enabled"] is True
+        assert body["decisions"] == []
+        assert body["error"] == "could not reach Arkiv"
+
+
 def test_arkiv_suggestions_is_owner_only(settings: Settings, llm: FakeLLM):
     with arkiv_client(settings, llm) as (c, _raw):
         sign_in(c)

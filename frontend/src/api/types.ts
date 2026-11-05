@@ -130,6 +130,9 @@ export type ArkivSuggestions = {
   /** False when the server has no `ARKIV_*` configured; the panel that renders this should then hide. */
   enabled: boolean;
   query?: string;
+  /** Set when the server reached Arkiv's RPC and the query itself failed; distinct from `decisions: []`,
+   * which also means the query ran fine but matched nothing yet. */
+  error?: string;
   decisions: ArkivDecision[];
 };
 
