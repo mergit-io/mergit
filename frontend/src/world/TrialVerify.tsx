@@ -1,34 +1,38 @@
-import { useState } from "react";
-import { IDKitRequestWidget, proofOfHuman, selfieCheck, type IDKitResult } from "@worldcoin/idkit";
+import { useRef, useState } from "react";
+import {
+  CredentialRequest,
+  IDKitErrorCodes,
+  IDKitRequestWidget,
+  selfieCheck,
+  type IDKitResult,
+} from "@worldcoin/idkit";
 import { startTrial } from "../auth/accountApi";
 import { fetchRpContext, type IdkitConfig } from "./api";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
- * The "Start free" button once World ID's one-human free-trial check (`config`, from `/v0/world/config`'s
- * `idkit`) is both configured and *usable* -- `FundingChoice` only renders this when `config.rp_id` is
- * present (see below); otherwise it keeps rendering today's plain button and never mounts this at all.
+ * The World ID button for the free trial's one-human check (`config`, from `/v0/world/config`'s `idkit`):
+ * rendered only once that check is configured and usable -- `FundingChoice` mounts
+ * this only when `config.rp_id` is present, which `/v0/world/config` sends whenever IDKit is configured.
  *
  * A fresh RP context is signed server-side (`POST /v0/world/rp-context`) right as the button is pressed,
  * not held in state from an earlier mount: it carries a short (five-minute) expiry and is meant for one
- * attempt. `handleVerify` is IDKit's own "check this with your backend before closing the widget" hook -- it
- * *is* the `POST /v0/account/trial` call, so a rejected or already-claimed proof shows inside IDKit's own
- * widget as a failed check, not as a second request after the modal already closed successfully.
+ * attempt. The server returns it as `{sig, nonce, created_at, expires_at}`; `@worldcoin/idkit@4.6.0`'s
+ * `RpContext` wants the signature as `signature` and its own `rp_id` too, so both are filled in here.
+ * `environment` is the server's `world_environment`, also from `/v0/world/config`: IDKit would otherwise
+ * ask World App for a production proof, which a staging or sandbox server refuses (`wrong_environment`).
  *
- * ## A real gap in today's backend contract (not fixed here -- no Python touched)
+ * `handleVerify` is IDKit's own "check this with your backend before closing the widget" hook -- it *is*
+ * the `POST /v0/account/trial` call, so a rejected or already-claimed proof shows as a failed check, not
+ * as a second request after the modal already closed successfully. IDKit swallows whatever `handleVerify`
+ * throws and reports only `onError("failed_by_host_app")`, so the message Mergit's server gave (e.g. "the
+ * free credits were already used by this person") is kept aside in `hostError` and shown instead.
  *
- * `@worldcoin/idkit@4.6.0`'s `RpContext` requires `rp_id` (format `rp_<16 hex>`, checked by
- * `normalizeRpId` -- a missing or malformed one throws before the widget can open) and a field named
- * `signature`. `GET /v0/world/config` (Task 4) exposes only `enabled`/`app_id`/`action`/`preset`, and
- * `POST /v0/world/rp-context` (Task 4) returns `{sig, nonce, created_at, expires_at}` -- no `rp_id` anywhere,
- * and `sig` rather than `signature` (its own docstring's claim that this "matches IDKit's rp_context field
- * names exactly" does not hold for the installed 4.6.0 SDK). The `sig` → `signature` rename is harmless and
- * done below. `rp_id` has no source at all in the current contract, so `config.rp_id` is read defensively
- * (`world/api.ts`'s `parseIdkitConfig`) against a future response that adds it; until then this component is
- * simply never mounted, and the plain button is what every deployment sees. The fix is additive and
- * one-line (`"rp_id": settings.world_rp_id` in `routes_world.world_config`'s `idkit` dict) but is a backend
- * change, out of scope for this task.
+ * Only World ID 4.0 proofs are asked for, because the server accepts nothing else (a 3.0 proof's
+ * nullifier differs from the same human's 4.0 one). IDKit's `proofOfHuman()` preset forces
+ * `allow_legacy_proofs` back on whatever the widget is told (`compileRequest` in idkit-core), so the
+ * Orb case asks for the `proof_of_human` credential directly; `selfieCheck()` is 4.0-only already.
  */
 export function TrialVerify({
   config,
@@ -55,6 +59,8 @@ export function TrialVerify({
   const [open, setOpen] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [done, setDone] = useState(false);
+  // What `startTrial` said when it refused the proof: IDKit drops it on the floor (see above).
+  const hostError = useRef<string | null>(null);
   const [rpContext, setRpContext] = useState<{
     rp_id: string;
     nonce: string;
@@ -86,6 +92,21 @@ export function TrialVerify({
       });
   };
 
+  const handleVerify = async (result: IDKitResult) => {
+    hostError.current = null;
+    try {
+      await startTrial(result);
+    } catch (e) {
+      hostError.current = message(e);
+      throw e; // IDKit must still see the failure, or it would show (and report) a success
+    }
+  };
+
+  const credential =
+    config.preset === "proof_of_human"
+      ? { constraints: CredentialRequest("proof_of_human") }
+      : { preset: selfieCheck() };
+
   return (
     <>
       <button type="button" className="btn primary block" disabled={disabled || fetching} onClick={start}>
@@ -103,14 +124,15 @@ export function TrialVerify({
           rp_context={rpContext}
           allow_legacy_proofs={false}
           environment={config.environment ?? undefined}
-          preset={config.preset === "proof_of_human" ? proofOfHuman() : selfieCheck()}
-          handleVerify={(result: IDKitResult) => startTrial(result)}
+          {...credential}
+          handleVerify={handleVerify}
           onSuccess={() => {
             setDone(true);
             onVerified();
           }}
           onError={(errorCode) => {
-            onError(`World ID could not complete that check (${errorCode}).`);
+            const fromMergit = errorCode === IDKitErrorCodes.FailedByHostApp ? hostError.current : null;
+            onError(fromMergit ?? `World ID could not complete that check (${errorCode}).`);
           }}
         />
       )}
