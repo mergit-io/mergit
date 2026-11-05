@@ -12,7 +12,7 @@ vi.mock("./api", () => ({
 
 // Imported after the mock so `getApprovalStatus` below is the mocked function (vi.mock is hoisted).
 import { getApprovalStatus } from "./api";
-import { withHumanApproval } from "./humanApproval";
+import { withHumanApproval, type ApprovalOutcome, type ApprovalRequired } from "./humanApproval";
 
 /** Asserts a `withHumanApproval` rejection: a 403 `ApiError` whose message contains `fragment`. Spelled out
  * as a plain assertion rather than `rejects.toMatchObject({ message: expect.stringContaining(...) })`,
@@ -33,6 +33,16 @@ function approvalError(expiresAt = "2026-11-06T00:00:10.000Z") {
     summary: { goal: "ship it" },
   });
 }
+
+/** What the real `HumanApprovalDialog` does on its own "Continue" click: open the popup itself, synchronously,
+ * and hand the result to `withHumanApproval` as the outcome -- `withHumanApproval` never calls `window.open`
+ * itself (plan sec 1.7's binding ruling: a popup blocker only reliably honors a call made directly inside the
+ * click, not a later `await`-ed continuation). These mocks stand in for that click. */
+function approve(req: ApprovalRequired): Promise<ApprovalOutcome> {
+  const popup = window.open(`https://api.mergit.site${req.start_url}`, "mergit-world-approval", "width=480,height=760");
+  return Promise.resolve({ approved: true, popup });
+}
+const cancel = (): Promise<ApprovalOutcome> => Promise.resolve({ approved: false });
 
 /** A `window` stand-in good enough for `humanApproval.ts`: `message` listeners it can be told to fire, and
  * `setInterval`/`clearInterval` delegated to the real (or faked, per test) globals. */
@@ -72,7 +82,7 @@ describe("withHumanApproval", () => {
     const win = fakeWindow(vi.fn(() => ({}) as Window));
     vi.stubGlobal("window", win);
     const run = vi.fn().mockRejectedValueOnce(approvalError()).mockResolvedValueOnce("done");
-    const confirm = vi.fn().mockResolvedValue(true);
+    const confirm = vi.fn(approve);
 
     const promise = withHumanApproval(run, confirm);
     await vi.waitFor(() => {
@@ -91,18 +101,29 @@ describe("withHumanApproval", () => {
     const win = fakeWindow(vi.fn(() => null));
     vi.stubGlobal("window", win);
     const run = vi.fn().mockRejectedValueOnce(approvalError());
-    const confirm = vi.fn().mockResolvedValue(true);
+    const confirm = vi.fn(approve); // the dialog's own window.open returns null (blocked); confirm still resolves
 
     await expectDenied(withHumanApproval(run, confirm), "blocked");
     expect(run).toHaveBeenCalledTimes(1);
     expect(getApprovalStatus).not.toHaveBeenCalled();
   });
 
+  it("rejects when the human cancels and never retries", async () => {
+    const win = fakeWindow(vi.fn(() => ({}) as Window));
+    vi.stubGlobal("window", win);
+    const run = vi.fn().mockRejectedValueOnce(approvalError());
+    const confirm = vi.fn(cancel);
+
+    await expectDenied(withHumanApproval(run, confirm), "not given");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(win.open).not.toHaveBeenCalled(); // declining never even attempts the popup
+  });
+
   it("rejects on denied and never retries", async () => {
     const win = fakeWindow(vi.fn(() => ({}) as Window));
     vi.stubGlobal("window", win);
     const run = vi.fn().mockRejectedValueOnce(approvalError());
-    const confirm = vi.fn().mockResolvedValue(true);
+    const confirm = vi.fn(approve);
 
     const promise = withHumanApproval(run, confirm);
     await vi.waitFor(() => {
@@ -118,7 +139,7 @@ describe("withHumanApproval", () => {
     const win = fakeWindow(vi.fn(() => ({}) as Window));
     vi.stubGlobal("window", win);
     const run = vi.fn().mockRejectedValueOnce(approvalError()).mockResolvedValueOnce("done");
-    const confirm = vi.fn().mockResolvedValue(true);
+    const confirm = vi.fn(approve);
 
     const promise = withHumanApproval(run, confirm);
     await vi.waitFor(() => {
@@ -139,7 +160,7 @@ describe("withHumanApproval", () => {
     vi.stubGlobal("window", win);
     vi.mocked(getApprovalStatus).mockResolvedValue({ status: "pending", reason: null, expires_at: expiresAt });
     const run = vi.fn().mockRejectedValueOnce(approvalError(expiresAt));
-    const confirm = vi.fn().mockResolvedValue(true);
+    const confirm = vi.fn(approve);
 
     const promise = withHumanApproval(run, confirm);
     const captured = promise.catch((e: unknown) => e);

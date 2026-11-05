@@ -1,5 +1,5 @@
 import { ApiError } from "../api/client";
-import { getApprovalStatus, resolveApiUrl } from "./api";
+import { getApprovalStatus } from "./api";
 
 /** The `human_approval_required` body a protected action's 428 carries (plan sec 1.7): everything the
  * browser needs to put a fresh World ID check in front of the human before the action it names is retried. */
@@ -9,6 +9,13 @@ export type ApprovalRequired = {
   expires_at: string;
   summary: Record<string, unknown>;
 };
+
+/** What `confirm` resolves to once the dialog's own button has been clicked. The dialog itself opens the
+ * popup -- synchronously, inside that click -- and hands the result back here rather than this module
+ * reconstructing it after an `await`: a browser's popup blocker only reliably honors `window.open` called
+ * directly inside the gesture's own handler, not a later continuation (Safari in particular does not extend
+ * the same leeway Chrome and Firefox give a same-tick promise resolution). */
+export type ApprovalOutcome = { approved: false } | { approved: true; popup: Window | null };
 
 const POLL_MS = 2000;
 
@@ -84,15 +91,15 @@ function waitForOutcome(req: ApprovalRequired): Promise<"approved" | "denied"> {
  * Runs a protected action, and when the API answers `human_approval_required` (plan sec 1.7), takes the
  * human through a fresh World ID check before retrying it once with the approval id attached.
  *
- * `confirm` renders the approval dialog and resolves once its own "Continue" button is clicked. The popup is
- * opened right here, in the very next step after that resolution -- nothing else is awaited in between -- so
- * it is still close enough to that click, as far as every major browser's popup blocker is concerned, to
- * count as the same user gesture. Opening it any later (after a network round trip, say) would be blocked.
- * A blocked popup (`window.open` returning `null`) is reported distinctly from a human saying no.
+ * `confirm` renders the approval dialog and resolves once one of its own buttons is clicked. Cancelling
+ * resolves `{approved: false}` with no popup ever attempted. Approving opens the popup *inside that same
+ * click* (the dialog's job, not this function's -- see `ApprovalOutcome`) and resolves with whatever
+ * `window.open` returned, `null` included: this function never calls `window.open` itself, so it never has
+ * to reconstruct, after an `await`, a result a real click already produced.
  */
 export async function withHumanApproval<T>(
   run: (approvalId?: string) => Promise<T>,
-  confirm: (req: ApprovalRequired) => Promise<boolean>,
+  confirm: (req: ApprovalRequired) => Promise<ApprovalOutcome>,
 ): Promise<T> {
   let req: ApprovalRequired;
   try {
@@ -103,14 +110,12 @@ export async function withHumanApproval<T>(
     req = required;
   }
 
-  const ok = await confirm(req);
-  if (!ok) throw notGiven();
+  const outcome = await confirm(req);
+  if (!outcome.approved) throw notGiven();
+  if (!outcome.popup) throw blocked();
 
-  const popup = window.open(resolveApiUrl(req.start_url), "mergit-world-approval", "width=480,height=760");
-  if (!popup) throw blocked();
-
-  const outcome = await waitForOutcome(req);
-  if (outcome !== "approved") throw notGiven();
+  const result = await waitForOutcome(req);
+  if (result !== "approved") throw notGiven();
 
   return run(req.approval_id);
 }

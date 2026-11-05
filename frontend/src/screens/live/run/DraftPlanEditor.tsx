@@ -11,7 +11,7 @@ import { useCredits } from "../../../chain/useCredits";
 import { Icon } from "../../../components/Icon";
 import { Segmented } from "../../../components/Segmented";
 import { HumanApprovalDialog } from "../../../world/HumanApprovalDialog";
-import { withHumanApproval, type ApprovalRequired } from "../../../world/humanApproval";
+import { withHumanApproval, type ApprovalOutcome, type ApprovalRequired } from "../../../world/humanApproval";
 import {
   editProblems,
   hasEdits,
@@ -60,15 +60,15 @@ export function DraftPlanEditor({
   // A fresh World ID check (plan sec 1.7), asked for only when `approvePlan` 428s: `confirmApproval` shows
   // the dialog and resolves when its own button is clicked.
   const [approvalReq, setApprovalReq] = useState<ApprovalRequired | null>(null);
-  const approvalResolve = useRef<((ok: boolean) => void) | null>(null);
+  const approvalResolve = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
   const confirmApproval = (req: ApprovalRequired) =>
-    new Promise<boolean>((resolve) => {
+    new Promise<ApprovalOutcome>((resolve) => {
       approvalResolve.current = resolve;
       setApprovalReq(req);
     });
-  const settleApproval = (ok: boolean) => {
+  const settleApproval = (outcome: ApprovalOutcome) => {
     setApprovalReq(null);
-    approvalResolve.current?.(ok);
+    approvalResolve.current?.(outcome);
     approvalResolve.current = null;
   };
   const edited = hasEdits(plan, forms);
@@ -179,11 +179,11 @@ export function DraftPlanEditor({
       {approvalReq && (
         <HumanApprovalDialog
           req={approvalReq}
-          onApprove={() => {
-            settleApproval(true);
+          onApprove={(popup) => {
+            settleApproval({ approved: true, popup });
           }}
           onCancel={() => {
-            settleApproval(false);
+            settleApproval({ approved: false });
           }}
         />
       )}

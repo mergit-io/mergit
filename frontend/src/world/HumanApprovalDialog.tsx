@@ -1,7 +1,12 @@
 import { useEffect, useRef } from "react";
 import { formatUsdc } from "../chain/funding";
 import { Icon } from "../components/Icon";
+import { resolveApiUrl } from "./api";
 import type { ApprovalRequired } from "./humanApproval";
+
+/** The popup's window name (so a second click reuses it instead of opening another) and size. */
+const POPUP_TARGET = "mergit-world-approval";
+const POPUP_FEATURES = "width=480,height=760";
 
 type TaskSummary = { index?: unknown; title?: unknown; agents?: unknown; budget_usdc_units?: unknown };
 
@@ -26,6 +31,10 @@ function usdcLine(units: unknown): string | null {
  *
  * World's own sign-in screen only ever asks "are you human, right now" -- it never shows what is being
  * approved. This dialog is the one place that does, before the popup opens.
+ *
+ * "Continue to World ID" opens the popup itself, synchronously inside its own click handler, and hands the
+ * result (including a blocked `null`) to `onApprove`: a popup blocker only reliably honors `window.open`
+ * called directly inside the gesture that triggered it, not a later `await`-ed continuation.
  */
 export function HumanApprovalDialog({
   req,
@@ -33,7 +42,7 @@ export function HumanApprovalDialog({
   onCancel,
 }: {
   req: ApprovalRequired;
-  onApprove: () => void;
+  onApprove: (popup: Window | null) => void;
   onCancel: () => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -123,7 +132,13 @@ export function HumanApprovalDialog({
           )}
         </div>
         <div className="row g8">
-          <button type="button" className="btn primary compact" onClick={onApprove}>
+          <button
+            type="button"
+            className="btn primary compact"
+            onClick={() => {
+              onApprove(window.open(resolveApiUrl(req.start_url), POPUP_TARGET, POPUP_FEATURES));
+            }}
+          >
             Continue to World ID
           </button>
           <button type="button" className="btn secondary compact" onClick={onCancel}>

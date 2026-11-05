@@ -69,8 +69,10 @@ async function toError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, message, problems, body?.detail);
 }
 
-/** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal. */
-const base = () => (LIVE.apiUrl ? apiBase() : "");
+/** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal.
+ * Exported so other modules that need to build a URL against the same API (e.g. `world/api.ts`'s
+ * `resolveApiUrl`) share this instead of redefining it. */
+export const base = () => (LIVE.apiUrl ? apiBase() : "");
 
 async function request<T>(
   method: "GET" | "POST" | "PATCH" | "DELETE",

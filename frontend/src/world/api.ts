@@ -1,9 +1,4 @@
-import { apiBase } from "../chain/wallet";
-import { LIVE } from "../config/live";
-
-/** The API's address, resolved exactly as `api/client.ts` resolves it: `same-origin` is the hostname the
- * page was loaded from, never a literal. */
-const base = () => (LIVE.apiUrl ? apiBase() : "");
+import { base } from "../api/client";
 
 /** Resolves a relative URL the API handed the browser (`start_url` in the `human_approval_required` body)
  * against that same base, so it is never opened as a bare path. */

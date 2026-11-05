@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, errorMessage, getPlanDiff, getPullRequest, openPullRequest } from "./client";
 import type { PlanDiff, PullRequest } from "./pullRequest";
-import { withHumanApproval, type ApprovalRequired } from "../world/humanApproval";
+import { withHumanApproval, type ApprovalOutcome, type ApprovalRequired } from "../world/humanApproval";
 
 const POLL_MS = 3000;
 
@@ -18,18 +18,20 @@ export function usePullRequest(planUuid: string, ready: boolean) {
   // A fresh World ID check (plan sec 1.7), asked for only when `openPullRequest` 428s: the caller renders
   // `HumanApprovalDialog` while `approvalReq` is set, and `confirmApproval` resolves when it is answered.
   const [approvalReq, setApprovalReq] = useState<ApprovalRequired | null>(null);
-  const approvalResolve = useRef<((ok: boolean) => void) | null>(null);
+  const approvalResolve = useRef<((outcome: ApprovalOutcome) => void) | null>(null);
+  // Memoized (unlike `DraftPlanEditor.tsx`'s equivalent, which has nothing downstream that cares): `open`
+  // below is itself a `useCallback` and would otherwise be recreated every render for no reason.
   const confirmApproval = useCallback(
     (req: ApprovalRequired) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<ApprovalOutcome>((resolve) => {
         approvalResolve.current = resolve;
         setApprovalReq(req);
       }),
     [],
   );
-  const settleApproval = useCallback((ok: boolean) => {
+  const settleApproval = useCallback((outcome: ApprovalOutcome) => {
     setApprovalReq(null);
-    approvalResolve.current?.(ok);
+    approvalResolve.current?.(outcome);
     approvalResolve.current = null;
   }, []);
 
@@ -93,11 +95,11 @@ export function usePullRequest(planUuid: string, ready: boolean) {
     busy,
     open,
     approvalReq,
-    approveApproval: () => {
-      settleApproval(true);
+    approveApproval: (popup: Window | null) => {
+      settleApproval({ approved: true, popup });
     },
     cancelApproval: () => {
-      settleApproval(false);
+      settleApproval({ approved: false });
     },
   };
 }
