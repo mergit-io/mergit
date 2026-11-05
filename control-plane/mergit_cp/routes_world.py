@@ -10,7 +10,7 @@ browser never sees an ID token or the client secret — it only ever carries an 
 import hmac
 import time
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID
 
 import httpx
@@ -68,6 +68,27 @@ async def start_approval(
         secure=True,
         samesite="lax",
         path="/v0/world",
+        # Shared by every hostname the site is served on, the same as `oauth.start`'s state cookie: the popup
+        # opens `/start` on whichever host the page is on (mergit.site or app.mergit.site), but World sends it
+        # back to `public_origin` (app_domain) only. Host-only, the cookie set on mergit.site never reaches
+        # the callback on app.mergit.site and every approval started there fails the state check.
+        domain=settings.cookie_domain,
+    )
+    return response
+
+
+def _back_to_popup(settings: Settings, approval_id: UUID, status: str) -> RedirectResponse:
+    response = RedirectResponse(
+        f"{settings.public_origin}/world/approved?approval={approval_id}&status={status}", status_code=302
+    )
+    # A cookie set with a domain is only cleared by a deletion naming the same domain (and path).
+    response.delete_cookie(
+        STATE_COOKIE,
+        path="/v0/world",
+        domain=settings.cookie_domain,
+        secure=True,
+        httponly=True,
+        samesite="lax",
     )
     return response
 
@@ -83,44 +104,56 @@ async def callback(
     mergit_world: Annotated[str | None, Cookie()] = None,
 ) -> RedirectResponse:
     """Validates, records, then redirects to the SPA route that `postMessage`s the result back to the popup's
-    opener (plan sec 1.7). No inline script and no ID token are ever served by this endpoint."""
+    opener (plan sec 1.7). No inline script and no ID token are ever served by this endpoint.
+
+    No pool connection is held while World is on the line: the code exchange and a JWKS fetch can each take
+    up to ten seconds, and holding a connection (and an open transaction) across them would let a burst of
+    callbacks, or one slow World, starve every other endpoint of the pool -- the bug `approve_plan` already
+    had fixed. So: one short read (the PKCE verifier, and whether this approval is still undecided), the
+    network calls with no connection checked out, then a second short transaction for the write. `record`
+    re-reads the row `FOR UPDATE` and leaves an already-decided one alone, so a duplicate callback whose own
+    exchange failed cannot turn an approval another request already recorded into `failed`."""
     if not state or not mergit_world or not hmac.compare_digest(state, mergit_world):
         raise HTTPException(status_code=400, detail="missing or mismatched World sign-in state")
 
     now = datetime.now(UTC)
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT approval_id, status, code_verifier FROM world_approvals WHERE state = %s", (state,)
+        )
+        row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=400, detail="unknown World sign-in state")
+    approval_id, status, verifier = cast(UUID, row[0]), cast(str, row[1]), cast("str | None", row[2])
+    if status != "pending":
+        # Already decided (a re-delivered or duplicate callback): report that decision, and do not spend a
+        # second code exchange on it -- World would refuse a reused code anyway.
+        return _back_to_popup(settings, approval_id, status)
+
     claims: idp.IdClaims | None = None
     world_error = error
+    if world_error is None:
+        if not code:
+            world_error = "no_code"
+        elif verifier is None:
+            raise HTTPException(status_code=400, detail="unknown World sign-in state")
+        else:
+            try:
+                async with httpx.AsyncClient(timeout=10) as http:
+                    id_token = await idp.exchange_code(settings, http, code, verifier)
+                claims = await idp.verify_id_token(
+                    settings, _jwks_cache(request, settings), id_token, now=int(time.time())
+                )
+            except idp.TokenInvalid as invalid:
+                world_error = invalid.reason
 
     async with pool.connection() as conn, conn.transaction():
-        if world_error is None:
-            if not code:
-                world_error = "no_code"
-            else:
-                cur = await conn.execute(
-                    "SELECT code_verifier FROM world_approvals WHERE state = %s", (state,)
-                )
-                row = await cur.fetchone()
-                if row is None or row[0] is None:
-                    raise HTTPException(status_code=400, detail="unknown World sign-in state")
-                verifier = row[0]
-                try:
-                    async with httpx.AsyncClient(timeout=10) as http:
-                        id_token = await idp.exchange_code(settings, http, code, verifier)
-                    claims = await idp.verify_id_token(
-                        settings, _jwks_cache(request, settings), id_token, now=int(time.time())
-                    )
-                except idp.TokenInvalid as invalid:
-                    world_error = invalid.reason
         try:
             approval_id, status = await approvals.record(conn, state, claims, world_error, settings, now)
         except approvals.ApprovalInvalid as invalid:
             raise HTTPException(status_code=400, detail="unknown World sign-in state") from invalid
 
-    response = RedirectResponse(
-        f"{settings.public_origin}/world/approved?approval={approval_id}&status={status}", status_code=302
-    )
-    response.delete_cookie(STATE_COOKIE, path="/v0/world")
-    return response
+    return _back_to_popup(settings, approval_id, status)
 
 
 @router.get("/approvals/{approval_id}")

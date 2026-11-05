@@ -409,3 +409,173 @@ def test_gate_is_off_when_agent_pass_is_not_configured(settings: Settings) -> No
         response = client.post(f"/v0/plans/{plan['plan_uuid']}/approve", json=APPROVE)
         assert response.status_code == 200, response.text
     _truncate(settings)
+
+
+# --- one site on two hostnames (final review Critical #1) -----------------------------------------------
+
+# Production's shape: APP_DOMAIN=app.mergit.site (where World sends the popup back to, `public_origin`),
+# EXTRA_DOMAINS=mergit.site, COOKIE_DOMAIN=mergit.site. The SPA builds `start_url` against whichever host the
+# person is on, so `/start` can run on mergit.site while `/callback` always runs on app.mergit.site.
+SITE_HOST = "mergit.test"
+CALLBACK_HOST = "app.mergit.test"
+
+
+def test_an_approval_started_on_the_other_hostname_finishes_on_the_callback_host(
+    settings: Settings, llm: FakeLLM
+) -> None:
+    """The `mergit_world` state cookie used to be host-only: set by `/start` on mergit.site, it was never
+    sent to `/callback` on app.mergit.site, and every approval begun there answered 400 "missing or
+    mismatched World sign-in state". The other tests here use one `testserver` host and could not see it."""
+    both = settings.model_copy(
+        update={"app_domain": CALLBACK_HOST, "extra_domains": [SITE_HOST], "cookie_domain": SITE_HOST}
+    )
+    assert both.public_origin == f"https://{CALLBACK_HOST}"
+    app = create_app(both, llm=llm, deliver_events=False)
+    try:
+        with TestClient(app, base_url=f"https://{SITE_HOST}", follow_redirects=False) as client:
+            sign_in(client)
+            plan = create(client)
+            detail = require_approval(client, plan["plan_uuid"])
+            approval_id = detail["approval_id"]
+
+            start = client.get(f"/v0/world/approvals/{approval_id}/start")  # on mergit.test
+            assert start.status_code == 302, start.text
+            assert f"domain={SITE_HOST}" in start.headers["set-cookie"].lower()
+            query = parse_qs(urlsplit(start.headers["location"]).query)
+            assert query["redirect_uri"] == [f"https://{CALLBACK_HOST}/v0/world/callback"]
+            state, nonce = query["state"][0], query["nonce"][0]
+
+            key = rsa_key()
+            token = mint_id_token(key, nonce=nonce)
+            with respx.mock(assert_all_called=False) as router:
+                router.get(JWKS_URL).respond(json=jwks_json(key))
+                respx_world_idp(router, token)
+                callback = client.get(
+                    f"https://{CALLBACK_HOST}/v0/world/callback", params={"code": "test-code", "state": state}
+                )
+            assert callback.status_code == 302, callback.text
+            assert callback.headers["location"] == (
+                f"https://{CALLBACK_HOST}/world/approved?approval={approval_id}&status=approved"
+            )
+            # Clearing a cookie that carries a domain only works with the same domain on the deletion.
+            cleared = callback.headers["set-cookie"].lower()
+            assert f"domain={SITE_HOST}" in cleared and "max-age=0" in cleared
+            assert "mergit_world" not in client.cookies
+
+            approved = client.post(
+                f"/v0/plans/{plan['plan_uuid']}/approve",
+                json=APPROVE,
+                headers={"X-World-Approval": approval_id},
+            )
+            assert approved.status_code == 200, approved.text
+    finally:
+        _truncate(settings)  # also when an assertion above fails, so no row leaks into the next test
+
+
+# --- no pool connection across World's network calls (final review Important #5) ------------------------
+
+
+def _in_use(app: Any) -> int:
+    stats = app.state.pool.get_stats()
+    return int(stats["pool_size"]) - int(stats["pool_available"])
+
+
+def test_callback_holds_no_pool_connection_while_world_is_on_the_line(settings: Settings) -> None:
+    """The code exchange and the JWKS fetch can each take ten seconds. They used to run inside the
+    callback's own `pool.connection()` and open transaction, so a burst of callbacks (or one slow World)
+    could starve the whole pool. Measured from inside the mocked network calls themselves: with a pool of
+    one, that one connection must be sitting idle in the pool while World is being asked."""
+    one = settings.model_copy(update={"db_pool_max": 1})
+    llm = FakeLLM([result(planned())])
+    app = create_app(one, llm=llm, deliver_events=False, process_outcomes=False, update_reputation=False)
+    seen: dict[str, int] = {}
+    try:
+        with TestClient(app, base_url="https://testserver", follow_redirects=False) as client:
+            sign_in(client)
+            plan = create(client)
+            approval_id = require_approval(client, plan["plan_uuid"])["approval_id"]
+            state, nonce = start_world(client, approval_id)
+            key = rsa_key()
+            token = mint_id_token(key, nonce=nonce)
+
+            def on_token(_request: httpx.Request) -> httpx.Response:
+                seen["token"] = _in_use(app)
+                return httpx.Response(
+                    200, json={"access_token": "unused", "token_type": "bearer", "id_token": token}
+                )
+
+            def on_jwks(_request: httpx.Request) -> httpx.Response:
+                seen["jwks"] = _in_use(app)
+                return httpx.Response(200, json=jwks_json(key))
+
+            with respx.mock(assert_all_called=True) as router:
+                router.post(TOKEN_URL).mock(side_effect=on_token)
+                router.get(JWKS_URL).mock(side_effect=on_jwks)
+                callback = client.get("/v0/world/callback", params={"code": "test-code", "state": state})
+            assert callback.status_code == 302, callback.text
+            assert callback.headers["location"].endswith("&status=approved")
+        assert seen == {"token": 0, "jwks": 0}
+    finally:
+        _truncate(settings)
+
+
+def test_a_callback_for_an_already_decided_approval_does_not_ask_world_again(
+    app_client: TestClient, settings: Settings
+) -> None:
+    """A re-delivered callback (a reload, a duplicate hit) for an approval that is already decided reports
+    that decision straight away: no second code exchange, no connection held for one."""
+    sign_in(app_client)
+    plan = create(app_client)
+    approval_id = require_approval(app_client, plan["plan_uuid"])["approval_id"]
+    state, nonce = start_world(app_client, approval_id)
+    key = rsa_key()
+    first = world_callback(app_client, key, state=state, nonce=nonce)
+    assert first.status_code == 302 and first.headers["location"].endswith("&status=approved")
+
+    with respx.mock(assert_all_called=False) as router:
+        token_route = router.post(TOKEN_URL).respond(json={"id_token": mint_id_token(key, nonce=nonce)})
+        jwks_route = router.get(JWKS_URL).respond(json=jwks_json(key))
+        again = app_client.get(
+            "/v0/world/callback",
+            params={"code": "test-code", "state": state},
+            headers={"cookie": f"mergit_world={state}"},  # the first callback cleared the real one
+        )
+    assert again.status_code == 302, again.text
+    assert again.headers["location"] == (
+        f"{settings.public_origin}/world/approved?approval={approval_id}&status=approved"
+    )
+    assert token_route.call_count == 0 and jwks_route.call_count == 0
+
+
+def test_a_duplicate_callback_whose_exchange_fails_cannot_undo_an_approval(
+    app_client: TestClient, settings: Settings
+) -> None:
+    """The race the restructured callback must still get right: this request read the row while it was
+    `pending`, then -- while its own code exchange was out at World -- a concurrent duplicate callback
+    recorded `approved`. This request's exchange then fails. Its write must see the row is decided and leave
+    it alone, not blindly record `failed` over the approval that already landed."""
+    sign_in(app_client)
+    plan = create(app_client)
+    approval_id = require_approval(app_client, plan["plan_uuid"])["approval_id"]
+    state, _nonce = start_world(app_client, approval_id)
+
+    def the_other_request_wins_then_world_drops(_request: httpx.Request) -> httpx.Response:
+        with psycopg.connect(settings.database_url) as conn:
+            conn.execute(
+                "UPDATE world_approvals SET status = 'approved', decided_at = now() WHERE approval_id = %s",
+                (approval_id,),
+            )
+        raise httpx.ConnectError("World went away")
+
+    with respx.mock(assert_all_called=True) as router:
+        router.post(TOKEN_URL).mock(side_effect=the_other_request_wins_then_world_drops)
+        callback = app_client.get("/v0/world/callback", params={"code": "test-code", "state": state})
+    assert callback.status_code == 302, callback.text
+    assert callback.headers["location"] == (
+        f"{settings.public_origin}/world/approved?approval={approval_id}&status=approved"
+    )
+    with psycopg.connect(settings.database_url) as conn:
+        row = conn.execute(
+            "SELECT status, reason FROM world_approvals WHERE approval_id = %s", (approval_id,)
+        ).fetchone()
+    assert row == ("approved", None)
