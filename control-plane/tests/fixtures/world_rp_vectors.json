@@ -43,6 +43,7 @@
   "sign_request": [
     {
       "name": "without_action_session_proof",
+      "_note": "expected_sig here is checked for byte-for-byte consistency with the pinned literal in test_fixture_sig_matches_the_pinned_literal, not independently re-derived — sign_rp_request's action is required by design, so this no-action vector is never driven through it. Only the message-layout bytes it shares with the with-action vector are cryptographically verified (test_compute_rp_signature_message_vectors).",
       "signing_key": "0xabababababababababababababababababababababababababababababababab",
       "action": null,
       "random_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",

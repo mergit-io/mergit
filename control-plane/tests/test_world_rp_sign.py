@@ -49,13 +49,15 @@ def test_signature_matches_worlds_vectors(v: dict[str, Any]) -> None:
     assert ctx.expires_at == v["created_at"] + 300
 
 
-def test_no_action_vector_is_documented_not_fabricated() -> None:
-    """The page's other `sign_request` vector (no `action`, a bare session proof) can't be driven
-    through `sign_rp_request`, because that function's `action` parameter is required — Mergit only
-    ever signs action-scoped uniqueness proofs. Rather than silently dropping that half of the page's
-    vectors, or forcing it through a function it doesn't fit, this records that it exists and that its
-    message-construction step (the part that *is* shared with the action variant) is covered
-    separately by `test_compute_rp_signature_message_vectors`."""
+def test_fixture_sig_matches_the_pinned_literal() -> None:
+    """NOT a cryptographic check. The page's other `sign_request` vector (no `action`, a bare session
+    proof) can't be driven through `sign_rp_request`, because that function's `action` parameter is
+    required — Mergit only ever signs action-scoped uniqueness proofs. So unlike every other vector in
+    this file, this one's `expected_sig` is never independently re-derived anywhere in the test suite —
+    it is only compared against a second hardcoded copy of the same literal, pinning the fixture against
+    silent edits. Its authenticity rests on transcription from the page alone. Only the message-layout
+    bytes it shares with the action variant (the part `sign_rp_request` actually exercises) are
+    cryptographically checked, separately, by `test_compute_rp_signature_message_vectors`."""
     no_action = next(v for v in VECTORS["sign_request"] if v["action"] is None)
     assert no_action["expected_sig"] == (
         "0x14f693175773aed912852a601e9c0fd30f2afe2738d31388316232ce6f64ae9"
