@@ -165,7 +165,7 @@ export async function deleteAccount(
 ): Promise<void> {
   if (confirm.trim().toLowerCase() !== "delete") throw new Error("Type delete to confirm.");
   await call("DELETE", "/v0/account", { confirm: "delete" }, base, send, {
-    409: "A plan is approved, funded or running. Wait for it to finish, then delete the account.",
+    409: "A plan is approved, funded or running, or its pull request is still being opened. Wait for it to finish, then delete the account.",
   });
 }
 

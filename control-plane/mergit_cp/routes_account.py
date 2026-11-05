@@ -192,7 +192,9 @@ async def delete_account(
             await accounts.delete_account(conn, settings, user_id)
     except accounts.Busy as busy:
         raise HTTPException(
-            status_code=409, detail="a plan is approved, funded or running; wait for it to finish first"
+            status_code=409,
+            detail="a plan is approved, funded or running, or its pull request is still being opened;"
+            " wait for it to finish first",
         ) from busy
     response.delete_cookie(
         COOKIE, path="/", domain=settings.cookie_domain, secure=True, httponly=True, samesite="lax"

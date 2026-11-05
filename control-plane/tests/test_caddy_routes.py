@@ -26,10 +26,10 @@ CADDYFILE = Path(__file__).resolve().parents[2] / "deploy" / "Caddyfile"
 # Served to the gateway and the worker over the compose network, and deliberately not proxied.
 INTERNAL = ("/v0/internal", "/v0/chain-events")
 
-# Browser routes that are withheld from the public origin until they are safe to expose: DELETE /v0/account
-# removes the account, and what a deletion leaves behind and the once-per-person free credits are still open
-# (accounts.delete_account). Move a path out of this list in the same change that adds it to the Caddyfile.
-WITHHELD = ("/v0/account",)
+# Browser routes that are withheld from the public origin because they are not safe to expose yet. None today:
+# DELETE /v0/account was withheld until a deletion scrubbed what it left behind (accounts.delete_account). A
+# route in this list must be a real route that the Caddyfile does not forward.
+WITHHELD: tuple[str, ...] = ()
 
 
 def _proxied_patterns() -> list[str]:

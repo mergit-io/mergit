@@ -33,10 +33,10 @@
 # send people back to, since each allows one callback address), EXTRA_DOMAINS=mergit.site (wallet sign-in is accepted
 # from both) and COOKIE_DOMAIN=mergit.site (the session cookie is shared, so signing in on one signs in on the other).
 mergit.site, app.mergit.site {
-	# The bare /v0/account is not listed on purpose: it is DELETE /v0/account, deleting the account. It stays off the public
-	# origin until the gaps in what a deletion removes and in the once-per-person free credits are decided (see
-	# accounts.delete_account). /v0/account/* below is every other account route.
-	@api path /v0/auth/* /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents /v0/agents/*
+	# The bare /v0/account is DELETE /v0/account, deleting the account (what it removes and what stays is in
+	# accounts.delete_account). It is not covered by /v0/account/*, so it needs its own entry: without one the static site
+	# answers it and Settings shows "Mergit could not do that".
+	@api path /v0/auth/* /v0/account /v0/account/* /v0/wallet-interest /v0/plans /v0/plans/* /v0/agents /v0/agents/*
 	# On every response, the page's and the API's. HSTS has no includeSubDomains or preload: other names under this
 	# domain are not all known to be HTTPS-only, and a preload entry cannot be taken back quickly.
 	header {

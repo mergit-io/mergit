@@ -412,6 +412,18 @@ async def _in_flight(conn: Conn, requesters: list[str]) -> bool:
     return any(row[0] in IN_FLIGHT for row in await cur.fetchall())
 
 
+async def _pull_request_open(conn: Conn, requesters: list[str]) -> bool:
+    """Whether the worker is still to open, or is opening, a pull request for one of these requesters' plans.
+    It writes the branch and the pull request's address back when it is done, after any scrub. Locks the rows,
+    so a request the worker claims first is seen here."""
+    cur = await conn.execute(
+        "SELECT 1 FROM pr_requests r JOIN plans p USING (plan_uuid)"
+        " WHERE p.requester = ANY(%s) AND r.status IN ('queued', 'running') LIMIT 1 FOR UPDATE OF r",
+        (requesters,),
+    )
+    return await cur.fetchone() is not None
+
+
 async def unlink_wallet(conn: Conn, user_id: UUID, address: str) -> None:
     """Removes one of the caller's own wallets. Sessions acting as it fall back to the account's default
     address: its first remaining wallet, else its trial address."""
@@ -473,15 +485,21 @@ async def credits_forfeited(conn: Conn, settings: Settings, user_id: UUID) -> bo
 
 async def delete_account(conn: Conn, settings: Settings, user_id: UUID) -> None:
     """Deletes the user with its sign-in methods, wallets, settings and sessions. Refused (``Busy``) while one
-    of its plans is approved, funded or running.
+    of its plans is approved, funded or running, or a pull request for one is still being opened.
 
     What stays: its plans and tasks, with the goal, repository, ref and task text replaced by ``[deleted]``,
     since the money ledger (``money_events``) and the dispatches point at them; and a keyed hash of each
     sign-in method in ``deleted_methods``, so the same person cannot collect the free credits again.
+
+    What goes besides the account: the change each run produced (``jobs.patch``) and the worker's notes on it,
+    where its pull request went (branch, address, error), the idempotency keys it chose, the emailed codes
+    sent to its address and its redeem attempts. What stays by design: the addresses and amounts on the chain
+    and in the money ledger, the plan and task hashes, and the receipts in the store service, which are public
+    commitments and are not in this database.
     """
     await _lock_user(conn, user_id)
     owned = await owned_addresses(conn, user_id, "")
-    if await _in_flight(conn, owned):
+    if await _in_flight(conn, owned) or await _pull_request_open(conn, owned):
         raise Busy
     hashes = await _method_hashes(conn, settings, user_id)
     if hashes:
@@ -495,9 +513,29 @@ async def delete_account(conn: Conn, settings: Settings, user_id: UUID) -> None:
         (REDACTED, REDACTED, owned),
     )
     await conn.execute(
-        "UPDATE plans SET goal = %s, repo_url = %s, ref = %s, updated_at = now() WHERE requester = ANY(%s)",
+        "UPDATE plans SET goal = %s, repo_url = %s, ref = %s, idempotency_key = NULL, updated_at = now()"
+        " WHERE requester = ANY(%s)",
         (REDACTED, REDACTED, REDACTED, owned),
     )
+    await conn.execute(
+        "UPDATE jobs SET patch = NULL, notes = NULL"
+        " WHERE plan_uuid IN (SELECT plan_uuid FROM plans WHERE requester = ANY(%s))",
+        (owned,),
+    )
+    await conn.execute(
+        "UPDATE pr_requests SET branch = NULL, pr_url = NULL, error = NULL"
+        " WHERE plan_uuid IN (SELECT plan_uuid FROM plans WHERE requester = ANY(%s))",
+        (owned,),
+    )
+    cur = await conn.execute(
+        "SELECT lower(email) FROM users WHERE user_id = %s AND email IS NOT NULL"
+        " UNION SELECT lower(subject) FROM identities WHERE user_id = %s AND provider = 'email'",
+        (user_id, user_id),
+    )
+    await conn.execute(
+        "DELETE FROM email_otps WHERE email = ANY(%s)", ([r[0] for r in await cur.fetchall()],)
+    )
+    await conn.execute("DELETE FROM redeem_attempts WHERE user_id = %s", (user_id,))
     # A session from before accounts existed has no user but acts as one of this user's wallets.
     await conn.execute(
         "UPDATE sessions SET revoked_at = now()"
