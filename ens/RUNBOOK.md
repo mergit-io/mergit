@@ -20,7 +20,7 @@ Chain 84532. Identity: `0x72eAc041Ee897fF0385022639452fE08Dcd4B7D6`. Agent #1 al
 
 1. **Generate the files with no registrations yet** (HLD 8.1 step 1). Agents without an `agentId` get no `registrations`; `--without-ids` forces that for all agents:
    `node src/registration-cli.ts agents.json out`
-2. **Host them** at stable, editable HTTPS URLs (HLD O5, your decision). One simple option is to commit them under `frontend/public/agents/` so they are served at `https://mergit.site/agents/<label>.json`; that deploys with the site and can be edited later. The URL is fixed on chain by the next step, so the content must stay editable and the URL must stay put.
+2. **Host them** at stable, editable HTTPS URLs (HLD O5, your decision), **served with an `Access-Control-Allow-Origin` header that allows the web app's origin**: the web app fetches the file from the browser, and without that header no agent can be verified. One simple option is to commit them under `frontend/public/agents/` so they are served at `https://mergit.site/agents/<label>.json`; that deploys with the site and can be edited later. The URL is fixed on chain by the next step, so the content must stay editable and the URL must stay put.
 3. **Register each agent.** `registerAgent(address runtimeKey, string metadataURI)`; the runtime key is the address that signs that agent's receipts. Ids are sequential and returned by the call:
    ```
    export RPC=https://sepolia.base.org   # or your own
