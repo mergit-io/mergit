@@ -16,10 +16,11 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from .auth import PoolDep, PrincipalDep, SettingsDep
 from .config import Settings
-from .world import approvals, idp
+from .world import approvals, idp, rp_sign
 
 router = APIRouter(prefix="/v0/world", tags=["world"])
 
@@ -171,3 +172,51 @@ async def approval_status(approval_id: UUID, principal: PrincipalDep, pool: Pool
     if row is None:
         raise HTTPException(status_code=404, detail="no such approval")
     return {"status": row[0], "reason": row[1], "expires_at": row[2]}
+
+
+@router.get("/config")
+async def world_config(settings: SettingsDep) -> dict[str, dict[str, object]]:
+    """Public, no session required: what the frontend needs to decide whether to show IDKit's free-trial
+    sybil check or Agent Pass's human-approval popup at all, before anyone is signed in. Carries only
+    IDKit's public params (sec 1.2/1.3 -- `app_id`, `action`, `preset`, none of them secret) and a bare
+    bool for Agent Pass. Never `world_signing_key`, `world_idp_client_id` or `world_idp_client_secret`:
+    the client secret stays server-side and the browser never needs the OIDC client id, since
+    `/approvals/{id}/start` builds World's authorize URL itself."""
+    return {
+        "idkit": {
+            "enabled": settings.world_idkit_enabled,
+            "app_id": settings.world_app_id,
+            "action": settings.world_trial_action,
+            "preset": settings.world_trial_preset,
+        },
+        "agent_pass": {"enabled": settings.world_idp_enabled},
+    }
+
+
+class RpContextRequest(BaseModel):
+    """`action`, when given, must name the free trial's own action -- the only action this endpoint will
+    ever sign for. Anything else is refused outright (422) rather than silently coerced, so this can never
+    become a way for a caller to mint a signature for an action of their choosing."""
+
+    action: str | None = None
+
+
+@router.post("/rp-context")
+async def rp_context(
+    principal: PrincipalDep, settings: SettingsDep, body: RpContextRequest | None = None
+) -> dict[str, str | int]:
+    """Signs a fresh World ID RP context (sec 1.2/2.x) for the free trial's sybil check. Requires a live
+    session (`PrincipalDep`) purely to keep this from being a free, unauthenticated signing oracle --
+    the signature itself says nothing about who is signed in, and World checks the proof, not this call."""
+    if principal.user_id is None:
+        raise HTTPException(status_code=401, detail="sign in again")
+    action = body.action if body is not None else None
+    if action is not None and action != settings.world_trial_action:
+        raise HTTPException(status_code=422, detail="unsupported action")
+    if not settings.world_idkit_enabled:
+        raise HTTPException(status_code=404, detail="world id is not configured")
+    assert settings.world_signing_key is not None  # guaranteed by world_idkit_enabled
+    context = rp_sign.sign_rp_request(
+        settings.world_signing_key.get_secret_value(), settings.world_trial_action, now=int(time.time())
+    )
+    return context.to_json()
