@@ -64,6 +64,9 @@ Settlement and receipts stay on Base Sepolia with test USDC. ENS runs on Ethereu
 | E7 | The owned-token registry per agent is a stretch goal, not part of the core plan. | **Proposed** | Roughly $0.45 of gas by estimate, more code, ENS's own tutorial calls its registrar unaudited. |
 | E8 | The ENS part contains no Solidity of ours. | **Proposed** | Follows from E3. |
 | E9 | Agents registered before the URL scheme exists (agent #1 on Base Sepolia, empty URL) are not linked. New agents are registered for the demo. | **Locked** | The Identity contract cannot change a URL after registration. |
+| E10 | A subname identifies **one agent for its whole life**. It is never created per task. Names and the `mergit.reputation` record are kept, so the track record accumulates and feeds a leaderboard. | **Proposed** | A new name per task would reset the track record to empty and defeat the point of a public record. |
+| E11 | **Agent selection stays in the control plane.** The router (C7) picks from the per-category posteriors (C21): reuse an agent with a validated track record in the task's category. ENS is never a routing input. | **Proposed** | Main HLD 7.6: the router reads posteriors only, never chain state. E5: the ENS mirror is not the source of truth. |
+| E12 | A **new agent and a new subname are created only when no existing agent is capable** for the category (cold start). The new agent starts with an empty record. | **Proposed**. Trigger is **manual** (per Yash, 2026-11-05): the `mergit.eth` owner creates the subname | Registration needs the admin-owned parent and mainnet gas (section 9), so it cannot be a silent per-task side effect. |
 
 ## 5. Components
 
@@ -71,8 +74,8 @@ Settlement and receipts stay on Base Sepolia with test USDC. ENS runs on Ethereu
 | --- | --- | --- |
 | **Registration JSON host** | New | Serves one JSON file per agent at a stable HTTPS URL. The file names the ENS name and lists `registrations`. Editable after on-chain registration. Host is **Open** (O5). |
 | **ENS admin script** | New | One-shot TypeScript script run by the `mergit.eth` owner. Sets the resolver, grants the roles, writes the agent records in one batched call. Runs first on a mainnet fork, then once on mainnet. |
-| **ENS publisher** | New | A small service that reads `OutcomeRecorded` events from `ReputationAnchor`, counts tier 0 outcomes per agent, and writes `mergit.reputation`. Holds the publisher key. |
-| **Web app: ENS reads** | Existing app, new code | Resolves names live, shows `agent-endpoint` and `mergit.reputation`, performs the two-way link check, and shows which account wrote each record. |
+| **ENS publisher** | New | A small service that reads `OutcomeRecorded` events from `ReputationAnchor`, counts tier 0 outcomes per agent and per category, and writes `mergit.reputation`. Holds the publisher key. |
+| **Web app: ENS reads** | Existing app, new code | Resolves names live, shows `agent-endpoint` and `mergit.reputation`, performs the two-way link check, shows which account wrote each record, and renders the per-category track record and a leaderboard of counts (not a score, see 8.3). |
 | **Chain gateway, validator, contracts** | Existing, unchanged | No change to receipts, escrow, stake or reputation recording. |
 
 Tools: viem 2.35.0 or later, ENSjs 5.2.5 or later for ENSv2 writes (from the ENS readiness page). The Rust services are not touched except to expose what the publisher reads, if the publisher is not written in TypeScript (**Open**, O6).
@@ -81,7 +84,7 @@ Tools: viem 2.35.0 or later, ENSjs 5.2.5 or later for ENSv2 writes (from the ENS
 
 ### 6.1 Naming
 
-Subnames take the form `<label>.mergit.eth`, for example `coder-0.mergit.eth`. The label is chosen by the operator at registration and is unique under the parent. **Proposed.**
+Subnames take the form `<label>.mergit.eth`, for example `coder-0.mergit.eth`. The label is chosen by the operator at registration and is unique under the parent. A subname belongs to one agent for its whole life and is not created per task (E10). **Proposed.**
 
 ### 6.2 Records on each subname
 
@@ -112,10 +115,12 @@ The full key for agent `N` is `agent-registration[0x0001000003014a341472eac041ee
   "asOfBlock": 0,
   "auditedStaked": 0,
   "verifiedStaked": 0,
+  "byCategory": { "<category>": { "auditedStaked": 0, "verifiedStaked": 0 } },
   "note": "Mirror of ReputationAnchor tier 0 outcomes. Not a score. Chain is the source of truth."
 }
 ```
 
+- `byCategory` splits the same counts by the task category emitted in `OutcomeRecorded` (a `bytes32`, shown as its label when the label is known). It is what lets the web app show a per-category track record and a leaderboard.
 - It carries counts only. It is not the paper's value density and must not be presented as one.
 - Every figure comes from chain events at a stated block. No number is presented as measured beyond that.
 - The record is overwritten, not appended. History stays on chain in `OutcomeRecorded`.
@@ -161,6 +166,16 @@ ENSIP-25 notes that if an ENS name changes owner, old records may be stale. The 
 ### 8.2 Publish the reputation mirror (step 7)
 
 After the validator or challenge manager records an outcome, the publisher reads the event, recomputes the agent's tier 0 counts, and writes `mergit.reputation`. A write by any other account must revert. That revert is a test, not a hope.
+
+### 8.3 Reuse before create (agent selection)
+
+This is the lifecycle around the two flows above. Names persist; selection is not done by ENS.
+
+1. **A requester submits a task.** The planner assigns its category (C27).
+2. **The router (C7) looks for an existing agent with a validated track record in that category**, using the posteriors from C21. Before P4 the requester picks from the listed candidates. From P4 Thompson sampling chooses (main HLD 7.6). This step never reads ENS (E11).
+3. **If one is capable, it is reused.** The web app shows its ENS name and `mergit.reputation` beside it, read live. The outcome of the task updates its posterior and, through the publisher, its record. The name does not change.
+4. **If none is capable, a new agent is created** (E12). It follows 8.1: registration JSON, `registerAgent`, admin script, new subname. For v0 the `mergit.eth` owner runs these steps by hand. An automated registrar is out of scope; it would need a funded hot key with a narrow role and mainnet gas per agent. The new agent's record starts empty and it earns reputation the same way as any other agent, including the faucet-tier rule (invariant 6).
+5. **The leaderboard is built from the list of agents the platform already holds** (the Identity `agentId`s and C9), looking up each agent's name from its registration JSON. The records-only design has no per-name token or registry to enumerate, so ENS is not asked to list its subnames. The leaderboard shows counts at a stated block and is labelled as a mirror. It is not the paper's value density, and ranking by raw counts can differ from ranking by cost-adjusted reputation.
 
 ## 9. Environments, cost and rollout
 
