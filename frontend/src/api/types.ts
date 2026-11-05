@@ -115,6 +115,24 @@ export type Suggestions = {
   tasks: TaskSuggestion[];
 };
 
+/** One exploring suggestion mirrored onto Arkiv's Rabdi testnet (ETHGlobal Mumbai's "Build on Arkiv" track),
+ * as read back through `arkiv_query` rather than from this plan's own Postgres row. */
+export type ArkivDecision = {
+  entity_key: string;
+  task_index: number;
+  category: string;
+  decided_at: string;
+  candidates: unknown[];
+  picks: unknown[];
+};
+
+export type ArkivSuggestions = {
+  /** False when the server has no `ARKIV_*` configured; the panel that renders this should then hide. */
+  enabled: boolean;
+  query?: string;
+  decisions: ArkivDecision[];
+};
+
 export type StepCost = {
   model: string | null;
   input_tokens: number;

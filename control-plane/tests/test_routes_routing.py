@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from mergit_cp import routes_routing
 from mergit_cp.agents import Agent
 from mergit_cp.app import create_app
+from mergit_cp.arkiv_mirror import ArkivMirror
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool
 from mergit_cp.eligibility import AT_CAP, IN_PROBATION
@@ -45,6 +46,7 @@ from mergit_cp.routing import (
 )
 from tests.cp_fakes import FakeLLM
 from tests.test_api import seed_plan
+from tests.test_arkiv_mirror import FakeEntity, FakeRawClient
 from tests.test_eligibility import dispatch, invalid_verdict
 from tests.test_plans import app_client, create, llm, settings, sign_in  # noqa: F401  (fixtures)
 from tests.test_reputation import gateway, run
@@ -578,3 +580,58 @@ def test_an_empty_answer_with_agents_out_for_probation_does_not_blame_the_budget
         assert why(task) == {"3": IN_PROBATION} | dict.fromkeys("1245", OVER_BUDGET)
         assert task["reason"] == PARTLY_LEFT_OUT + NO_FIT
         assert task["reason"].startswith("some agents are left out for probation or the operator cap")
+
+
+# -- Arkiv mirror (ETHGlobal Mumbai "Build on Arkiv" track): routing_decisions also written to Arkiv, and
+# readable back through its own endpoint, with no Postgres field exposed anywhere this depends on. --
+
+
+@contextmanager
+def arkiv_client(settings: Settings, llm: FakeLLM) -> Iterator[tuple[TestClient, FakeRawClient]]:
+    raw = FakeRawClient()
+    arkiv = ArkivMirror("https://rpc.example", "0xkey", None, 30, client=raw)
+    with TestClient(
+        create_app(settings, llm=llm, deliver_events=False, arkiv=arkiv), base_url="https://testserver"
+    ) as c:
+        yield c, raw
+
+
+def test_an_exploring_suggestion_is_mirrored_to_arkiv_and_readable_back(settings: Settings, llm: FakeLLM):
+    with arkiv_client(settings, llm) as (c, raw):
+        sign_in(c)
+        plan = create(c)
+        got = c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"}).json()
+
+        # One Arkiv write per task, tagged for the project and keyed to this plan.
+        assert len(raw.created) == len(got["tasks"]) == 2
+        for call in raw.created:
+            assert call["attributes"]["kind"] == "mergit.routing_decision"
+            assert call["attributes"]["planId"] == plan["plan_id"]
+            assert call["content_type"] == "application/json"
+
+        # The read endpoint decodes what was written, not a copy kept in Postgres.
+        raw.entities = [
+            FakeEntity(key=call["key"], attributes=call["attributes"], payload=call["payload"])
+            for call in raw.created
+        ]
+        mirrored = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions").json()
+        assert mirrored["enabled"] is True
+        assert {d["task_index"] for d in mirrored["decisions"]} == {0, 1}
+
+
+def test_arkiv_suggestions_is_owner_only(settings: Settings, llm: FakeLLM):
+    with arkiv_client(settings, llm) as (c, _raw):
+        sign_in(c)
+        plan = create(c)
+        c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"})
+        c.post("/v0/auth/logout")
+        sign_in(c)  # a different, freshly generated account
+        resp = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions")
+        assert resp.status_code == 403
+
+
+def test_arkiv_suggestions_is_disabled_when_arkiv_is_not_configured(app_client: TestClient):
+    sign_in(app_client)
+    plan = create(app_client)
+    got = app_client.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions").json()
+    assert got == {"enabled": False, "decisions": []}

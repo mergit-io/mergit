@@ -135,6 +135,18 @@ class Settings(BaseSettings):
     otp_max_attempts: int = Field(default=5, ge=1)
     otp_sends_per_hour: int = Field(default=5, ge=1)
 
+    arkiv_rpc_url: str | None = None
+    """Arkiv's Rabdi testnet RPC (``https://rpc.rabdi.db-chain.testnet.arkiv.network``). Unset: the
+    routing-decision mirror and its read endpoint are both no-ops (``arkiv_enabled``)."""
+    arkiv_access_key: SecretStr | None = None
+    """Raises the public RPC's heavy rate limit; free, from ``hub.arkiv.network/access-keys``."""
+    arkiv_private_key: SecretStr | None = None
+    """One service wallet's key, funded from ``hub.arkiv.network/faucet``, that signs every mirrored
+    entity. Not a per-requester wallet: the Arkiv owner is this service account; the requester address is
+    a queryable attribute on the entity instead."""
+    arkiv_entity_ttl_days: int = Field(default=30, ge=1)
+    """How long a mirrored routing decision lives on Arkiv before it expires."""
+
     worker_token: SecretStr
     """Shared secret the worker sends as ``Authorization: Bearer`` on POST /v0/internal/progress
     (plan task O7). Not named in spec/events-v0.md, which only covers the orchestrator-gateway leg;
@@ -179,6 +191,10 @@ class Settings(BaseSettings):
     @property
     def email_enabled(self) -> bool:
         return bool(self.smtp_host and self.smtp_from)
+
+    @property
+    def arkiv_enabled(self) -> bool:
+        return bool(self.arkiv_rpc_url and self.arkiv_private_key)
 
     @field_validator("cors_origins", "repo_hosts", "extra_domains", "planner_models", mode="before")
     @classmethod

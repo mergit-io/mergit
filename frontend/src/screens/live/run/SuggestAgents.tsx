@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { errorMessage, getSuggestions } from "../../../api/client";
+import { errorMessage, getArkivSuggestions, getSuggestions } from "../../../api/client";
 import { percent, usdc } from "../../../api/reputation";
-import type { Suggestions } from "../../../api/types";
+import type { ArkivSuggestions, Suggestions } from "../../../api/types";
 
 /**
  * Advice on which agents to pick, from what the platform has validated about each (never from free-credit work).
@@ -14,10 +14,15 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [got, setGot] = useState<Suggestions>();
+  const [arkivBusy, setArkivBusy] = useState(false);
+  const [arkivError, setArkivError] = useState<string>();
+  const [arkiv, setArkiv] = useState<ArkivSuggestions>();
 
   const ask = () => {
     setBusy(true);
     setError(undefined);
+    setArkiv(undefined);
+    setArkivError(undefined);
     getSuggestions(planUuid, explore).then(
       (s) => {
         setGot(s);
@@ -26,6 +31,24 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
       (e: unknown) => {
         setError(errorMessage(e));
         setBusy(false);
+      },
+    );
+  };
+
+  /** An exploring answer (and only that: greedy writes nothing) is mirrored onto Arkiv's Rabdi testnet
+   * (ETHGlobal Mumbai's "Build on Arkiv" track); this reads it back from there, not from this plan's own
+   * database, to show the mirror is actually read somewhere a user sees. */
+  const viewOnArkiv = () => {
+    setArkivBusy(true);
+    setArkivError(undefined);
+    getArkivSuggestions(planUuid).then(
+      (a) => {
+        setArkiv(a);
+        setArkivBusy(false);
+      },
+      (e: unknown) => {
+        setArkivError(errorMessage(e));
+        setArkivBusy(false);
       },
     );
   };
@@ -90,6 +113,43 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
           >
             Use these picks
           </button>
+          {got.mode === "explore" && (
+            <div className="col g4">
+              <button type="button" className="btn ghost block" disabled={arkivBusy} onClick={viewOnArkiv}>
+                {arkivBusy ? "Checking Arkiv…" : "View on Arkiv"}
+              </button>
+              {arkivError && (
+                <span className="small ca" role="alert">
+                  {arkivError}
+                </span>
+              )}
+              {arkiv && !arkiv.enabled && (
+                <span className="small c3">Arkiv mirroring is off on this deployment.</span>
+              )}
+              {arkiv?.enabled && (
+                <div className="col g4" data-testid="arkiv-suggestions">
+                  <span className="small c3">
+                    {arkiv.decisions.length === 0
+                      ? "Not found on Arkiv yet; the mirror write may still be in flight or failed silently."
+                      : `${String(arkiv.decisions.length)} decision${arkiv.decisions.length === 1 ? "" : "s"} read back from Arkiv's Rabdi testnet, not this app's own database:`}
+                  </span>
+                  {arkiv.decisions.map((d) => (
+                    <span key={d.entity_key} className="small mono">
+                      Task {String(d.task_index + 1)} · {d.entity_key}
+                    </span>
+                  ))}
+                  <a
+                    className="small"
+                    href="https://rabdi.explorer.arkiv.network"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open the Rabdi explorer
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

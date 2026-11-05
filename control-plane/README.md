@@ -204,6 +204,21 @@ without it, `GET /v0/plans/{plan_uuid}/events` sees no session and answers `401`
 **Database.** The control plane uses its own database, not the gateway's: both have tables named `plans`,
 `tasks` and `outbox`, and spec/events-v0.md says neither reads the other's.
 
+## Arkiv mirror (ETHGlobal Mumbai, "Build on Arkiv" track)
+
+An exploring `GET /v0/plans/{uuid}/suggestions?explore=true` call already records its draw in this
+service's own `routing_decisions` table (pre-existing, migration `0016`); `mergit_cp/arkiv_mirror.py`
+additionally mirrors it as a public entity on Arkiv's Rabdi testnet, after that Postgres transaction has
+committed, so a down testnet or a slow RPC never fails the request (`routes_routing._mirror_decisions`
+catches and logs). `GET /v0/plans/{uuid}/arkiv-suggestions` reads the mirror back for the plan's owner.
+See `../arkiv/schema.md` for the entity shape.
+
+All optional, all unset by default (`Settings.arkiv_enabled`): `ARKIV_RPC_URL` (Rabdi's RPC,
+`https://rpc.rabdi.db-chain.testnet.arkiv.network`), `ARKIV_PRIVATE_KEY` (one service wallet, funded from
+`hub.arkiv.network/faucet`, that signs every mirrored entity — not a per-requester wallet), `ARKIV_ACCESS_KEY`
+(from `hub.arkiv.network/access-keys`, raises the public RPC's rate limit), `ARKIV_ENTITY_TTL_DAYS` (default
+30). Needs `arkiv-sdk` (`pyproject.toml`, pinned `==1.0.0b2`: the package has no stable release yet).
+
 ## The worker
 
 `python -m mergit_worker` claims one `queued` job at a time (`SELECT … FOR UPDATE SKIP LOCKED`), runs the

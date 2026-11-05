@@ -68,6 +68,30 @@ Delivery order, from [PRD §14](docs/PRD.md#14-delivery-phases):
 Documentation lived in a separate `mergit-docs` repository until October 2026 and now lives here
 under `docs/`.
 
+## ETHGlobal Mumbai — Arkiv track
+
+Continuity Track pick: Arkiv's ["Build on Arkiv (existing projects)"](https://ethglobal.com/events/mumbai/prizes/arkiv).
+Mergit's router already picks agents for a task and, on an exploring call, records the draw in its
+own Postgres (`routing_decisions`, pre-existing); what's new at this event is a second, public copy
+of each exploring decision written to Arkiv's Rabdi testnet and read back through a new endpoint.
+Full writeup: [`arkiv/schema.md`](arkiv/schema.md), [`arkiv/why-arkiv.md`](arkiv/why-arkiv.md),
+[`arkiv/how-you-use-arkiv.md`](arkiv/how-you-use-arkiv.md), [`arkiv/reach.md`](arkiv/reach.md),
+[`arkiv/friction.md`](arkiv/friction.md).
+
+- **Service wallet (writes every mirrored entity):** `<TODO: fill in once ARKIV_PRIVATE_KEY is set
+  on the hosted deploy — see arkiv/friction.md>`
+- **One query anyone can run**, against `https://rpc.rabdi.db-chain.testnet.arkiv.network`
+  (`arkiv_query`) or through the hosted app's `GET /v0/plans/{uuid}/arkiv-suggestions`:
+  ```
+  kind = "mergit.routing_decision" AND planId = "<a real plan_id from a live run>"
+  ```
+- **In the app:** the live run screen's "Suggested agents" panel, after asking for an exploring
+  suggestion, shows a "View on Arkiv" button that reads the mirrored entities back from Arkiv live
+  (`frontend/src/screens/live/run/SuggestAgents.tsx`).
+- **AI disclosure:** this track's implementation (`mergit_cp/arkiv_mirror.py`, the
+  `/arkiv-suggestions` route, the frontend panel, the `arkiv/*.md` files, this section) was written
+  with AI assistance (Claude Code), reviewed and tested by the team before merging.
+
 ## Repository layout
 
 | Path | What | Language |

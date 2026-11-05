@@ -13,6 +13,7 @@ evidence or only on the configured cost prior (``NO_FIT`` or ``NO_FIT_ON_PRIOR_A
 """
 
 import json
+import logging
 import random
 import secrets
 from datetime import UTC, datetime
@@ -26,12 +27,16 @@ from psycopg.types.json import Jsonb
 
 from . import eligibility, plans
 from .agents import Agent
+from .arkiv_mirror import ArkivMirror
 from .auth import PoolDep, PrincipalDep, SettingsDep
+from .deps import ArkivDep
 from .reputation_model import Params, Posterior
 from .routes_plans import get_agents
 from .routing import BELOW_MAX_ATTEMPTS, OVER_BUDGET_IN_THIS_DRAW, Pick, rank
 
 router = APIRouter(prefix="/v0/plans", tags=["routing"])
+
+log = logging.getLogger(__name__)
 
 NOTE = (
     "A suggestion, not an assignment: you still choose the agents when you approve. It ranks agents by "
@@ -89,6 +94,7 @@ async def suggestions(
     settings: SettingsDep,
     pool: PoolDep,
     agents: Annotated[list[Agent], Depends(get_agents)],
+    arkiv: ArkivDep,
     explore: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """Per task: the agents expected to fit its budget, best first (at most ``max_attempts``), and every
@@ -180,12 +186,50 @@ async def suggestions(
                         Jsonb(json.loads(json.dumps([_pick_record(p) for p in picks]))),
                     ),
                 )
+        if arkiv is not None:
+            await _mirror_decisions(arkiv, plan.plan_id, plan.category, address, decisions, candidates)
     return {
         "plan_id": plan.plan_id,
         "mode": "explore" if explore else "greedy",
         "seed": seed,
         "note": NOTE,
         "tasks": tasks,
+    }
+
+
+@router.get("/{plan_uuid}/arkiv-suggestions")
+async def arkiv_suggestions(
+    plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep, arkiv: ArkivDep
+) -> dict[str, Any]:
+    """The owner's own exploring-suggestion mirror, as stored on Arkiv's Rabdi testnet rather than in
+    `routing_decisions` — proof that the write side (`_mirror_decisions`) is actually read somewhere a
+    user sees, not merely written and ignored (the Arkiv prize's own distinction). ``enabled: false`` when
+    `Settings.arkiv_enabled` is false; the frontend then hides the panel instead of calling this at all."""
+    if arkiv is None:
+        return {"enabled": False, "decisions": []}
+    async with pool.connection() as conn:
+        plan = await plans.load(conn, plan_uuid)
+        if plan is None:
+            raise HTTPException(status_code=404, detail="no such plan")
+        if not principal.owns(plan.requester):
+            raise HTTPException(
+                status_code=403, detail="only the requester may see suggestions for this plan"
+            )
+    decisions = await arkiv.read_decisions(plan.plan_id)
+    return {
+        "enabled": True,
+        "query": f'kind = "mergit.routing_decision" AND planId = "{plan.plan_id}"',
+        "decisions": [
+            {
+                "entity_key": d.entity_key,
+                "task_index": d.task_index,
+                "category": d.category,
+                "decided_at": d.decided_at,
+                "candidates": d.candidates,
+                "picks": d.picks,
+            }
+            for d in decisions
+        ],
     }
 
 
@@ -242,3 +286,29 @@ def _snapshot(candidates: dict[str, Posterior]) -> list[dict[str, Any]]:
 
 def _pick_record(pick: Pick) -> dict[str, Any]:
     return {"agent_id": pick.agent_id, "score": pick.score, "success": pick.success, "cost": pick.cost}
+
+
+async def _mirror_decisions(
+    arkiv: ArkivMirror,
+    plan_id: str,
+    category: str,
+    requester: str,
+    decisions: list[tuple[int, int, list[Pick]]],
+    candidates: dict[str, Posterior],
+) -> None:
+    """Best-effort: a down testnet or a slow RPC must not fail a suggestions call that Postgres already
+    recorded, so every failure is caught and logged, never raised."""
+    decided_at = datetime.now(UTC).isoformat()
+    for index, _budget, picks in decisions:
+        try:
+            await arkiv.write_decision(
+                plan_id=plan_id,
+                task_index=index,
+                category=category,
+                requester=requester,
+                decided_at=decided_at,
+                candidates=_snapshot(candidates),
+                picks=[_pick_record(p) for p in picks],
+            )
+        except Exception:  # any SDK/RPC failure; Arkiv is a mirror, not the record of truth
+            log.warning("arkiv mirror failed for plan %s task %s", plan_id, index, exc_info=True)
