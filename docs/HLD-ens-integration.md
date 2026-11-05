@@ -11,7 +11,7 @@ Every statement carries one of three labels, as in the main HLD.
 | --- | --- |
 | **Locked** | A fact from the repository, the chain, or the prize rules. Changing it means changing the source. |
 | **Proposed** | Recommended by this document. The team has not agreed. |
-| **Open** | Undecided. Listed in section 12 with what it blocks. |
+| **Open** | Undecided. Listed in section 11 with what it blocks. |
 
 Diagram sources are editable Excalidraw files in [`diagrams/`](diagrams/). The PNGs in `diagrams/preview/` are approximate renders. Open the `.excalidraw` file at <https://excalidraw.com> to edit.
 
@@ -62,7 +62,7 @@ Settlement and receipts stay on Base Sepolia with test USDC. ENS runs on Ethereu
 | E5 | Reputation on ENS is a **labelled mirror** of `ReputationAnchor`, never the source of truth. Only tier 0 (staked) outcomes are counted. | **Proposed** | Invariants 4 and 6. See section 7. |
 | E6 | One hot key (the "publisher") may write the single record `mergit.reputation`. No other writer can. | **Proposed**, depends on O1 | The enforcement of invariant 4 at the record level. |
 | E7 | The owned-token registry per agent is a stretch goal, not part of the core plan. | **Proposed** | Roughly $0.45 of gas by estimate, more code, ENS's own tutorial calls its registrar unaudited. |
-| E8 | The ENS part contains no Solidity of ours. | **Proposed** | Follows from E3. Certora has nothing to verify here (section 10). |
+| E8 | The ENS part contains no Solidity of ours. | **Proposed** | Follows from E3. |
 | E9 | Agents registered before the URL scheme exists (agent #1 on Base Sepolia, empty URL) are not linked. New agents are registered for the demo. | **Locked** | The Identity contract cannot change a URL after registration. |
 
 ## 5. Components
@@ -164,13 +164,13 @@ After the validator or challenge manager records an outcome, the publisher reads
 
 ## 9. Environments, cost and rollout
 
-![Build plan, environments, cost, Certora](diagrams/preview/14-ens-build-plan-and-environments.png)
+![Build plan, environments, cost](diagrams/preview/14-ens-build-plan-and-environments.png)
 
 Source: [`diagrams/14-ens-build-plan-and-environments.excalidraw`](diagrams/14-ens-build-plan-and-environments.excalidraw)
 
 | Stage | Where | Cost | What it proves |
 | --- | --- | --- | --- |
-| 1 Verify | Mainnet reads | Free | ENSv2 resolution is live on mainnet (done, see section 14). Role granularity spike (O1). |
+| 1 Verify | Mainnet reads | Free | ENSv2 resolution is live on mainnet (done, see section 13). Role granularity spike (O1). |
 | 2 Build | Sepolia ENSv2 and a local mainnet fork | Free. Sepolia needs faucet ETH and free MockUSDC | Scripts, roles, records, web reads, publisher. |
 | 3 Dry-run | The mainnet fork | Free | The exact mainnet script, every record read back, operator write to `mergit.reputation` reverts. |
 | 4 Mainnet one-shot | Ethereum mainnet | Gas only | The real, live integration the prize requires. Reads afterwards are free. |
@@ -190,27 +190,7 @@ Source: [`diagrams/14-ens-build-plan-and-environments.excalidraw`](diagrams/14-e
 - Options, none verified: a gasless swap on CoW Swap, a small ETH loan from a teammate, or a mentor. See O2.
 - Base Sepolia faucet funds cover the Mergit side only and have no value on mainnet.
 
-## 10. Certora track (separate, not on the ENS critical path)
-
-**Locked:** Certora publishes an official Claude Code skill, `certora/autoprover-skill`, which writes Certora Prover specifications for a Solidity contract and runs them in Certora's cloud. Its README states a free tier of 2,000 prover minutes a month, and Certora's pricing page confirms a free "Basic" plan at that size.
-
-**Proposed:** use it on `Escrow` and then `StakeVault` in `mergit-contracts`, as a background task. These two contracts hold money and the contracts README says nothing is audited.
-
-- It is a test of the tool the founder asked the team to try, and a head start on the paper's safety claims. It does not contribute to the ENS prize.
-- The ENS design (E8) contains no Solidity of ours. There is nothing for the Prover to check in the ENS work, and the plan does not invent a contract to give it something.
-- The output is a report in `certora/report/`. A clean report does not mean the contract is secure. It covers only the properties written.
-
-Install (the user runs this; the key is secret and must not go into chat, issues, or the repo):
-
-```
-export CERTORAKEY=...        # from certora.com/signup
-claude plugin marketplace add Certora/autoprover-skill
-claude plugin install certora-autoprover@certora-skills
-```
-
-Known risks: `foundry.toml` pins solc 0.8.33 and it is unknown whether Certora's compiler manager offers that version (O8). One main contract per run, 40 minutes to 2 hours each by the README. Every run uploads the contract source to Certora's cloud. `mergit-contracts` is MIT-licensed and public, so that is acceptable here. Read the plugin's files before giving it a key.
-
-## 11. Risks
+## 10. Risks
 
 | # | Risk | Likelihood and effect | Mitigation |
 | --- | --- | --- | --- |
@@ -223,9 +203,9 @@ Known risks: `foundry.toml` pins solc 0.8.33 and it is unknown whether Certora's
 | R7 | Publisher key compromise | Low to medium. Writes a false mirror, cannot touch funds | Role limited to one record. Mirror is labelled. Chain remains the source of truth. |
 | R8 | Two chains confuse judges | Medium | State it plainly: agents and money on Base Sepolia, names on Ethereum mainnet. |
 | R9 | Registration JSON host goes away and the two-way link breaks | Low | Host on infrastructure the team already runs. The check fails visibly, not silently. |
-| R10 | Time. The event runs 5 to 7 November, and the team's hours are not known | High | Order work by dependency (section 13). Cut the stretch goals first. |
+| R10 | Time. The event runs 5 to 7 November, and the team's hours are not known | High | Order work by dependency (section 12). Cut the stretch goals first. |
 
-## 12. Open decisions
+## 11. Open decisions
 
 | # | Question | Blocks |
 | --- | --- | --- |
@@ -236,10 +216,9 @@ Known risks: `foundry.toml` pins solc 0.8.33 and it is unknown whether Certora's
 | O5 | Where is the registration JSON hosted (the `mergit.site` Render site, or the research site on GitHub Pages)? | Step 1 of the flow |
 | O6 | Is the publisher TypeScript, or Rust beside the chain gateway? | Section 5 |
 | O7 | Where does the publisher key live, and how is it resolved without a model-reachable path? | Invariant 7 |
-| O8 | Does Certora's compiler support solc 0.8.33? | Section 10 |
-| O9 | Does Continuity Track status let the project also enter the open "Best Use of ENSv2" track ($7,000, Sepolia allowed)? Ask the ENS mentors. | Fallback path |
+| O8 | Does Continuity Track status let the project also enter the open "Best Use of ENSv2" track ($7,000, Sepolia allowed)? Ask the ENS mentors. | Fallback path |
 
-## 13. Milestones
+## 12. Milestones
 
 No clock times: the team's available hours are unknown. Order is by dependency.
 
@@ -256,7 +235,7 @@ No clock times: the team's available hours are unknown. Order is by dependency.
 
 Stretch, only if everything above is done: the owned-token registry (E7), a DNS name import, role delegation to operators from the web app.
 
-### 13.1 Submission checklist
+### 12.1 Submission checklist
 
 - [ ] Live demo link resolves names from mainnet, no hard-coded values
 - [ ] Code is open source (code GPL-3.0, docs CC BY 4.0, contracts MIT, per the repository)
@@ -266,7 +245,7 @@ Stretch, only if everything above is done: the owned-token registry (E7), a DNS 
 - [ ] A test shows an operator write to `mergit.reputation` reverts
 - [ ] A test shows a tier 1 outcome does not change `mergit.reputation`
 
-## 14. What was verified, and how
+## 13. What was verified, and how
 
 | Claim | How it is known | Status |
 | --- | --- | --- |
@@ -279,10 +258,9 @@ Stretch, only if everything above is done: the owned-token registry (E7), a DNS 
 | Gas and ETH price | Public mainnet RPC and Chainlink feed, 2026-11-05 | **Measured once** |
 | Role scoping per text key | ENS docs (Issuing Subnames page) | **Read, granularity unclear** |
 | ENSIP-25 and ENSIP-26 key formats | ENS docs, both marked draft | **Read** |
-| Certora skill and free tier | Certora GitHub and pricing page | **Read** |
 | ENS registrar fee for new `.eth` names | Not found in the docs read | **Unknown** |
 
-## 15. Sources
+## 14. Sources
 
 - ENSv2 overview: <https://docs.ens.domains/ensv2/overview/>
 - ENSv2 app developer guide: <https://docs.ens.domains/ensv2/tutorial-app-developers/>
@@ -293,5 +271,3 @@ Stretch, only if everything above is done: the owned-token registry (E7), a DNS 
 - ENSIP-26: <https://docs.ens.domains/ensip/26/>
 - ERC-8004: <https://eips.ethereum.org/EIPS/eip-8004>
 - ETHGlobal Mumbai prizes: <https://ethglobal.com/events/mumbai/prizes>
-- Certora pricing: <https://www.certora.com/pricing>
-- Certora AutoProver skill: <https://github.com/certora/autoprover-skill>

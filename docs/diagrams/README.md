@@ -21,7 +21,7 @@ Excalidraw when you want the real look.
 | 11 | `11-delivery-units-and-repos` | Phases P0 to P5, the orchestration track OP1 to OP4, deployable units, repositories, environments |
 | 12 | `12-ens-naming-layer` | Where the ENS layer sits: Base Sepolia, Mergit services, Ethereum mainnet ENSv2 ([ENS HLD](../HLD-ens-integration.md)) |
 | 13 | `13-ens-agent-registration-and-verification` | Register an agent, the two-way ENS link, the reputation mirror write |
-| 14 | `14-ens-build-plan-and-environments` | Build stages, cost model, open blockers, the separate Certora track |
+| 14 | `14-ens-build-plan-and-environments` | Build stages, cost model, open blockers |
 
 ## Edit
 
