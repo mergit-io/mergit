@@ -64,3 +64,23 @@ export function invalidApprovalMessage(detail: unknown): string | null {
   if (code !== "human_approval_invalid") return null;
   return worldApprovalMessage("denied", typeof reason === "string" ? reason : null);
 }
+
+/** Why `/v0/account/trial` refused a World ID proof (`auth.py` `start_trial`'s `idkit.ProofRejected.reason`,
+ * forwarded as `403 {code: "world_proof_rejected", reason}`). A different vocabulary from `REASONS` above:
+ * this one is World's own verify-API response, not an Agent Pass approval outcome. */
+const PROOF_REASONS: Record<string, string> = {
+  world_rejected: "World ID could not verify that proof.",
+  wrong_environment: "That proof was made for a different World ID environment.",
+  wrong_action: "That proof was for a different action.",
+  sybil_score: "World ID flagged that as not a unique human.",
+  world_unreachable: "World ID is unreachable right now.",
+  malformed_proof: "That proof was not in a shape World ID recognizes.",
+};
+
+/** The message for a rejected World ID proof. `reason` codes not listed here still reach the person,
+ * parenthesized, rather than disappearing behind one generic sentence. */
+export function worldProofRejectedMessage(reason: string | null | undefined): string {
+  const known = reason ? PROOF_REASONS[reason] : undefined;
+  if (known) return `${known} Try again in a moment.`;
+  return `World ID rejected that proof${reason ? ` (${reason})` : ""}. Try again in a moment.`;
+}

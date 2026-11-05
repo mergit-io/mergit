@@ -1,4 +1,5 @@
 import { apiBase, authBase } from "../chain/wallet";
+import { worldProofRejectedMessage } from "../world/reasons";
 import { NoAccountError, type Intent } from "./intent";
 import type { Providers } from "./signInOptions";
 
@@ -64,11 +65,30 @@ export async function submitEmailCode(email: string, code: string, intent: Inten
   if (!response.ok) throw new Error("Mergit could not check the code. Try again in a moment.");
 }
 
-/** Chooses the free trial. */
-export async function startTrial(): Promise<void> {
-  const response = await post("/v0/account/trial").catch(() => {
+/**
+ * Chooses the free trial. `worldProof` is IDKit's `ISuccessResult`, forwarded to the server unchanged, once
+ * World ID is wired in (`TrialVerify`); omitted (sent as `world_proof: null`, never left out of the body —
+ * unambiguous either way the field is read) when it is off, or the widget was cancelled before it produced
+ * one. The server only ever asks for one (428) when it has World ID configured, so this call behaves exactly
+ * as before everywhere World ID is not set up.
+ */
+export async function startTrial(worldProof?: unknown): Promise<void> {
+  const response = await post("/v0/account/trial", { world_proof: worldProof ?? null }).catch(() => {
     throw new Error("Mergit's API is unreachable. Check your connection and try again.");
   });
+  if (response.status === 428) throw new Error("Verify with World ID to start the free trial.");
+  if (response.status === 403) {
+    const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+    const detail = body?.detail;
+    if (detail && typeof detail === "object") {
+      const { code, reason } = detail as { code?: unknown; reason?: unknown };
+      if (code === "world_proof_rejected") {
+        throw new Error(worldProofRejectedMessage(typeof reason === "string" ? reason : null));
+      }
+    }
+    if (typeof detail === "string") throw new Error(detail);
+    throw new Error("Mergit could not start the trial. Try again in a moment.");
+  }
   if (!response.ok) throw new Error("Mergit could not start the trial. Try again in a moment.");
 }
 

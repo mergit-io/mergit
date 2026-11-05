@@ -5,6 +5,8 @@ import { useCredits } from "../chain/useCredits";
 import { PlanCards } from "../components/PlanCards";
 import { Icon } from "../components/Icon";
 import { MergitSymbol } from "../components/MergitLogo";
+import { fetchWorldConfig, type IdkitConfig } from "../world/api";
+import { TrialVerify } from "../world/TrialVerify";
 import { startTrial } from "./accountApi";
 import { useAuth } from "./context";
 import { useConnectWallet } from "./useConnectWallet";
@@ -65,6 +67,18 @@ export function FundingChoice() {
     clearReopenRequest(); // used: a later visit starts with the list closed
   }, []);
   const [trialError, setTrialError] = useState<string | null>(null);
+  // Asked once per mount and shared across re-renders, the same cached-promise pattern `fetchProviders` uses
+  // for sign-in methods: a reload or a second open of this dialog must not ask `/v0/world/config` again.
+  const [idkit, setIdkit] = useState<IdkitConfig | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWorldConfig().then((config) => {
+      if (!cancelled) setIdkit(config?.idkit ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const busy = starting || wallet.busy;
   const error = trialError ?? wallet.error;
   if (!open) return null;
@@ -81,6 +95,24 @@ export function FundingChoice() {
       .finally(() => {
         setStarting(false);
       });
+  };
+
+  // World ID's one-human check is only ever shown once it is both configured and usable: `rp_id` has no
+  // source in today's `/v0/world/config` (see `TrialVerify`'s docstring) and, if it is ever absent or
+  // malformed, IDKit's own widget refuses to open. Anything short of a real `rp_id` keeps today's plain
+  // button -- the bulletproof fallback almost every deployment runs on.
+  const worldOn = idkit !== null && idkit.enabled && idkit.rp_id !== null;
+  const onWorldVerified = () => {
+    void refreshAccount().finally(() => {
+      setStarting(false);
+    });
+  };
+  const onWorldCancelled = () => {
+    setStarting(false);
+  };
+  const onWorldError = (msg: string) => {
+    setTrialError(msg);
+    setStarting(false);
   };
 
   return (
@@ -118,12 +150,34 @@ export function FundingChoice() {
                   Coming soon
                 </button>
               );
-            if (plan.id === "free")
+            if (plan.id === "free") {
+              if (exhausted)
+                return (
+                  <button type="button" className="btn primary block" disabled>
+                    Free credits used
+                  </button>
+                );
+              if (worldOn)
+                return (
+                  <TrialVerify
+                    config={idkit as IdkitConfig & { rp_id: string }}
+                    label="Start free"
+                    disabled={busy}
+                    onStart={() => {
+                      setTrialError(null);
+                      setStarting(true);
+                    }}
+                    onCancelled={onWorldCancelled}
+                    onVerified={onWorldVerified}
+                    onError={onWorldError}
+                  />
+                );
               return (
-                <button type="button" className="btn primary block" disabled={busy || exhausted} onClick={trial}>
-                  {exhausted ? "Free credits used" : starting ? "Starting…" : "Start free"}
+                <button type="button" className="btn primary block" disabled={busy} onClick={trial}>
+                  {starting ? "Starting…" : "Start free"}
                 </button>
               );
+            }
             return (
               <button
                 type="button"
