@@ -2,7 +2,7 @@
 
 **Version:** 0.1-draft
 **Status:** Planning. Nothing described here is built. Written for ETHGlobal Mumbai (5 to 7 November 2026), ENS Continuity prize.
-**Last updated:** 2026-11-05
+**Last updated:** 2026-11-06
 **Relationship to the main HLD:** an addendum to [`HLD.md`](HLD.md). Where this document and the paper disagree, the paper wins and this document is the defect (see [`CLAUDE.md`](../CLAUDE.md)).
 
 Every statement carries one of three labels, as in the main HLD.
@@ -146,6 +146,21 @@ How this maps to the repository invariants:
 
 **Open (O1):** the ENS docs say roles can be scoped "to all records or specific text keys", and that to limit a writer to certain names you use a separate resolver instance. The exact granularity (per key across all names on a resolver, or per key per name) is not fully specified in the pages read. The design needs "publisher can write only `mergit.reputation`". This is the first spike. If it cannot be done, the fallback is a second resolver instance dedicated to the publisher's record, which changes the layout in the diagram.
 
+### 7.1 Known limitations
+
+The current design does not close these. They are stated here so nobody reads it as stronger than it is.
+
+**L1. One operator may be able to edit another operator's agent (Open, not tested).** All agent names share one resolver (E3). The table above lets each operator write `agent-endpoint[...]` and `agent-context`. If ENS scopes that permission to the key across the whole resolver, and not to one name (the granularity question in O1), then operator Alice, who owns `coder-0`, could also change the endpoint of `coder-1`, which belongs to Bob. She could point Bob's agent at her own server and take his work. That is the false modification this layer is meant to prevent. The same reasoning applies to `agent-context`. Two ways to close it (decision O9):
+
+- (a) Simplest: operators get no direct edit permission. They ask Mergit, and Mergit's key writes the record after checking that the requester owns that agent (`operatorOf(N)` on Base; the function name comes from the design note, so confirm it against `Identity.sol`).
+- (b) Give each operator their own resolver. This needs real registered subnames, so it is more work.
+
+Test first. It is one free test on Sepolia: Alice tries to edit Bob's agent, and the test expects the edit to fail. If it fails, nothing needs fixing and L1 is closed.
+
+**L2. After an agent is transferred, ENS can be wrong (fix proposed in 8.4).** Until 8.4 part 1 is built, the web app can show "two-way verified" for an agent whose Base owner has changed. Until part 2 is built, the previous owner keeps edit permission over the records. If 8.4 is not built, say so openly in the README. A wrong trust badge is worse than none.
+
+**L3. Agent data has no per-user access control (future fix, Proposed).** The agent ledgers are readable by everyone, which is intended. A future fix would limit access to an agent's full data to the user, while the ledgers stay public. Any such limit must still give an auditor or a bonded challenger what the paper's tiered disclosure promises them (totals at settlement, an evidence subset at audit, the full trajectory under bonded challenge). Who "the user" is (the agent's owner, the requester of a task, or both) is not decided (O11). Nothing here is built.
+
 ## 8. Flows
 
 ![Registration, two-way link and reputation mirror](diagrams/preview/13-ens-agent-registration-and-verification.png)
@@ -161,7 +176,7 @@ Source: [`diagrams/13-ens-agent-registration-and-verification.excalidraw`](diagr
 5. **The web app resolves the name live** and reads `agent-registration[...][N]`.
 6. **The web app reads `Identity.tokenURI(N)`**, fetches the JSON, and compares the name. Both sides agree: it shows "two-way verified". If either side is missing or mismatched, it shows what failed and does not show a tick.
 
-ENSIP-25 notes that if an ENS name changes owner, old records may be stale. The web app should show the current owner of the name beside the verification result. **Proposed.**
+ENSIP-25 notes that if an ENS name changes owner, old records may be stale. The web app should show the current owner of the name beside the verification result. **Proposed.** A sale of the agent itself is a separate case, handled in 8.4.
 
 ### 8.2 Publish the reputation mirror (step 7)
 
@@ -176,6 +191,23 @@ This is the lifecycle around the two flows above. Names persist; selection is no
 3. **If one is capable, it is reused.** The web app shows its ENS name and `mergit.reputation` beside it, read live. The outcome of the task updates its posterior and, through the publisher, its record. The name does not change.
 4. **If none is capable, a new agent is created** (E12). It follows 8.1: registration JSON, `registerAgent`, admin script, new subname. For v0 the `mergit.eth` owner runs these steps by hand. An automated registrar is out of scope; it would need a funded hot key with a narrow role and mainnet gas per agent. The new agent's record starts empty and it earns reputation the same way as any other agent, including the faucet-tier rule (invariant 6).
 5. **The leaderboard is built from the list of agents the platform already holds** (the Identity `agentId`s and C9), looking up each agent's name from its registration JSON. The records-only design has no per-name token or registry to enumerate, so ENS is not asked to list its subnames. The leaderboard shows counts at a stated block and is labelled as a mirror. It is not the paper's value density, and ranking by raw counts can differ from ranking by cost-adjusted reputation.
+
+### 8.4 When an agent is sold or transferred (Proposed)
+
+**The problem.** Agents on Base are NFTs, so they can be transferred. Say Alice transfers agent #5 to Carol. Base now says Carol owns agent #5. ENS still holds Alice's old records, and Alice may still have edit permission. The web app would still show "two-way verified", because the two names still match, but the information is stale and Alice still has control.
+
+**The fix, in two parts:**
+
+1. **The web app also checks** whether the current owner on Base is the same as the operator on ENS. If not, it shows "owner changed, not verified" and no tick.
+2. **On a transfer, Mergit also updates the records** and removes Alice's permission.
+
+Part 1 stops the wrong badge. Only part 2 takes Alice's control away. Until part 2 is built, limitation L2 applies.
+
+**Why it is needed.** Otherwise the green "verified" badge can be wrong, and a wrong trust badge is worse than none.
+
+**Not decided (O10).** How the web app reads the operator on the ENS side, and how Mergit learns that a transfer happened.
+
+**Test.** On Sepolia, transfer an agent and check that the badge changes to "owner changed, not verified".
 
 ## 9. Environments, cost and rollout
 
@@ -219,6 +251,8 @@ Source: [`diagrams/14-ens-build-plan-and-environments.excalidraw`](diagrams/14-e
 | R8 | Two chains confuse judges | Medium | State it plainly: agents and money on Base Sepolia, names on Ethereum mainnet. |
 | R9 | Registration JSON host goes away and the two-way link breaks | Low | Host on infrastructure the team already runs. The check fails visibly, not silently. |
 | R10 | Time. The event runs 5 to 7 November, and the team's hours are not known | High | Order work by dependency (section 12). Cut the stretch goals first. |
+| R11 | One operator edits another operator's agent record (L1) | Unknown, not tested. Redirects an agent's endpoint and takes its work | Run the Sepolia test first. If it does not fail, apply fix (a) or (b) in 7.1. |
+| R12 | A transferred agent keeps showing as verified, or its previous owner keeps edit permission (L2) | Medium. A wrong trust badge | Section 8.4. If not built, state it as a known limitation. |
 
 ## 11. Open decisions
 
@@ -232,6 +266,9 @@ Source: [`diagrams/14-ens-build-plan-and-environments.excalidraw`](diagrams/14-e
 | O6 | Is the publisher TypeScript, or Rust beside the chain gateway? | Section 5 |
 | O7 | Where does the publisher key live, and how is it resolved without a model-reachable path? | Invariant 7 |
 | O8 | Does Continuity Track status let the project also enter the open "Best Use of ENSv2" track ($7,000, Sepolia allowed)? Ask the ENS mentors. | Fallback path |
+| O9 | Which fix closes L1, (a) writes through Mergit or (b) a resolver per operator? Decide after the Sepolia test. | Permission model, R11 |
+| O10 | How does the web app read the operator on the ENS side, and how does Mergit learn of a transfer? | Section 8.4, L2 |
+| O11 | Who is "the user" for access to an agent's full data, and what exactly stays public in the ledgers? | L3, a future fix |
 
 ## 12. Milestones
 
@@ -259,6 +296,9 @@ Stretch, only if everything above is done: the owned-token registry (E7), a DNS 
 - [ ] README labels ENSIP-25 and ENSIP-26 as drafts and the reputation record as a mirror
 - [ ] A test shows an operator write to `mergit.reputation` reverts
 - [ ] A test shows a tier 1 outcome does not change `mergit.reputation`
+- [ ] A test shows operator Alice cannot edit operator Bob's agent record (L1, Sepolia)
+- [ ] A test shows the web app shows "owner changed, not verified" after an agent is transferred (8.4)
+- [ ] README lists the known limitations in 7.1 that are still open
 
 ## 13. What was verified, and how
 
@@ -272,6 +312,7 @@ Stretch, only if everything above is done: the owned-token registry (E7), a DNS 
 | Base Sepolia addresses | `mergit-contracts/deployments/base-sepolia.json`. Not checked on chain | **Read from file** |
 | Gas and ETH price | Public mainnet RPC and Chainlink feed, 2026-11-05 | **Measured once** |
 | Role scoping per text key | ENS docs (Issuing Subnames page) | **Read, granularity unclear** |
+| One operator can edit another operator's record under a shared resolver (L1) | Reasoned from the docs' wording. No test has been run | **Not tested** |
 | ENSIP-25 and ENSIP-26 key formats | ENS docs, both marked draft | **Read** |
 | ENS registrar fee for new `.eth` names | Not found in the docs read | **Unknown** |
 
