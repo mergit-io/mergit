@@ -342,6 +342,95 @@ def test_deleting_redacts_plan_text_and_keeps_the_money_trail(
     assert run(configured, "SELECT count(*) FROM plans WHERE plan_uuid = %s", draft["plan_uuid"]) == [(1,)]
 
 
+OTP = "INSERT INTO email_otps (email, code_hash, expires_at) VALUES (%s, '\\x00', now() + interval '9 min')"
+
+
+def _finished_plan_with_leftovers(client: TestClient, settings: Settings, task_id: str, key: str) -> str:
+    """A done plan of the signed-in trial user, with what its run and its pull request leave behind."""
+    plan = client.post("/v0/plans", json=BODY).json()
+    assert approve(client, plan) == 200
+    uuid = plan["plan_uuid"]
+    run(settings, "UPDATE plans SET state = 'done', idempotency_key = %s WHERE plan_uuid = %s", key, uuid)
+    run(
+        settings,
+        'INSERT INTO jobs (task_id, plan_uuid, "index", attempt, agent_id, status, patch, notes)'
+        " VALUES (%s, %s, 0, 1, '1', 'done', 'diff --git a/src/secret.py b/src/secret.py',"
+        " 'edited src/secret.py')",
+        task_id,
+        uuid,
+    )
+    run(
+        settings,
+        "INSERT INTO pr_requests"
+        " (plan_uuid, requested_by, status, branch, commit_sha, pr_number, pr_url, error)"
+        " VALUES (%s, %s, 'done', 'mergit/fix-secret', 'abc123', 7,"
+        " 'https://github.com/acme/private/pull/7', 'x')",
+        uuid,
+        "0x" + "1" * 40,
+    )
+    return uuid
+
+
+def test_deleting_scrubs_what_the_work_left_behind(client: TestClient, configured: Settings) -> None:
+    trial_user(client)
+    _finished_plan_with_leftovers(client, configured, "0x" + "a" * 64, "key-1")
+    user_id = run(configured, "SELECT user_id FROM users")[0][0]
+    run(
+        configured,
+        OTP,
+        "octo@example.com",
+    )
+    run(
+        configured,
+        OTP,
+        "other@example.com",
+    )
+    run(configured, "INSERT INTO redeem_attempts (user_id) VALUES (%s)", user_id)
+    assert client.request("DELETE", "/v0/account", json={"confirm": "delete"}).status_code == 204
+    # The patch is the user's code and the notes name its files; the plan row stays for the money trail.
+    assert run(configured, "SELECT patch, notes FROM jobs") == [(None, None)]
+    # Which repository a pull request went to is the user's; that one was opened (number, commit) is history.
+    assert run(configured, "SELECT branch, pr_url, error, pr_number, commit_sha FROM pr_requests") == [
+        (None, None, None, 7, "abc123")
+    ]
+    assert run(configured, "SELECT idempotency_key FROM plans") == [(None,)]
+    assert run(configured, "SELECT email FROM email_otps") == [("other@example.com",)]
+    assert run(configured, "SELECT count(*) FROM redeem_attempts") == [(0,)]
+
+
+def test_deleting_leaves_another_users_work_alone(client: TestClient, configured: Settings) -> None:
+    trial_user(client)
+    _finished_plan_with_leftovers(client, configured, "0x" + "b" * 64, "key-b")
+    client.cookies.clear()
+    google_login(client)
+    assert client.post("/v0/account/trial").status_code == 200
+    _finished_plan_with_leftovers(client, configured, "0x" + "c" * 64, "key-c")
+    assert client.request("DELETE", "/v0/account", json={"confirm": "delete"}).status_code == 204
+    client.cookies.clear()
+    github_login(client)
+    assert client.get("/v0/auth/me").status_code == 200
+    assert run(configured, "SELECT count(*) FROM jobs WHERE patch IS NOT NULL") == [(1,)]
+    assert run(configured, "SELECT count(*) FROM pr_requests WHERE pr_url IS NOT NULL") == [(1,)]
+    assert run(configured, "SELECT count(*) FROM plans WHERE idempotency_key IS NOT NULL") == [(1,)]
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_deleting_is_refused_while_a_pull_request_is_being_opened(
+    client: TestClient, configured: Settings, status: str
+) -> None:
+    """The worker would write the branch and the pull request's address back after the scrub."""
+    trial_user(client)
+    uuid = _finished_plan_with_leftovers(client, configured, "0x" + "d" * 64, "key-d")
+    run(configured, "UPDATE pr_requests SET status = %s WHERE plan_uuid = %s", status, uuid)
+    assert client.request("DELETE", "/v0/account", json={"confirm": "delete"}).status_code == 409
+    assert me(client)["name"]
+    assert run(configured, "SELECT patch IS NOT NULL, pr_url IS NOT NULL FROM jobs, pr_requests") == [
+        (True, True)
+    ]
+    run(configured, "UPDATE pr_requests SET status = 'done' WHERE plan_uuid = %s", uuid)
+    assert client.request("DELETE", "/v0/account", json={"confirm": "delete"}).status_code == 204
+
+
 def test_deleting_is_refused_while_a_plan_is_in_flight(client: TestClient, configured: Settings) -> None:
     trial_user(client)
     plan = client.post("/v0/plans", json=BODY).json()
