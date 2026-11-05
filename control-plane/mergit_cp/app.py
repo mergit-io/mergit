@@ -70,6 +70,14 @@ def _pr_approval_gate(settings: Settings) -> routes_pr.ApprovalGate | None:
         )
         if principal.user_id is None:
             raise HTTPException(status_code=401, detail="sign in again")
+        if not principal.owns(requester):
+            # The `requester` the route resolved (its own `get_requester` dependency) must be an address
+            # this same signed-in session owns -- otherwise whoever is about to be redeemed-or-prompted for
+            # an approval is not the account this request is actually authenticated as. Nothing observed
+            # today makes these diverge (both derive from the same session cookie), but the Protocol takes
+            # `requester` as an explicit input precisely so a future caller (e.g. an agent-token path) can't
+            # silently skip this check by construction.
+            raise HTTPException(status_code=403, detail="only the requester of this plan may do that")
 
         store: routes_pr.PrStoreLike = request.app.state.pr_store
         plan = await run_in_threadpool(store.plan, plan_uuid)
