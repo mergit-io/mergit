@@ -14,13 +14,15 @@ import httpx
 import psycopg
 import pytest
 import respx
+from eth_account import Account
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from mergit_cp.app import create_app
 from mergit_cp.config import Settings
 from tests.cp_fakes import FakeLLM, result
-from tests.test_accounts import github_login, me
+from tests.test_accounts import _nonce, _signed_by, github_login, me
+from tests.test_merge import conflict, merge
 from tests.test_plans import BODY, planned, sign_in
 from tests.world_fakes_idkit import a_proof, respx_world_verify, verify_response
 
@@ -243,6 +245,83 @@ def test_credits_funding_succeeds_once_the_nullifier_is_claimed(
     plan = world_client.post("/v0/plans", json=BODY).json()
     response = _approve_with_credits(world_client, plan)
     assert response.status_code == 200, response.text
+
+
+# --- merging two accounts keeps the verified human's claim -----------------------------------------------
+
+
+def _claims(settings: Settings) -> list[tuple[object, ...]]:
+    with psycopg.connect(settings.database_url) as conn:
+        return conn.execute("SELECT nullifier, user_id FROM world_nullifiers ORDER BY nullifier").fetchall()
+
+
+def _trial_account_with_wallet(client: TestClient, settings: Settings, nullifier: str | None) -> Account:
+    """Signs in as a fresh GitHub account (subject 1), optionally verifies with World ID (`nullifier`),
+    links a new wallet to it, and signs out: the account that a later merge will absorb."""
+    github_login(client, subject=1, login="absorbed")
+    if nullifier is not None:
+        assert do_trial(client, settings, nullifier=nullifier).status_code == 200
+    wallet = Account.create()
+    linked = client.post("/v0/auth/wallet/link", json=_signed_by(wallet, _nonce(client)))
+    assert linked.status_code == 200, linked.text
+    client.post("/v0/auth/logout")
+    client.cookies.clear()
+    return wallet
+
+
+def test_a_merge_moves_the_absorbed_accounts_world_claim_to_the_kept_one(
+    world_client: TestClient, settings: Settings
+) -> None:
+    """Before this was fixed, deleting the absorbed account `SET NULL`ed its claim, and the kept account --
+    which inherited `trial_started_at` -- could never claim again: the orphaned row still held the
+    nullifier, so the same human re-verifying was refused as someone else."""
+    wallet = _trial_account_with_wallet(world_client, settings, "0x1a1a1a")
+
+    github_login(world_client, subject=2, login="kept")
+    kept = me(world_client)["user_id"]
+    assert merge(world_client, conflict(world_client, wallet)["merge_token"]) == 200
+
+    assert [(str(n), str(u)) for n, u in _claims(settings)] == [(str(0x1A1A1A), kept)]
+    # The same human, verifying again on the kept account, is recognised as already verified here.
+    again = do_trial(world_client, settings, nullifier="0x1a1a1a")
+    assert again.status_code == 200, again.text
+    plan = world_client.post("/v0/plans", json=BODY).json()
+    assert _approve_with_credits(world_client, plan).status_code == 200
+
+
+def test_a_merge_keeps_the_kept_accounts_own_claim_when_both_have_one(
+    world_client: TestClient, settings: Settings
+) -> None:
+    """Two claims for one action cannot both belong to one account (`world_nullifiers_one_per_user`): the
+    kept account keeps its own, and the absorbed one's stays behind, orphaned, so that nullifier still
+    can never be claimed again -- and the merge itself does not fail on the unique index."""
+    wallet = _trial_account_with_wallet(world_client, settings, "0x2b2b2b")
+
+    github_login(world_client, subject=2, login="kept")
+    assert do_trial(world_client, settings, nullifier="0x3c3c3c").status_code == 200
+    kept = me(world_client)["user_id"]
+    assert merge(world_client, conflict(world_client, wallet)["merge_token"]) == 200
+
+    assert {(str(n), None if u is None else str(u)) for n, u in _claims(settings)} == {
+        (str(0x2B2B2B), None),
+        (str(0x3C3C3C), kept),
+    }
+    world_client.post("/v0/auth/logout")
+    world_client.cookies.clear()
+    github_login(world_client, subject=3, login="third")
+    refused = do_trial(world_client, settings, nullifier="0x2b2b2b")
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["detail"] == ALREADY_USED
+
+
+def test_a_merge_into_an_unverified_account_needs_no_claim_of_its_own(
+    world_client: TestClient, settings: Settings
+) -> None:
+    """Neither account verified: nothing to move, and the merge goes through as before."""
+    wallet = _trial_account_with_wallet(world_client, settings, None)
+    github_login(world_client, subject=2, login="kept")
+    assert merge(world_client, conflict(world_client, wallet)["merge_token"]) == 200
+    assert _claims(settings) == []
 
 
 # --- unconfigured World: unchanged -------------------------------------------------------------------------

@@ -376,6 +376,18 @@ async def merge_users(conn: Conn, keep: UUID, absorb: UUID) -> None:
         " FROM users a WHERE k.user_id = %s AND a.user_id = %s",
         (keep, absorb),
     )
+    # The absorbed account's World ID claims (the human it already proved for an IDKit action, e.g. the free
+    # trial) move with it -- deleting it would only `SET NULL` them, leaving the kept account, which just
+    # inherited `trial_started_at`, unable ever to claim that action again: the orphaned row still holds
+    # the (action, nullifier) key, so the same human re-verifying is refused as "someone else". Unless the
+    # kept account already has its own claim for that action: one human per account per action is
+    # `world_nullifiers_one_per_user`, so the absorbed claim then stays behind, orphaned, still blocking
+    # its nullifier from ever being claimed again by anyone.
+    await conn.execute(
+        "UPDATE world_nullifiers AS n SET user_id = %s WHERE n.user_id = %s AND NOT EXISTS"
+        " (SELECT 1 FROM world_nullifiers AS k WHERE k.user_id = %s AND k.action = n.action)",
+        (keep, absorb, keep),
+    )
     # Accounts already merged into the absorbed one now belong to the kept one, with the absorbed one itself.
     await conn.execute("UPDATE merged_users SET into_user_id = %s WHERE into_user_id = %s", (keep, absorb))
     await conn.execute("INSERT INTO merged_users (old_user_id, into_user_id) VALUES (%s, %s)", (absorb, keep))
