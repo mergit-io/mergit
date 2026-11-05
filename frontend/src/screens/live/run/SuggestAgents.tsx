@@ -139,18 +139,16 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
                       : `${String(arkiv.decisions.length)} decision${arkiv.decisions.length === 1 ? "" : "s"} read back from Arkiv's Rabdi testnet, not this app's own database:`}
                   </span>
                   {arkiv.decisions.map((d) => (
-                    <span key={d.entity_key} className="small mono">
+                    <a
+                      key={d.entity_key}
+                      className="small mono"
+                      href={`https://rabdi.explorer.arkiv.network/entity/${d.entity_key}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
                       Task {String(d.task_index + 1)} · {d.entity_key}
-                    </span>
+                    </a>
                   ))}
-                  <a
-                    className="small"
-                    href="https://rabdi.explorer.arkiv.network"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open the Rabdi explorer
-                  </a>
                 </div>
               )}
             </div>
