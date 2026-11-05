@@ -13,11 +13,12 @@ export type ApprovalStatus = {
 };
 
 /** `GET /v0/world/config`'s `idkit` object (`routes_world.world_config`): public, no session required.
- * `rp_id` and `environment` are not part of today's response — only `enabled`, `app_id`, `action` and
- * `preset` are (checked against `test_config_exposes_only_public_values`) — but are read here anyway,
- * defensively, against a future response that adds them: IDKit's own `RpContext.rp_id` is required and
- * strictly validated (`rp_<16 hex>`), so `TrialVerify` only renders the live widget once one is present;
- * see its module docstring. */
+ * The server sends `enabled`, `app_id`, `rp_id`, `action`, `preset` and `environment` (pinned by
+ * `test_config_exposes_only_public_values`); `rp_id` is null while IDKit is not configured. `rp_id` and
+ * `environment` are still parsed leniently (null when absent or malformed) rather than failing the whole
+ * config: IDKit's own `RpContext.rp_id` is required and strictly validated (`rp_<16 hex>`), so
+ * `TrialVerify` only renders the live widget once one is present, and a missing `environment` falls back
+ * to IDKit's own default, "production". */
 export type IdkitConfig = {
   enabled: boolean;
   /** IDKit's own app-id shape (`` `app_${string}` ``), checked rather than just typed: a config that failed
@@ -43,7 +44,8 @@ function parseIdkitConfig(raw: unknown): IdkitConfig | null {
     action,
     preset,
     rp_id: typeof rp_id === "string" ? rp_id : null,
-    environment: environment === "production" || environment === "staging" || environment === "sandbox" ? environment : null,
+    environment:
+      environment === "production" || environment === "staging" || environment === "sandbox" ? environment : null,
   };
 }
 

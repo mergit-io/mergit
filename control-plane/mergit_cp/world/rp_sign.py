@@ -76,8 +76,12 @@ class RpContext:
     expires_at: int
 
     def to_json(self) -> dict[str, str | int]:
-        """Matches IDKit's `rp_context` field names exactly, so this can be dropped straight into the
-        proof request body IDKit expects."""
+        """The shape World's own backend example returns from its RP-signature route
+        (https://docs.world.org/world-id/idkit/integrate, step 3: `{sig, nonce, created_at, expires_at}`).
+        It is *not* IDKit's `RpContext` as-is: `@worldcoin/idkit@4.6.0`'s `RpContext` is `{rp_id, nonce,
+        created_at, expires_at, signature}` -- the signature under `signature`, not `sig`, plus `rp_id`,
+        which this signature does not carry. The browser builds that object itself (`TrialVerify`),
+        renaming `sig` to `signature` and taking `rp_id` from `GET /v0/world/config`."""
         return {
             "sig": self.sig,
             "nonce": self.nonce,

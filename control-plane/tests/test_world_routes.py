@@ -46,6 +46,8 @@ WORLD_ON = SETTINGS.model_copy(
         "world_signing_key": SecretStr(SIGNING_KEY),
         "world_idp_client_id": "client_test123",
         "world_idp_client_secret": SecretStr("client-secret-test123"),
+        # Not the default ("production"), so the config test below can tell it is really passed through.
+        "world_environment": "staging",
     }
 )
 
@@ -85,6 +87,10 @@ def test_config_exposes_only_public_values() -> None:
     assert body["idkit"]["rp_id"] == "rp_test123"
     assert body["idkit"]["action"] == WORLD_ON.world_trial_action
     assert body["idkit"]["preset"] == WORLD_ON.world_trial_preset
+    # IDKit's own request config defaults `environment` to "production"; a staging/sandbox deployment whose
+    # widget did not know better would make every proof for the wrong environment (`wrong_environment`).
+    assert body["idkit"]["environment"] == "staging"
+    assert set(body["idkit"]) == {"enabled", "app_id", "rp_id", "action", "preset", "environment"}
     assert body["agent_pass"]["enabled"] is True
 
 
@@ -96,6 +102,7 @@ def test_config_reports_disabled_when_unconfigured() -> None:
     body = response.json()
     assert body["idkit"]["enabled"] is False
     assert body["idkit"]["rp_id"] is None
+    assert body["idkit"]["environment"] == "production"
     assert body["agent_pass"]["enabled"] is False
 
 

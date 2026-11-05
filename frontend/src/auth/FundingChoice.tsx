@@ -97,10 +97,10 @@ export function FundingChoice() {
       });
   };
 
-  // World ID's one-human check is only ever shown once it is both configured and usable: `rp_id` has no
-  // source in today's `/v0/world/config` (see `TrialVerify`'s docstring) and, if it is ever absent or
-  // malformed, IDKit's own widget refuses to open. Anything short of a real `rp_id` keeps today's plain
-  // button -- the bulletproof fallback almost every deployment runs on.
+  // World ID's one-human check is only ever shown once it is both configured and usable: `/v0/world/config`
+  // sends `rp_id` (and `environment`) whenever IDKit is configured, and IDKit's own widget refuses to open
+  // without a well-formed `rp_id`. A server with IDKit off sends `enabled: false` and a null `rp_id`, and
+  // then the plain button is what the person sees -- its `/v0/account/trial` call needs no proof there.
   const worldOn = idkit !== null && idkit.enabled && idkit.rp_id !== null;
   const onWorldVerified = () => {
     void refreshAccount().finally(() => {
