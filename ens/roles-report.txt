@@ -1,0 +1,17 @@
+✔ publisher can write mergit.reputation on every name (5153.899493ms)
+✔ publisher cannot write any other key (1131.375823ms)
+✔ an account with no role cannot write mergit.reputation (835.063501ms)
+✔ role does not leak to a similar key (713.458327ms)
+✔ bracketed key scopes exactly (1527.866769ms)
+✔ L1: a key role is per resolver, not per name (operator Alice can edit Bob's agent) (1356.291074ms)
+✔ option (a): operators hold no role and Mergit's key writes every name (2830.010173ms)
+✔ grantRoles is disabled (594.685761ms)
+✔ control: the resolver owner (root roles) can write any key, so the reverts above are about missing roles (926.235027ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 15813.697781
