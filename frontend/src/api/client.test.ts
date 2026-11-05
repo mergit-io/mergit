@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, approvePlan, createPlan, discardPlan, listPlans, onSessionEnded, openPullRequest } from "./client";
+import {
+  ApiError,
+  approvePlan,
+  createPlan,
+  discardPlan,
+  listPlans,
+  onSessionEnded,
+  openPullRequest,
+  worldProofRequired,
+} from "./client";
 
 const answer = (status: number, body: unknown) =>
   Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
@@ -154,5 +163,42 @@ describe("a refused World ID approval (403 human_approval_invalid)", () => {
     await expect(approvePlan("p", approve)).rejects.toMatchObject({
       message: "Only the requester who created this plan can do that.",
     });
+  });
+});
+
+describe("a credits approval from an account with no World ID claim yet", () => {
+  it("is told to verify, in words, not the raw code and not a false 'already used'", async () => {
+    vi.stubGlobal("fetch", () => answer(428, { detail: "world_proof_required" }));
+    const refused = await approvePlan("p-1", { agents: { "0": ["1"] }, funding: "credits" }).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ApiError);
+    const error = refused as ApiError;
+    expect(error.status).toBe(428);
+    expect(error.message).toMatch(/one-time World ID check/);
+    expect(error.problems).toEqual([error.message]);
+    expect(error.message).not.toMatch(/already used/);
+    expect(worldProofRequired(error)).toBe(true);
+  });
+
+  it("is not confused with Agent Pass's own 428, or any other refusal", async () => {
+    vi.stubGlobal("fetch", () =>
+      answer(428, {
+        detail: {
+          code: "human_approval_required",
+          approval_id: "a-1",
+          start_url: "/v0/world/approvals/a-1/start",
+          expires_at: "2026-11-06T00:05:00Z",
+          summary: {},
+        },
+      }),
+    );
+    const humanApproval = await approvePlan("p-1", { agents: { "0": ["1"] }, funding: "credits" }).catch(
+      (e: unknown) => e,
+    );
+    expect(worldProofRequired(humanApproval)).toBe(false);
+
+    vi.stubGlobal("fetch", () => answer(403, { detail: "the free credits were already used by this person" }));
+    const used = await approvePlan("p-1", { agents: { "0": ["1"] }, funding: "credits" }).catch((e: unknown) => e);
+    expect(worldProofRequired(used)).toBe(false);
+    expect(worldProofRequired(new Error("world_proof_required"))).toBe(false);
   });
 });

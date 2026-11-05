@@ -229,12 +229,14 @@ def _approve_with_credits(client: TestClient, plan: dict[str, Any]) -> httpx.Res
     return client.post(f"/v0/plans/{plan['plan_uuid']}/approve", json={"agents": tasks, "funding": "credits"})
 
 
-def test_credits_funding_requires_a_claimed_nullifier(world_client: TestClient) -> None:
+def test_credits_funding_without_a_claim_asks_for_a_world_proof(world_client: TestClient) -> None:
+    """No claim yet is "verify first" (the same 428 `/trial` answers), never the false "the free credits
+    were already used by this person": nobody has used anything."""
     sign_in(world_client)
     plan = world_client.post("/v0/plans", json=BODY).json()
     response = _approve_with_credits(world_client, plan)
-    assert response.status_code == 403, response.text
-    assert response.json()["detail"] == ALREADY_USED
+    assert response.status_code == 428, response.text
+    assert response.json()["detail"] == "world_proof_required"
 
 
 def test_credits_funding_succeeds_once_the_nullifier_is_claimed(
@@ -245,6 +247,56 @@ def test_credits_funding_succeeds_once_the_nullifier_is_claimed(
     plan = world_client.post("/v0/plans", json=BODY).json()
     response = _approve_with_credits(world_client, plan)
     assert response.status_code == 200, response.text
+
+
+def test_a_trial_started_before_idkit_can_still_verify_and_keeps_its_start_date(
+    world_client: TestClient, settings: Settings, llm: FakeLLM
+) -> None:
+    """An account whose trial began while IDKit was off (`trial_started_at` set, no nullifier claim) is
+    asked to verify when it funds a plan from credits -- not told its credits were already used -- and
+    `/trial` then takes the proof, claims the nullifier and keeps the original start date."""
+    off = settings.model_copy(update={"world_app_id": None, "world_rp_id": None, "world_signing_key": None})
+    with TestClient(
+        create_app(off, llm=llm, deliver_events=False), base_url="https://testserver", follow_redirects=False
+    ) as before:
+        github_login(before)
+        assert before.post("/v0/account/trial").status_code == 200
+        started = me(before)["trial"]["started_at"]
+        session = dict(before.cookies)
+    world_client.cookies.update(session)
+
+    plan = world_client.post("/v0/plans", json=BODY).json()
+    refused = _approve_with_credits(world_client, plan)
+    assert refused.status_code == 428, refused.text
+    assert refused.json()["detail"] == "world_proof_required"
+
+    verified = do_trial(world_client, settings, nullifier="0xeeeeee1")
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["started_at"] == started
+    assert nullifier_count(settings) == 1
+
+    assert _approve_with_credits(world_client, plan).status_code == 200
+
+
+def test_a_forfeited_account_is_still_told_the_credits_were_used(
+    world_client: TestClient, settings: Settings
+) -> None:
+    """The 428 is only for "not verified yet". A sign-in method that belonged to a deleted account that
+    already took the trial is refused outright, as before."""
+    github_login(world_client, subject=7, login="once")
+    assert do_trial(world_client, settings, nullifier="0xfffff1").status_code == 200
+    assert world_client.request("DELETE", "/v0/account", json={"confirm": "delete"}).status_code == 204
+    world_client.cookies.clear()
+
+    github_login(world_client, subject=7, login="once")  # same GitHub identity, fresh account
+    wallet = Account.create()
+    linked = world_client.post("/v0/auth/wallet/link", json=_signed_by(wallet, _nonce(world_client)))
+    assert linked.status_code == 200, linked.text
+    plan = world_client.post("/v0/plans", json=BODY)
+    assert plan.status_code == 201, plan.text
+    response = _approve_with_credits(world_client, plan.json())
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == ALREADY_USED
 
 
 # --- merging two accounts keeps the verified human's claim -----------------------------------------------

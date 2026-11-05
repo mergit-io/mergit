@@ -79,6 +79,18 @@ const PROOF_REASONS: Record<string, string> = {
   wrong_credential: "World ID verified a different kind of check than the one Mergit asks for.",
 };
 
+/** The `detail` of the 428 both `/v0/account/trial` and a credits-funded `/v0/plans/{id}/approve` answer
+ * when this account has not yet proved, with World ID, the human behind it (`auth.py` `start_trial`,
+ * `routes_plans.py` `approve_plan`). A bare string, unlike Agent Pass's `human_approval_required` object. */
+export const WORLD_PROOF_REQUIRED = "world_proof_required";
+
+/** The message for a `world_proof_required` body, or `null` for any other: without this the person reads
+ * the raw code, or worse (before the server sent it) a false "the free credits were already used". */
+export function worldProofRequiredMessage(detail: unknown): string | null {
+  if (detail !== WORLD_PROOF_REQUIRED) return null;
+  return "Free credits need a one-time World ID check on this account first. Nothing was approved.";
+}
+
 /** The message for a rejected World ID proof. `reason` codes not listed here still reach the person,
  * parenthesized, rather than disappearing behind one generic sentence. */
 export function worldProofRejectedMessage(reason: string | null | undefined): string {

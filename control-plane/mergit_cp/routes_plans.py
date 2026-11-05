@@ -292,18 +292,22 @@ async def approve_plan(
             )
         if problems:
             raise _problems(422, problems)
-        if (
-            body.funding == "credits"
-            and principal.user_id is not None
-            and (
-                await accounts.credits_forfeited(conn, settings, principal.user_id)
-                or (
-                    settings.world_idkit_enabled
-                    and not await idkit.has_claimed(conn, settings.world_trial_action, principal.user_id)
+        if body.funding == "credits" and principal.user_id is not None:
+            if await accounts.credits_forfeited(conn, settings, principal.user_id):
+                raise HTTPException(
+                    status_code=403, detail="the free credits were already used by this person"
                 )
-            )
-        ):
-            raise HTTPException(status_code=403, detail="the free credits were already used by this person")
+            if settings.world_idkit_enabled and not await idkit.has_claimed(
+                conn, settings.world_trial_action, principal.user_id
+            ):
+                # Not "already used by this person": this account simply has no World ID claim yet --
+                # typically one that started the trial before IDKit was switched on, or one whose credits
+                # came from a redeem code. The same 428 `/v0/account/trial` answers when it needs a proof,
+                # so the browser can take the person through the check right here; `/trial` accepts that
+                # proof from an account whose trial is already running and keeps its original start date
+                # (`accounts.start_trial`'s COALESCE). A human whose nullifier another account already
+                # claimed is still refused there, with the "already used" 403.
+                raise HTTPException(status_code=428, detail="world_proof_required")
 
         # The exact approve_plan phi_hashes (plan.phi_hash binding): computed once, used both to bind the
         # World approval to this precise task content (Important #4) and for the real `plans.approve` below.

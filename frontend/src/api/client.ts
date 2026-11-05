@@ -1,6 +1,6 @@
 import { apiBase } from "../chain/wallet";
 import { LIVE } from "../config/live";
-import { invalidApprovalMessage } from "../world/reasons";
+import { invalidApprovalMessage, WORLD_PROOF_REQUIRED, worldProofRequiredMessage } from "../world/reasons";
 import { parseDiff, parsePullRequest, type PlanDiff, type PullRequest } from "./pullRequest";
 import type {
   AgentInfo,
@@ -65,15 +65,26 @@ function problemsOf(detail: unknown): string[] {
 
 async function toError(response: Response): Promise<ApiError> {
   const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-  const problems = problemsOf(body?.detail);
+  // "Verify with World ID first" arrives as the bare code `world_proof_required`; said in words, as the one
+  // problem, so a form listing `problems` does not show the code itself.
+  const proofRequired = worldProofRequiredMessage(body?.detail);
+  const problems = proofRequired ? [proofRequired] : problemsOf(body?.detail);
   // A refused World ID approval is a 403 too, but not the requester-only one STATUS_MESSAGE[403] describes:
   // it says which approval problem it was (expired, used, changed since approving, ...) in its own `reason`.
   const message =
+    proofRequired ??
     invalidApprovalMessage(body?.detail) ??
     STATUS_MESSAGE[response.status] ??
     problems[0] ??
     `Mergit answered ${String(response.status)}.`;
   return new ApiError(response.status, message, problems, body?.detail);
+}
+
+/** Whether a failed call was refused only because this account has not proved a World ID yet (the 428
+ * `world_proof_required` a credits-funded approve answers): the caller's cue to offer the check itself
+ * (`VerifyForCredits`) rather than only showing the refusal. */
+export function worldProofRequired(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 428 && error.detail === WORLD_PROOF_REQUIRED;
 }
 
 /** The API's address, resolved: `same-origin` is the hostname the page was loaded from, never a literal.

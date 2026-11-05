@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { approvePlan, editPlan } from "../../../api/client";
+import { approvePlan, editPlan, worldProofRequired } from "../../../api/client";
 import type { AgentInfo, Funding, Plan } from "../../../api/types";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
@@ -12,6 +12,7 @@ import { Icon } from "../../../components/Icon";
 import { Segmented } from "../../../components/Segmented";
 import { HumanApprovalDialog } from "../../../world/HumanApprovalDialog";
 import { useHumanApproval } from "../../../world/useHumanApproval";
+import { VerifyForCredits } from "../../../world/VerifyForCredits";
 import {
   editProblems,
   hasEdits,
@@ -60,6 +61,9 @@ export function DraftPlanEditor({
   // A fresh World ID check (plan sec 1.7), asked for only when `approvePlan` 428s: `world.prompt` is the
   // dialog to show, first to confirm and then while waiting on the World ID window.
   const world = useHumanApproval();
+  // Set when a credits approval came back `428 world_proof_required`: this account has not proved a World
+  // ID yet, so the check is offered right here (`VerifyForCredits`), and approving goes on once it passes.
+  const [needsWorldProof, setNeedsWorldProof] = useState(false);
   const edited = hasEdits(plan, forms);
   const total = totalBudget(forms);
   // The API refuses an over-limit credits plan too; saying so here keeps the button from inviting a refusal.
@@ -89,7 +93,13 @@ export function DraftPlanEditor({
     }
     void submit(async () => {
       if (edited) await editPlan(plan.plan_uuid, toEdits(forms));
-      await world.guard((approvalId) => approvePlan(plan.plan_uuid, toApproval(forms, FUNDING[funding]), approvalId));
+      try {
+        await world.guard((approvalId) => approvePlan(plan.plan_uuid, toApproval(forms, FUNDING[funding]), approvalId));
+      } catch (e) {
+        setNeedsWorldProof(worldProofRequired(e));
+        throw e;
+      }
+      setNeedsWorldProof(false);
       onChanged();
     });
   };
@@ -139,6 +149,14 @@ export function DraftPlanEditor({
             </p>
           )}
           <Problems items={problems} />
+          {needsWorldProof && funding === "Free credits" && (
+            <VerifyForCredits
+              onVerified={() => {
+                setNeedsWorldProof(false);
+                approve();
+              }}
+            />
+          )}
           <div className="col g8">
             <button
               type="button"

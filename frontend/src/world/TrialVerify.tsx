@@ -13,7 +13,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * The World ID button for the free trial's one-human check (`config`, from `/v0/world/config`'s `idkit`):
- * rendered only once that check is configured and usable -- `FundingChoice` mounts
+ * rendered only once that check is configured and usable -- `FundingChoice` (and `VerifyForCredits`) mount
  * this only when `config.rp_id` is present, which `/v0/world/config` sends whenever IDKit is configured.
  *
  * A fresh RP context is signed server-side (`POST /v0/world/rp-context`) right as the button is pressed,
