@@ -29,6 +29,15 @@ Name = Literal["github", "google"]
 router = APIRouter(prefix="/v0/auth", tags=["auth"])
 
 
+def pkce_pair() -> tuple[str, str]:
+    """A PKCE verifier and its S256 challenge (RFC 7636), as ``(verifier, challenge)``. The verifier never
+    leaves the server that generated it; the challenge travels in the authorize URL and the provider checks
+    it against the verifier sent back at the token exchange."""
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    return verifier, challenge
+
+
 class LoginFailed(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -121,8 +130,7 @@ async def start(
     if spec is None or creds is None:
         raise HTTPException(status_code=404, detail="that sign-in method is not set up")
     state = secrets.token_urlsafe(32)
-    verifier = secrets.token_urlsafe(48)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    verifier, challenge = pkce_pair()
     expires = datetime.now(UTC) + timedelta(seconds=settings.oauth_state_ttl_s)
     async with pool.connection() as conn:
         await conn.execute(
