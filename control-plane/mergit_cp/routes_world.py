@@ -178,14 +178,17 @@ async def approval_status(approval_id: UUID, principal: PrincipalDep, pool: Pool
 async def world_config(settings: SettingsDep) -> dict[str, dict[str, object]]:
     """Public, no session required: what the frontend needs to decide whether to show IDKit's free-trial
     sybil check or Agent Pass's human-approval popup at all, before anyone is signed in. Carries only
-    IDKit's public params (sec 1.2/1.3 -- `app_id`, `action`, `preset`, none of them secret) and a bare
-    bool for Agent Pass. Never `world_signing_key`, `world_idp_client_id` or `world_idp_client_secret`:
-    the client secret stays server-side and the browser never needs the OIDC client id, since
-    `/approvals/{id}/start` builds World's authorize URL itself."""
+    IDKit's public params (sec 1.2/1.3 -- `app_id`, `rp_id`, `action`, `preset`, none of them secret) and a
+    bare bool for Agent Pass. `rp_id` identifies the IDKit app to World's client-side SDK the same way
+    `app_id` does, and the installed `@worldcoin/idkit` widget requires it to open at all. Never
+    `world_signing_key`, `world_idp_client_id` or `world_idp_client_secret`: the client secret stays
+    server-side and the browser never needs the OIDC client id, since `/approvals/{id}/start` builds
+    World's authorize URL itself."""
     return {
         "idkit": {
             "enabled": settings.world_idkit_enabled,
             "app_id": settings.world_app_id,
+            "rp_id": settings.world_rp_id,
             "action": settings.world_trial_action,
             "preset": settings.world_trial_preset,
         },

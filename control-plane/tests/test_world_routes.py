@@ -82,6 +82,7 @@ def test_config_exposes_only_public_values() -> None:
     assert "client_secret" not in raw
     assert body["idkit"]["enabled"] is True
     assert body["idkit"]["app_id"] == "app_test123"
+    assert body["idkit"]["rp_id"] == "rp_test123"
     assert body["idkit"]["action"] == WORLD_ON.world_trial_action
     assert body["idkit"]["preset"] == WORLD_ON.world_trial_preset
     assert body["agent_pass"]["enabled"] is True
@@ -94,6 +95,7 @@ def test_config_reports_disabled_when_unconfigured() -> None:
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["idkit"]["enabled"] is False
+    assert body["idkit"]["rp_id"] is None
     assert body["agent_pass"]["enabled"] is False
 
 
