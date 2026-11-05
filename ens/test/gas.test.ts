@@ -26,7 +26,7 @@ async function gas(hash: `0x${string}`): Promise<bigint> {
 }
 
 test("measure gas units for the mainnet one-shot and write gas-report.json", { skip }, async () => {
-  const forkBlock = Number(await fork.pub.getBlockNumber()); // the block the fork started from, read before any transaction
+  const forkBlock = Number(await fork.pub.getBlockNumber({ cacheTime: 0 })); // the block the fork started from, read before any transaction
   const admin = fork.wallet(ACCOUNTS.admin);
   const { address: resolver, gasUsed: deployProxy } = await deployResolverDetailed(fork, ACCOUNTS.admin.address);
 
