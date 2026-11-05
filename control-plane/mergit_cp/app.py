@@ -74,8 +74,10 @@ def create_app(
         app.state.arkiv = arkiv or (
             ArkivMirror(
                 settings.arkiv_rpc_url,  # type: ignore[arg-type]  # non-None: arkiv_enabled checked it
-                settings.arkiv_private_key.get_secret_value(),  # type: ignore[union-attr]
                 settings.arkiv_access_key.get_secret_value() if settings.arkiv_access_key else None,
+                settings.arkiv_owner_address,  # type: ignore[arg-type]  # non-None: arkiv_enabled checked it
+                settings.arkiv_sidecar_url,
+                settings.arkiv_sidecar_token.get_secret_value() if settings.arkiv_sidecar_token else None,
                 settings.arkiv_entity_ttl_days,
             )
             if settings.arkiv_enabled
@@ -107,6 +109,8 @@ def create_app(
                 if task is not None:
                     with suppress(asyncio.CancelledError):
                         await task
+            if app.state.arkiv is not None:
+                await app.state.arkiv.aclose()
             await deliverer.aclose()
             await costs.aclose()
             app.state.pr_store.close()

@@ -136,14 +136,21 @@ class Settings(BaseSettings):
     otp_sends_per_hour: int = Field(default=5, ge=1)
 
     arkiv_rpc_url: str | None = None
-    """Arkiv's Rabdi testnet RPC (``https://rpc.rabdi.db-chain.testnet.arkiv.network``). Unset: the
-    routing-decision mirror and its read endpoint are both no-ops (``arkiv_enabled``)."""
+    """Arkiv's Rabdi testnet RPC (``https://rpc.rabdi.db-chain.testnet.arkiv.network``), used directly
+    (``arkiv_query`` over httpx) for reads. Unset: the mirror and its read endpoint are both no-ops
+    (``arkiv_enabled``)."""
     arkiv_access_key: SecretStr | None = None
     """Raises the public RPC's heavy rate limit; free, from ``hub.arkiv.network/access-keys``."""
-    arkiv_private_key: SecretStr | None = None
-    """One service wallet's key, funded from ``hub.arkiv.network/faucet``, that signs every mirrored
-    entity. Not a per-requester wallet: the Arkiv owner is this service account; the requester address is
-    a queryable attribute on the entity instead."""
+    arkiv_owner_address: str | None = None
+    """The service wallet's public address (not its key — this service never holds that; see
+    ``chain/arkiv/``). Read-only, used to filter `read_decisions` by `$owner` so a spoofed entity
+    with Mergit's own schema tag cannot show up in someone else's results."""
+    arkiv_sidecar_url: str | None = None
+    """The Arkiv write sidecar (`chain/arkiv/`), the only thing that holds the service wallet's private
+    key and can sign a write Rabdi accepts (`arkiv_mirror.py`'s own docstring explains why the control
+    plane cannot do this itself)."""
+    arkiv_sidecar_token: SecretStr | None = None
+    """Shared secret sent as ``Authorization: Bearer`` to the sidecar, same pattern as `worker_token`."""
     arkiv_entity_ttl_days: int = Field(default=30, ge=1)
     """How long a mirrored routing decision lives on Arkiv before it expires."""
 
@@ -194,7 +201,10 @@ class Settings(BaseSettings):
 
     @property
     def arkiv_enabled(self) -> bool:
-        return bool(self.arkiv_rpc_url and self.arkiv_private_key)
+        """Reads need only the RPC and the wallet's public address. A write additionally needs the
+        sidecar reachable (`arkiv_mirror.write_decisions` raises its own clear error when it isn't,
+        caught the same best-effort way as any other mirror failure)."""
+        return bool(self.arkiv_rpc_url and self.arkiv_owner_address)
 
     @field_validator("cors_origins", "repo_hosts", "extra_domains", "planner_models", mode="before")
     @classmethod

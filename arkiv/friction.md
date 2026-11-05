@@ -1,47 +1,69 @@
 # Arkiv feedback
 
-What got in the way building this, and how to reproduce each point.
+What got in the way building this, and how to reproduce each point. Everything below was checked
+live against Rabdi (`https://rpc.rabdi.db-chain.testnet.arkiv.network`), not assumed from docs —
+an earlier version of this file made claims from reading the Python SDK's source alone, which
+turned out to be wrong for this network; this version corrects that.
 
-## The Python SDK is real, but easy to miss
+## The official Python SDK targets a different, incompatible network
 
-`docs.arkiv.network`'s own quickstarts (`start-here/first-entity`, `writing/create`) are all
-TypeScript against `@arkiv-network/sdk` + `viem`. Our control plane is Python, so the first
-conclusion a reader reaches is "writes need Node" — `createEntity` there is a signed,
-custom-encoded transaction, not a plain JSON-RPC call, so hand-rolling it in another language looks
-risky. The official Python SDK (`Arkiv-Network/arkiv-sdk-python`, `pip install --pre arkiv-sdk`,
-built on `web3.py`) exists and does the same job, but we only found it by searching GitHub's
-`arkiv-network` org directly — nothing on the docs site itself linked to it. **Reproduce:** read
-`docs.arkiv.network/start-here/first-entity/` end to end; it never mentions the Python SDK or links
-to it.
+`arkiv-sdk` on PyPI (`Arkiv-Network/arkiv-sdk-python`) exists and looks like exactly what a Python
+backend needs. Live, it doesn't work against Rabdi at all, in two separate ways:
 
-## The Python SDK has no stable release, and the two listings disagree
+- Its query options use `includeData` (`{"select": ..., "includeData": {...}}` style params). Rabdi
+  rejects it outright: `"unknown field includeData, expected one of atBlock, select, limit, offset,
+  cursor"`.
+- Its write target (contract/processor address) is `0x…61726B6976`. Rabdi's own write address,
+  confirmed by checking its code via `eth_getCode`, is `0x4400000000000000000000000000000000000044`
+  — the one address `eth_getCode` on Rabdi actually returns bytecode for; the SDK's address returns
+  `"0x"` (nothing deployed there on this chain). The newest prerelease (`1.0.0b3.dev0`) has migrated
+  the write address but still sends the old, rejected query options for reads.
 
-PyPI's `arkiv-sdk` has no `1.0.0` yet — the real releases are `1.0.0.dev1` through our pin,
-`1.0.0b2`. That needs an exact-version pin (`arkiv-sdk==1.0.0b2`) rather than a range, since most
-resolvers (uv included) only accept a prerelease when the specifier itself names one. Separately,
-the GitHub repo's own "Releases" sidebar showed `v0.2.2` as "Latest" while PyPI already had several
-newer `1.0.0` alphas and betas — someone comparing the two listings would reasonably conclude the
-project is stuck pre-1.0 at `v0.2.2`, which understates what's actually published. **Reproduce:**
-`pip index versions arkiv-sdk` (or the PyPI JSON API) against
-`github.com/Arkiv-Network/arkiv-sdk-python/releases`.
+**Reproduce:** `pip install --pre arkiv-sdk`, point `ProviderBuilder().custom(...)` at Rabdi's RPC,
+and run any `query_entities` call; the node returns the `includeData` error above.
 
-## Attributes are `str | int` only — structured data has to go in the payload
+## Rabdi's own JSON-RPC has no payload/content-type field at all
 
-`arkiv.types.Attributes` is `NewType("Attributes", dict[str, str | int])`. Our routing decision
-carries a list of per-agent posteriors and ranked picks, which can't be an attribute value at all —
-we only found this by reading the SDK's `types.py` rather than from a documented constraint. It's a
-reasonable design (attributes are the indexed, queryable part; anything else belongs in the
-payload), but the quickstart's single `str`/`dec`/`bytes` example doesn't make the boundary
-explicit. We ended up putting `candidates`/`picks` in the JSON payload and only the filterable
-fields (`planId`, `taskIndex`, `category`, `requester`, `decidedAt`, `kind`) as attributes
-(`arkiv_mirror.py`, `schema.md`).
+The docs' `select` field list (`key`, `owner`, `creator`, `createdAt`, `updatedAt`, `expiresAt`,
+`creationFlags`, `attributes`, `attributeSchema`, `count`) looks complete until you look for where
+the actual binary content goes. Checked live on dozens of real entities already on Rabdi
+(`arkiv_getEntity`): none ever returns a top-level `payload` or `contentType` field, including ones
+whose author clearly meant to store a binary blob (one real entity uses a custom attribute literally
+*named* `payload`, since the protocol has none). Everything lives in `attributes`, including
+anything you'd think of as "the payload" — hence `body` in our own schema is a `bytes`-typed
+*attribute*, not the payload/content-type pair the JS quickstart's prose implies and the (wrong-network)
+Python SDK's `create_entity(payload=..., content_type=...)` signature assumes.
 
-## No live write exercised yet
+**Reproduce:** `arkiv_getEntity` any real key from a live `arkiv_query` result; the response's keys
+are exactly the `select` list above, never `payload`.
 
-Everything in this track — `write_decision`, `read_decisions`, the `/arkiv-suggestions` endpoint,
-and the frontend panel — is tested against a fake `RawArkivClient` (`tests/test_arkiv_mirror.py`,
-the Arkiv-specific cases in `tests/test_routes_routing.py`) plus the full existing Postgres suite,
-not against a real Rabdi write: that needs a funded service wallet and an access key, which only
-someone with wallet access can obtain (`hub.arkiv.network/faucet`, `hub.arkiv.network/access-keys`)
-and set as `ARKIV_RPC_URL`/`ARKIV_PRIVATE_KEY`/`ARKIV_ACCESS_KEY` on the hosted deploy. `schema.md`'s
-wallet address is a placeholder until that happens.
+## The query language's literal syntax isn't what the JS quickstart's prose suggests
+
+The attribute-value syntax the raw JSON-RPC wants is stricter than a first read of the docs
+suggests: string literals need `str('...')` (bare `"..."` is a parse error, `-32001`), and address
+literals need **unquoted** hex — `addr(0xAbC…)`, not `addr('0xAbC…')` (quoted gives `-32003`, "addr
+takes a 0x-prefixed address"). Neither is spelled out next to the `select`-field docs; both were
+found by reading the actual error messages from a live node.
+
+**Reproduce:** `arkiv_query` with `'kind = "x"'` → `-32001`; with `$owner = addr('0x...')` → `-32003`.
+
+## A JSON-RPC reachability probe can silently ignore its own filter
+
+One specific sequence produced 60 real, unrelated entities from a query meant to match zero: an
+`$owner`-only filter against a throwaway burn address (`0x…dEaD`) returned every entity anyone has
+ever sent that address, which is correct — but it looked, for a few minutes, like the `kind`/schema
+filter in a *different* query wasn't being applied, until re-running each query in isolation with a
+`count`-only `select` showed the schema filter alone genuinely matches zero. Not an Arkiv bug: two
+different test queries were run back to back and their results were briefly misread as one. Worth
+recording anyway, since it's an easy trap when scripting several `arkiv_query` calls in a row and
+reading output after the fact rather than per-call.
+
+## No live write exercised yet — but a real, verified attempt, not a guess
+
+`chain/arkiv/`'s sidecar, using the official JS SDK (the one confirmed above to target the right
+network), reaches real on-chain gas estimation with an unfunded throwaway wallet (confirmed `0`
+balance via `eth_getBalance`) and fails there — `"Execution error without revert data"` — not at
+encoding, not at signing, not at the RPC connection. That is the furthest this can be verified
+without a funded wallet, which needs a human with a browser wallet (`hub.arkiv.network/faucet` is
+wallet-connect gated, not a plain API). No successful create yet, so no real entity key exists; the
+placeholders in `schema.md` and the README stay placeholders until someone funds a wallet.

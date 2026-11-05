@@ -27,5 +27,6 @@ Two concrete audiences, neither hypothetical:
 - **Other agent-coordination projects on Arkiv.** This is a direct instance of the "ephemeral
   coordination state that agents share, query and let expire" pattern Arkiv's own Build-on-Arkiv
   prize names as a target use case. A team building on Arkiv to compare how different projects
-  model agent-assignment data would have a real, running example to query (`kind =
-  "mergit.routing_decision"`), not a synthetic demo entity nobody else depends on.
+  model agent-assignment data would have a real, running example to query
+  (`arkiv.schema = str('mergit.routing_decision')`), not a synthetic demo entity nobody else
+  depends on.

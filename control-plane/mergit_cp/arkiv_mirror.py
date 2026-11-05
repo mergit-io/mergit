@@ -1,170 +1,164 @@
-"""Mirrors routing decisions (``routing_decisions``, migration 0016) onto Arkiv, the public Web3 database,
-for ETHGlobal Mumbai's "Build on Arkiv (existing projects)" track.
+"""Mirrors routing decisions (``routing_decisions``, migration 0016) onto Arkiv's Rabdi testnet, for
+ETHGlobal Mumbai's "Build on Arkiv (existing projects)" track.
 
 Postgres stays the source of truth: nothing here is read back to decide anything the product depends on.
-This is a best-effort copy, written after the Postgres transaction that recorded the decision has already
-committed, so a down testnet or a slow RPC never affects a real request (``routes_routing.suggestions``
-swallows and logs any `ArkivMirror` failure). The mirrored entity tags itself
-``kind = "mergit.routing_decision"`` so anyone can query it without knowing anything else about Mergit;
-the requester's address is a queryable attribute, not the Arkiv-level owner, since one service wallet
-signs every write (see `Settings.arkiv_*`).
+This is a best-effort copy, scheduled after the request that recorded the decision has already responded
+(`routes_routing.suggestions` uses `BackgroundTasks`), so a down testnet or a slow write never holds up a
+real request.
+
+Two separate paths, deliberately:
+
+* **Reads** (`read_decisions`) are a plain JSON-RPC ``arkiv_query`` call over httpx, no SDK. Verified live
+  against Rabdi: it returns ``key``/``owner``/``attributes`` but never a top-level payload field — Rabdi
+  has no such field at the protocol level (``arkiv/friction.md``), so every value this module writes is a
+  named *attribute*, including the JSON blob (``body``, a ``bytes``-typed attribute), not the "payload"
+  concept the old (wrong-network) Python SDK exposes.
+* **Writes** (`write_decisions`) go to a small Node sidecar (`chain/arkiv/`) that holds the one service
+  wallet's key and uses the official JS SDK, the only one confirmed to encode a write Rabdi accepts. One
+  HTTP call carries every task's decision for one plan, so the sidecar sends ONE batched transaction
+  (``executeBatch``), not one per task — fewer round trips, and no nonce race between a plan's own tasks.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, cast
+
+import httpx
 
 log = logging.getLogger(__name__)
 
-KIND = "mergit.routing_decision"
-"""The project's tag on every entity this module writes (`arkiv.schema.md`'s ``kind`` attribute)."""
-
-
-class RawArkivClient(Protocol):
-    """The slice of ``arkiv.Arkiv`` this module calls, as its own protocol so a test can fake it without
-    a real `arkiv.Arkiv` (which needs a funded account and a reachable RPC)."""
-
-    def create_entity(
-        self,
-        payload: bytes | None = None,
-        content_type: str | None = None,
-        attributes: dict[str, str | int] | None = None,
-        expires_in: int | None = None,
-    ) -> tuple[Any, Any]: ...
-
-    def query_entities(self, query: str) -> Any: ...
+SCHEMA = "mergit.routing_decision"
+"""`defineSchema`'s own name (`chain/arkiv/src/schema.js`), which Arkiv turns into the built-in,
+always-queryable `arkiv.schema` attribute — confirmed live: `arkiv.schema = str('my-app.posts')`
+matches the docs' own example entity on the real Rabdi network, so this is a real filter, not sugar."""
 
 
 @dataclass(frozen=True)
-class MirroredDecision:
-    """One routing decision as read back from Arkiv (`GET /v0/plans/{uuid}/arkiv-suggestions`)."""
+class Decision:
+    """One routing decision to mirror (`write_decisions`) or as read back (`read_decisions`'s
+    `MirroredDecision`, which adds `entity_key`)."""
 
-    entity_key: str
-    plan_id: str
     task_index: int
     category: str
-    requester: str
     decided_at: str
     candidates: list[dict[str, Any]]
     picks: list[dict[str, Any]]
 
 
-class ArkivMirror:
-    """Lazily builds the real `arkiv.Arkiv` client on first use (constructing it makes no network call,
-    but importing ``arkiv`` eagerly would make the dependency mandatory for everyone who never sets
-    `ARKIV_*`)."""
+@dataclass(frozen=True)
+class MirroredDecision(Decision):
+    entity_key: str = ""
 
+
+class ArkivMirror:
     def __init__(
         self,
         rpc_url: str,
-        private_key: str,
         access_key: str | None,
+        owner_address: str,
+        sidecar_url: str | None,
+        sidecar_token: str | None,
         ttl_days: int,
         *,
-        client: RawArkivClient | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._rpc_url = rpc_url
-        self._private_key = private_key
-        self._access_key = access_key
-        self.ttl_seconds = ttl_days * 86400
-        self._client = client
-        """Pre-built only in tests, which fake `RawArkivClient` to avoid a real funded account and RPC."""
+        self._rpc_url = f"{rpc_url}/{access_key}" if access_key else rpc_url
+        self._owner = owner_address.lower()
+        self._sidecar_url = sidecar_url
+        self._sidecar_token = sidecar_token
+        self._ttl_days = ttl_days
+        self._http = http_client or httpx.AsyncClient()
 
-    def _build(self) -> RawArkivClient:
-        from arkiv import Arkiv  # local import: optional dependency, only needed when Arkiv is configured
-        from arkiv.account import NamedAccount
-        from arkiv.provider import ProviderBuilder
-        from web3.providers.base import BaseProvider
+    async def aclose(self) -> None:
+        await self._http.aclose()
 
-        url = f"{self._rpc_url}/{self._access_key}" if self._access_key else self._rpc_url
-        # .custom() with no .ws()/.async_mode() always builds a sync HTTPProvider; the builder's return
-        # type is wider (it also covers ws/async providers) than what we ever actually get here.
-        provider = cast(BaseProvider, ProviderBuilder().custom(url).build())
-        account = NamedAccount.from_private_key("mergit-service", self._private_key)
-        # `client.arkiv` (an `ArkivModule`), not the `Arkiv`/`Web3` client itself, is what carries
-        # `create_entity`/`query_entities`.
-        return cast(RawArkivClient, Arkiv(provider, account=account).arkiv)
-
-    @property
-    def client(self) -> RawArkivClient:
-        if self._client is None:
-            self._client = self._build()
-        return self._client
-
-    async def write_decision(
-        self,
-        *,
-        plan_id: str,
-        task_index: int,
-        category: str,
-        requester: str,
-        decided_at: str,
-        candidates: list[dict[str, Any]],
-        picks: list[dict[str, Any]],
-    ) -> str:
-        """Mirrors one `routing_decisions` row. Returns the new entity's key. Raises on failure; callers
-        that must not fail the request for this (`routes_routing.suggestions`) catch and log it."""
-        payload = json.dumps({"candidates": candidates, "picks": picks}).encode()
-        attributes: dict[str, str | int] = {
-            "kind": KIND,
-            "planId": plan_id,
-            "taskIndex": task_index,
-            "category": category,
-            "requester": requester,
-            "decidedAt": decided_at,
+    async def write_decisions(self, plan_id: str, requester: str, decisions: list[Decision]) -> None:
+        """One HTTP call to the sidecar, one on-chain transaction for every task in `decisions`. Raises
+        on failure (no sidecar configured, unreachable, out of funds, a bad key); the caller decides
+        whether that may fail the request (it must not — see this module's docstring)."""
+        if not self._sidecar_url:
+            raise RuntimeError("ARKIV_SIDECAR_URL is not set; nothing to mirror to")
+        body = {
+            "ttl_days": self._ttl_days,
+            "decisions": [
+                {
+                    "plan_id": plan_id,
+                    "requester": requester,
+                    "task_index": d.task_index,
+                    "category": d.category,
+                    "decided_at": d.decided_at,
+                    "candidates": d.candidates,
+                    "picks": d.picks,
+                }
+                for d in decisions
+            ],
         }
+        headers = {"Authorization": f"Bearer {self._sidecar_token}"} if self._sidecar_token else {}
+        response = await self._http.post(
+            f"{self._sidecar_url}/internal/mirror", json=body, headers=headers, timeout=120.0
+        )
+        response.raise_for_status()
 
-        def create() -> str:
-            entity_key, _receipt = self.client.create_entity(
-                payload=payload,
-                content_type="application/json",
-                attributes=attributes,
-                expires_in=self.ttl_seconds,
-            )
-            return str(entity_key)
-
-        return await asyncio.to_thread(create)
+    def describe_query(self, plan_id: str) -> str:
+        """The exact query `read_decisions` runs, for display (README's/the panel's "one query anyone
+        can run") — real and copy-pasteable, not illustrative: schema tag, plan id, and the owner filter
+        that keeps a spoofed entity with Mergit's own tag out of someone else's results."""
+        return (
+            f"arkiv.schema = str('{SCHEMA}') AND planId = str('{plan_id}')"
+            f" AND $owner = addr({self._owner})"
+        )
 
     async def read_decisions(self, plan_id: str, *, limit: int = 50) -> list[MirroredDecision]:
-        """Every live mirrored decision for one plan, most recent Arkiv write order undefined (callers
-        that care sort by `decided_at` themselves). Arkiv is a public, permissionless database: anyone
-        can write an entity tagged ``kind = "mergit.routing_decision"`` with any payload they like, so a
-        malformed match is skipped and logged rather than raised (`_decode`)."""
-        query = f'kind = "{KIND}" AND planId = "{plan_id}"'
+        """Every live mirrored decision for one plan, filtered by schema, plan id, *and* `$owner` (the
+        service wallet) — without the owner filter, anyone could write a spoofed entity with Mergit's
+        own schema tag and a matching `planId` and have it show up in another plan's panel."""
+        query = self.describe_query(plan_id)
+        response = await self._http.post(
+            self._rpc_url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "arkiv_query",
+                "params": [query, {"select": {"key": True, "attributes": True}, "limit": limit}],
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if "error" in body:
+            raise RuntimeError(f"arkiv_query failed: {body['error']}")
+        out: list[MirroredDecision] = []
+        for entity in body.get("result", {}).get("data", []):
+            decoded = _decode(entity)
+            if decoded is not None:
+                out.append(decoded)
+        return out
 
-        def fetch() -> list[MirroredDecision]:
-            out: list[MirroredDecision] = []
-            for entity in self.client.query_entities(query):
-                decoded = _decode(entity)
-                if decoded is not None:
-                    out.append(decoded)
-                if len(out) >= limit:
-                    break
-            return out
 
-        return await asyncio.to_thread(fetch)
-
-
-def _decode(entity: Any) -> MirroredDecision | None:
+def _decode(entity: dict[str, Any]) -> MirroredDecision | None:
+    """Arkiv is a public, permissionless database: anyone can write an entity matching our schema,
+    plan id and owner filter (if they also control the service wallet — they don't, but a malformed
+    or future-schema entity from our own future code is still a real possibility), so a decode failure
+    is skipped and logged, never raised."""
     try:
-        attrs: dict[str, Any] = entity.attributes or {}
-        parsed: Any = json.loads(entity.payload) if entity.payload else {}
-        # Valid JSON but not an object (e.g. a bare array) has no "candidates"/"picks" to read.
-        body: dict[str, Any] = cast("dict[str, Any]", parsed) if isinstance(parsed, dict) else {}
+        attrs = {a["name"]: a["value"] for a in entity.get("attributes", [])}
+        body: dict[str, Any] = {}
+        raw_body = attrs.get("body")
+        if isinstance(raw_body, str) and raw_body.startswith("0x"):
+            parsed: Any = json.loads(bytes.fromhex(raw_body[2:]))
+            if isinstance(parsed, dict):
+                body = cast("dict[str, Any]", parsed)
         return MirroredDecision(
-            entity_key=str(entity.key),
-            plan_id=str(attrs.get("planId", "")),
+            entity_key=str(entity.get("key", "")),
             task_index=int(attrs.get("taskIndex", -1)),
             category=str(attrs.get("category", "")),
-            requester=str(attrs.get("requester", "")),
             decided_at=str(attrs.get("decidedAt", "")),
             candidates=body.get("candidates", []),
             picks=body.get("picks", []),
         )
-    except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
-        log.warning("skipping an unreadable entity tagged %r: %r", KIND, getattr(entity, "key", None))
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        log.warning("skipping an unreadable entity tagged %r: %r", SCHEMA, entity.get("key"))
         return None

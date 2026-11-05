@@ -20,14 +20,14 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 
 from . import eligibility, plans
 from .agents import Agent
-from .arkiv_mirror import ArkivMirror
+from .arkiv_mirror import ArkivMirror, Decision
 from .auth import PoolDep, PrincipalDep, SettingsDep
 from .deps import ArkivDep
 from .reputation_model import Params, Posterior
@@ -95,6 +95,7 @@ async def suggestions(
     pool: PoolDep,
     agents: Annotated[list[Agent], Depends(get_agents)],
     arkiv: ArkivDep,
+    background_tasks: BackgroundTasks,
     explore: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """Per task: the agents expected to fit its budget, best first (at most ``max_attempts``), and every
@@ -187,7 +188,9 @@ async def suggestions(
                     ),
                 )
         if arkiv is not None:
-            await _mirror_decisions(arkiv, plan.plan_id, plan.category, address, decisions, candidates)
+            background_tasks.add_task(
+                _mirror_decisions, arkiv, plan.plan_id, plan.category, address, decisions, candidates
+            )
     return {
         "plan_id": plan.plan_id,
         "mode": "explore" if explore else "greedy",
@@ -218,7 +221,7 @@ async def arkiv_suggestions(
             raise HTTPException(
                 status_code=403, detail="only the requester may see suggestions for this plan"
             )
-    query = f'kind = "mergit.routing_decision" AND planId = "{plan.plan_id}"'
+    query = arkiv.describe_query(plan.plan_id)
     try:
         decisions = await arkiv.read_decisions(plan.plan_id)
     except Exception:  # any SDK/RPC failure; see the docstring
@@ -304,19 +307,24 @@ async def _mirror_decisions(
     decisions: list[tuple[int, int, list[Pick]]],
     candidates: dict[str, Posterior],
 ) -> None:
-    """Best-effort: a down testnet or a slow RPC must not fail a suggestions call that Postgres already
-    recorded, so every failure is caught and logged, never raised."""
+    """Runs as a `BackgroundTasks` entry, after the response is already on its way: a down testnet or
+    a slow write (the sidecar waits for the transaction to land) must not hold up a suggestions call
+    that Postgres already recorded, so every failure is caught and logged, never raised. One call to
+    `write_decisions` for every task in this plan's draw, so the sidecar sends one transaction, not
+    one per task (`chain/arkiv/src/server.js`'s `executeBatch`)."""
     decided_at = datetime.now(UTC).isoformat()
-    for index, _budget, picks in decisions:
-        try:
-            await arkiv.write_decision(
-                plan_id=plan_id,
-                task_index=index,
-                category=category,
-                requester=requester,
-                decided_at=decided_at,
-                candidates=_snapshot(candidates),
-                picks=[_pick_record(p) for p in picks],
-            )
-        except Exception:  # any SDK/RPC failure; Arkiv is a mirror, not the record of truth
-            log.warning("arkiv mirror failed for plan %s task %s", plan_id, index, exc_info=True)
+    snapshot = _snapshot(candidates)
+    to_write = [
+        Decision(
+            task_index=index,
+            category=category,
+            decided_at=decided_at,
+            candidates=snapshot,
+            picks=[_pick_record(p) for p in picks],
+        )
+        for index, _budget, picks in decisions
+    ]
+    try:
+        await arkiv.write_decisions(plan_id, requester, to_write)
+    except Exception:  # any sidecar/RPC failure; Arkiv is a mirror, not the record of truth
+        log.warning("arkiv mirror failed for plan %s", plan_id, exc_info=True)

@@ -3,12 +3,14 @@
 **Do the things we filter on, who can edit each entity, and when it expires fit what the product
 does?**
 
-- **Filters** (`kind`, `planId`, `taskIndex`, `category`, `requester`, `decidedAt` — all indexed,
-  `schema.md`) are exactly the fields the product itself already groups suggestions by: one query
-  per plan (`arkiv_suggestions` in `routes_routing.py` builds `kind = "..." AND planId = "..."`),
+- **Filters** (the built-in `arkiv.schema`, plus `planId`, `taskIndex`, `category`, `requester`,
+  `decidedAt` — all indexed, `schema.md`) are exactly the fields the product itself already groups
+  suggestions by: one query per plan (`ArkivMirror.describe_query` builds
+  `arkiv.schema = str('mergit.routing_decision') AND planId = str('...') AND $owner = addr('...')`),
   which is the same shape as the existing Postgres query `decisions()` in the test suite uses
   (`SELECT ... FROM routing_decisions WHERE plan_uuid = %s`). We didn't invent new query axes for
-  Arkiv; we reused the ones the feature already needed.
+  Arkiv; we reused the ones the feature already needed, plus `$owner`, which Arkiv being a public,
+  permissionless database makes necessary and Postgres's own access control never required.
 - **Who can edit:** nobody, by design — we never call `update_entity`, `extend_entity`, or
   `delete_entity`. A routing decision is a historical fact about one draw at one point in time
   (paper §9.3: "any draw can be replayed from its seed and the posteriors it saw"); the matching

@@ -16,8 +16,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import psycopg
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from mergit_cp import routes_routing
@@ -46,7 +48,6 @@ from mergit_cp.routing import (
 )
 from tests.cp_fakes import FakeLLM
 from tests.test_api import seed_plan
-from tests.test_arkiv_mirror import FakeEntity, FakeRawClient
 from tests.test_eligibility import dispatch, invalid_verdict
 from tests.test_plans import app_client, create, llm, settings, sign_in  # noqa: F401  (fixtures)
 from tests.test_reputation import gateway, run
@@ -582,38 +583,64 @@ def test_an_empty_answer_with_agents_out_for_probation_does_not_blame_the_budget
         assert task["reason"].startswith("some agents are left out for probation or the operator cap")
 
 
-# -- Arkiv mirror (ETHGlobal Mumbai "Build on Arkiv" track): routing_decisions also written to Arkiv, and
-# readable back through its own endpoint, with no Postgres field exposed anywhere this depends on. --
+# -- Arkiv mirror (ETHGlobal Mumbai "Build on Arkiv" track): routing_decisions also written to Arkiv
+# (one batched call to the sidecar, chain/arkiv/), and readable back through its own endpoint. Both the
+# sidecar and the Rabdi RPC are mocked at the HTTP layer (`respx`), never a real network or process. --
+
+ARKIV_RPC = "https://rpc.example"
+ARKIV_SIDECAR = "https://sidecar.example"
+ARKIV_OWNER = "0x1111111111111111111111111111111111111111"
+
+
+def _fake_entity(decision: dict[str, Any]) -> dict[str, Any]:
+    """An entity shaped like a real `arkiv_query` match, encoding one decision the sidecar "wrote"
+    (`_entity` in `test_arkiv_mirror.py` is the unit-level version of this)."""
+    encoded_body = "0x" + json.dumps(
+        {"candidates": decision["candidates"], "picks": decision["picks"]}
+    ).encode().hex()
+    return {
+        "key": f"0xe{decision['task_index']}",
+        "attributes": [
+            {"name": "taskIndex", "type": "i32", "value": decision["task_index"]},
+            {"name": "category", "type": "str", "value": decision["category"]},
+            {"name": "decidedAt", "type": "str", "value": decision["decided_at"]},
+            {"name": "body", "type": "bytes", "value": encoded_body},
+        ],
+    }
 
 
 @contextmanager
-def arkiv_client(settings: Settings, llm: FakeLLM) -> Iterator[tuple[TestClient, FakeRawClient]]:
-    raw = FakeRawClient()
-    arkiv = ArkivMirror("https://rpc.example", "0xkey", None, 30, client=raw)
-    with TestClient(
-        create_app(settings, llm=llm, deliver_events=False, arkiv=arkiv), base_url="https://testserver"
-    ) as c:
-        yield c, raw
+def arkiv_client(settings: Settings, llm: FakeLLM) -> Iterator[tuple[TestClient, respx.MockRouter]]:
+    arkiv = ArkivMirror(ARKIV_RPC, None, ARKIV_OWNER, ARKIV_SIDECAR, "sidecar-secret", 30)
+    with (
+        respx.mock(assert_all_called=False) as mock,
+        TestClient(
+            create_app(settings, llm=llm, deliver_events=False, arkiv=arkiv),
+            base_url="https://testserver",
+        ) as c,
+    ):
+        mock.post(f"{ARKIV_SIDECAR}/internal/mirror").respond(
+            json={"tx_hash": "0xdead", "entity_keys": []}
+        )
+        yield c, mock
 
 
 def test_an_exploring_suggestion_is_mirrored_to_arkiv_and_readable_back(settings: Settings, llm: FakeLLM):
-    with arkiv_client(settings, llm) as (c, raw):
+    with arkiv_client(settings, llm) as (c, mock):
         sign_in(c)
         plan = create(c)
+        write_route = mock.routes[-1]  # the default write mock registered by arkiv_client
         got = c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"}).json()
 
-        # One Arkiv write per task, tagged for the project and keyed to this plan.
-        assert len(raw.created) == len(got["tasks"]) == 2
-        for call in raw.created:
-            assert call["attributes"]["kind"] == "mergit.routing_decision"
-            assert call["attributes"]["planId"] == plan["plan_id"]
-            assert call["content_type"] == "application/json"
+        # One write call, carrying every task's decision — never one call per task.
+        assert write_route.call_count == 1
+        sent = json.loads(write_route.calls[0].request.content)
+        assert len(sent["decisions"]) == len(got["tasks"]) == 2
+        assert all(d["plan_id"] == plan["plan_id"] for d in sent["decisions"])
 
-        # The read endpoint decodes what was written, not a copy kept in Postgres.
-        raw.entities = [
-            FakeEntity(key=call["key"], attributes=call["attributes"], payload=call["payload"])
-            for call in raw.created
-        ]
+        # The read endpoint decodes what was (supposedly) written on Arkiv, not a copy kept in Postgres.
+        entities = [_fake_entity(d) for d in sent["decisions"]]
+        mock.post(ARKIV_RPC).respond(json={"jsonrpc": "2.0", "id": 1, "result": {"data": entities}})
         mirrored = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions").json()
         assert mirrored["enabled"] is True
         assert {d["task_index"] for d in mirrored["decisions"]} == {0, 1}
@@ -624,12 +651,12 @@ def test_arkiv_suggestions_degrades_instead_of_500_when_arkiv_is_unreachable(
 ):
     """A bad key or a down RPC must not 500 the page for an unrelated feature; the owner still sees
     their plan, just told Arkiv could not be reached."""
-    with arkiv_client(settings, llm) as (c, raw):
+    with arkiv_client(settings, llm) as (c, mock):
         sign_in(c)
         plan = create(c)
         c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"})
 
-        raw.raises = ConnectionError("rpc unreachable")
+        mock.post(ARKIV_RPC).mock(side_effect=httpx.ConnectError("rpc unreachable"))
         resp = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions")
 
         assert resp.status_code == 200
@@ -640,7 +667,7 @@ def test_arkiv_suggestions_degrades_instead_of_500_when_arkiv_is_unreachable(
 
 
 def test_arkiv_suggestions_is_owner_only(settings: Settings, llm: FakeLLM):
-    with arkiv_client(settings, llm) as (c, _raw):
+    with arkiv_client(settings, llm) as (c, _mock):
         sign_in(c)
         plan = create(c)
         c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"})

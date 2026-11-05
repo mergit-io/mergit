@@ -1,7 +1,8 @@
 # Arkiv schema
 
 What we write to Arkiv's Rabdi testnet, for ETHGlobal Mumbai's "Build on Arkiv (existing projects)"
-track. Code: `control-plane/mergit_cp/arkiv_mirror.py`, called from
+track. Code: `control-plane/mergit_cp/arkiv_mirror.py` (reads, plain httpx), `chain/arkiv/` (the
+sidecar that writes, holding the service wallet's key), called from
 `control-plane/mergit_cp/routes_routing.py` (`_mirror_decisions`) and read back in
 `GET /v0/plans/{uuid}/arkiv-suggestions` (`arkiv_suggestions`).
 
@@ -17,19 +18,31 @@ new endpoint that reads it back from there.
 
 ## Entity
 
-One entity per task per exploring `GET /v0/plans/{uuid}/suggestions?explore=true` call. Content
-type `application/json`.
+One `arkiv.schema = "mergit.routing_decision"` entity per task per exploring
+`GET /v0/plans/{uuid}/suggestions?explore=true` call, all of one call's tasks in a single batched
+transaction (`chain/arkiv/src/server.js`'s `executeBatch`), not one transaction per task.
+
+`defineSchema("mergit.routing_decision", {...})` (`chain/arkiv/src/schema.js`) makes the schema's own
+name the built-in `arkiv.schema` attribute — confirmed live against Rabdi: `arkiv.schema =
+str('my-app.posts')` matches the docs' own example entity on the real network, so filtering on it is
+a real query, not SDK sugar.
 
 | Attribute | Type | Indexed | What |
 | --- | --- | --- | --- |
-| `kind` | `str` | yes | Always `"mergit.routing_decision"` — the project's tag; filter on it, since Arkiv is a shared database other projects write to as well |
 | `planId` | `str` | yes | The plan's `0x`-prefixed id (`mergit_receipt.plan_id`), so a query can ask for one plan's decisions |
 | `taskIndex` | `i32` | yes | Which task in the plan this decision is for |
 | `category` | `str` | yes | The task's category, same value the router ranked within |
-| `requester` | `str` | yes | The plan owner's wallet address — a queryable attribute, **not** the entity's Arkiv-level owner (see "Who owns it" below) |
+| `requester` | `addr` | yes | The plan owner's wallet address — a queryable attribute, **not** the entity's Arkiv-level owner (see "Who owns it" below) |
 | `decidedAt` | `str` | yes | ISO-8601 UTC timestamp of the write |
+| `body` | `bytes` | no | The candidates/picks JSON, as raw bytes — see below |
 
-Payload (not an attribute, since Arkiv attributes are `str \| int` only — no nested structures):
+There is no separate "payload" field at the protocol level on Rabdi: checked live, `arkiv_getEntity`
+never returns one, on any entity, ours or anyone else's (`friction.md`). Everything is a named
+attribute, including the blob, which is why `body` is itself an attribute (`bytes`-typed) rather than
+a payload/content-type pair — the Python SDK's `create_entity(payload=..., content_type=...)` API,
+which assumes that pair exists, targets a different, incompatible network (`friction.md`).
+
+`body`'s JSON:
 
 ```json
 {
@@ -45,13 +58,16 @@ a redesign of it.
 
 ## Who owns it, and why
 
-One service wallet (`ARKIV_PRIVATE_KEY`, funded from `hub.arkiv.network/faucet`) signs every write.
-It is **not** a per-requester wallet: Mergit requesters sign in with Ethereum but never hold funds
-on Arkiv's testnet, so making them the Arkiv-level owner would mean asking them to fund a second
-chain to see their own suggestion history. The requester's address is still fully queryable — as the
-`requester` attribute above — just not the chain-level owner field.
+One service wallet signs every write. Its *private key* lives only in `chain/arkiv/`'s own env
+(`ARKIV_PRIVATE_KEY`), never in the control plane's process or env — the control plane only knows
+the wallet's *public* address (`ARKIV_OWNER_ADDRESS`), which it needs to filter reads (below). It is
+not a per-requester wallet: Mergit requesters sign in with Ethereum but never hold funds on Arkiv's
+testnet, so making them the Arkiv-level owner would mean asking them to fund a second chain to see
+their own suggestion history. The requester's address is still fully queryable — as the `requester`
+attribute above — just not the chain-level owner field.
 
-Service wallet address: `<TODO: fill in once ARKIV_PRIVATE_KEY is set on the hosted deploy>`.
+Service wallet address: `<TODO: fill in once a funded ARKIV_PRIVATE_KEY is set on chain/arkiv/'s
+deploy — see chain/arkiv/README.md>`.
 
 ## Expiry
 
@@ -63,9 +79,13 @@ cheap.
 ## One query anyone can run
 
 ```
-kind = "mergit.routing_decision" AND planId = "<a real plan_id from a live run>"
+arkiv.schema = str('mergit.routing_decision') AND planId = str('<a real plan_id from a live run>') AND $owner = addr(<the service wallet address above>)
 ```
 
-Against `https://rpc.rabdi.db-chain.testnet.arkiv.network` via `arkiv_query`, or through
-`GET /v0/plans/{uuid}/arkiv-suggestions` on the hosted app, which runs exactly this query and
-returns the decoded result (see `friction.md` for the one gap in that endpoint).
+The `$owner` clause matters: without it, anyone could write an entity with our exact schema tag and
+a matching `planId` and have it show up as if it were ours (Arkiv is public and permissionless —
+checked live, nothing stops a third party from using any tag). Run it against
+`https://rpc.rabdi.db-chain.testnet.arkiv.network` via `arkiv_query`
+(`{"select": {"key": true, "attributes": true}}`), or through
+`GET /v0/plans/{uuid}/arkiv-suggestions` on the hosted app, which runs exactly this query
+(`ArkivMirror.describe_query`) and returns the decoded result.

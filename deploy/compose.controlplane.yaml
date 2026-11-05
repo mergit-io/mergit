@@ -79,6 +79,26 @@ services:
       GATEWAY_URL: http://gateway:8082
       STORE_URL: http://store:8081
       AGENTS_FILE: /agents.json
+      # Unset: the Arkiv mirror (ETHGlobal Mumbai "Build on Arkiv" track) is a no-op, same as any other
+      # ARKIV_* left blank (mergit_cp/config.py's arkiv_enabled). The sidecar below holds the one secret
+      # this needs beyond its public RPC/owner; ARKIV_SIDECAR_TOKEN is shared with it in secrets/api.env.
+      ARKIV_SIDECAR_URL: http://arkiv-sidecar:8088
+
+  # The one write Rabdi needs: holds the service wallet's private key, never the control plane's own
+  # process (chain/arkiv/README's own reasoning). Started only once deploy/secrets/arkiv.env exists —
+  # `docker compose --profile arkiv ... up -d`, same opt-in pattern as `keyrelay` above.
+  arkiv-sidecar:
+    profiles: ["arkiv"]
+    build: { context: ../chain/arkiv }
+    image: mergit-arkiv-sidecar:local
+    restart: unless-stopped
+    env_file: secrets/arkiv.env
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8088/healthz').then(r => process.exit(r.ok ? 0 : 1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   worker:
     build: { context: .., dockerfile: control-plane/worker.Dockerfile }
