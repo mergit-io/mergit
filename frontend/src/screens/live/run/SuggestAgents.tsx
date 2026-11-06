@@ -5,10 +5,7 @@ import type { ArkivDecision, ArkivSuggestions, Suggestions, TaskSuggestion } fro
 
 /** Does what Arkiv has for this task match the picks Postgres just answered with — proof the mirror
  * carries what the product actually ranked, not just a write nobody checks against anything. */
-function picksMatch(
-  task: TaskSuggestion | undefined,
-  decision: ArkivDecision | undefined,
-): boolean | undefined {
+function picksMatch(task: TaskSuggestion | undefined, decision: ArkivDecision | undefined): boolean | undefined {
   if (!task || !decision) return undefined;
   const postgres = task.picks.map((p) => p.agent_id);
   const arkiv = decision.picks.map((p) => p.agent_id);
@@ -135,9 +132,7 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
                   {arkivError}
                 </span>
               )}
-              {arkiv && !arkiv.enabled && (
-                <span className="small c3">Arkiv mirroring is off on this deployment.</span>
-              )}
+              {arkiv && !arkiv.enabled && <span className="small c3">Arkiv mirroring is off on this deployment.</span>}
               {arkiv?.enabled && arkiv.error && (
                 <span className="small ca" role="alert">
                   Arkiv's testnet could not be reached just now; try again shortly.

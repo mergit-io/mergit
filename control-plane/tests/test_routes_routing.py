@@ -595,9 +595,9 @@ ARKIV_OWNER = "0x1111111111111111111111111111111111111111"
 def _fake_entity(decision: dict[str, Any]) -> dict[str, Any]:
     """An entity shaped like a real `arkiv_query` match, encoding one decision the sidecar "wrote"
     (`_entity` in `test_arkiv_mirror.py` is the unit-level version of this)."""
-    encoded_body = "0x" + json.dumps(
-        {"candidates": decision["candidates"], "picks": decision["picks"]}
-    ).encode().hex()
+    encoded_body = (
+        "0x" + json.dumps({"candidates": decision["candidates"], "picks": decision["picks"]}).encode().hex()
+    )
     return {
         "key": f"0xe{decision['task_index']}",
         "attributes": [
@@ -619,9 +619,7 @@ def arkiv_client(settings: Settings, llm: FakeLLM) -> Iterator[tuple[TestClient,
             base_url="https://testserver",
         ) as c,
     ):
-        mock.post(f"{ARKIV_SIDECAR}/internal/mirror").respond(
-            json={"tx_hash": "0xdead", "entity_keys": []}
-        )
+        mock.post(f"{ARKIV_SIDECAR}/internal/mirror").respond(json={"tx_hash": "0xdead", "entity_keys": []})
         yield c, mock
 
 
