@@ -135,13 +135,15 @@ Full writeup: [`arkiv/schema.md`](arkiv/schema.md), [`arkiv/why-arkiv.md`](arkiv
 [`arkiv/how-you-use-arkiv.md`](arkiv/how-you-use-arkiv.md), [`arkiv/reach.md`](arkiv/reach.md),
 [`arkiv/friction.md`](arkiv/friction.md).
 
-- **Service wallet (writes every mirrored entity):** `<TODO: fill in once a funded
-  ARKIV_PRIVATE_KEY is set on chain/arkiv/'s deploy — see chain/arkiv/README.md>`
+- **Service wallet (writes every mirrored entity):** `0x527982184391CF04a4403E44D55e9Bb8173020Ab`
 - **One query anyone can run**, against `https://rpc.rabdi.db-chain.testnet.arkiv.network`
-  (`arkiv_query`) or through the hosted app's `GET /v0/plans/{uuid}/arkiv-suggestions`:
+  (`arkiv_query`) or through the hosted app's `GET /v0/plans/{uuid}/arkiv-suggestions`. This one is
+  a real test plan on the hosted app:
   ```
-  arkiv.schema = str('mergit.routing_decision') AND planId = str('<a real plan_id>') AND $owner = addr(<service wallet address above>)
+  arkiv.schema = str('mergit.routing_decision') AND planId = str('0x247b5cd9b38f436d82a6e6acf1d361d516cd19f88d38c88967eb275ba256d77f') AND $owner = addr(0x527982184391CF04a4403E44D55e9Bb8173020Ab) ORDER BY $key ASC
   ```
+- **One entity on the explorer** (task 1 of a draw on that plan):
+  [`0xc55112ad…fdb5caf`](https://rabdi.explorer.arkiv.network/entity/0xc55112adbd6cdf3e314c42816e6cc65f703e2b4f7f7b0cc848c5caa52fdb5caf)
 - **In the app:** the live run screen's "Suggested agents" panel, after asking for an exploring
   suggestion, shows a "View on Arkiv" button that reads the mirrored entities back from Arkiv live
   (`frontend/src/screens/live/run/SuggestAgents.tsx`).

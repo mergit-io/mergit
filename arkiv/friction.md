@@ -58,12 +58,40 @@ different test queries were run back to back and their results were briefly misr
 recording anyway, since it's an easy trap when scripting several `arkiv_query` calls in a row and
 reading output after the fact rather than per-call.
 
-## No live write exercised yet — but a real, verified attempt, not a guess
+## An unfunded wallet fails at gas estimation with no hint that funds are the problem
 
-`chain/arkiv/`'s sidecar, using the official JS SDK (the one confirmed above to target the right
-network), reaches real on-chain gas estimation with an unfunded throwaway wallet (confirmed `0`
-balance via `eth_getBalance`) and fails there — `"Execution error without revert data"` — not at
-encoding, not at signing, not at the RPC connection. That is the furthest this can be verified
-without a funded wallet, which needs a human with a browser wallet (`hub.arkiv.network/faucet` is
-wallet-connect gated, not a plain API). No successful create yet, so no real entity key exists; the
-placeholders in `schema.md` and the README stay placeholders until someone funds a wallet.
+Before the service wallet was funded, the sidecar's `executeBatch` got as far as real on-chain gas
+estimation and failed there with `"Execution error without revert data"`. Encoding, signing and the
+RPC connection were all fine; the wallet had a `0` balance (`eth_getBalance`). Nothing in the error
+says "insufficient funds". Funding needs a person with a browser wallet, since
+`hub.arkiv.network/faucet` is gated behind wallet-connect and has no plain API. Once funded (10
+tGLM), the same code wrote with no changes.
+
+**Reproduce:** point the JS SDK's `createWalletClient` at Rabdi with a fresh, unfunded key and call
+`executeBatch` with one create.
+
+## u64 attributes lose precision if they cross JSON as numbers
+
+The first live writes stored routing seeds a few units off. Seed `1065256257932064655` landed as
+`1065256257932064640`. Arkiv stored what it was given correctly. The value was already wrong by
+then: the control plane sent it to the Node sidecar as a JSON number, and `JSON.parse` rounds any
+integer past 2^53 to the nearest double before the SDK's `u64()` sees it. The SDK takes a `bigint`
+happily, but nothing warns that a plain number got there already rounded. We now send every u64 as a
+decimal string, and the sidecar rejects a number outright. A fresh draw's seed
+`3019959484170456754` reads back from Rabdi exact.
+
+**Reproduce:** `node -e 'console.log(JSON.parse("1065256257932064655"))'` prints
+`1065256257932064600`.
+
+## A MetaMask-exported key has no `0x`, and viem won't take it
+
+MetaMask's "Show private key" gives 64 hex characters with no `0x` prefix. viem's
+`privateKeyToAccount` needs the prefix, so the sidecar crash-looped on its first deploy and the
+control plane only saw "sidecar unreachable". Not an Arkiv bug, but it is the first thing anyone
+who follows the faucet-then-MetaMask path will hit. The sidecar now accepts either form.
+
+## Where it stands
+
+Live on the hosted app: each exploring suggestion writes one batched transaction of one entity per
+task, owned by the service wallet. The run screen's "View on Arkiv" reads them back from Rabdi and
+checks them against the picks on screen. The query and an entity link are in `schema.md`.
