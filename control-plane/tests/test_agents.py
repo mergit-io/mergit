@@ -91,9 +91,9 @@ def test_the_testnet_agent_is_named_in_agents_toml():
 
 
 def test_the_ens_demo_agents_are_named_in_agents_toml():
-    """mergit-coder-1 and mergit-coder-2 are registered on Base Sepolia with a metadata URL (ENS names coder-1 and
-    coder-2). The API and the worker refuse to start for a deployed agent that `agents.toml` does not name, or
-    whose model has no price, so a roster that lists them needs these entries."""
+    """mergit-coder-1 and mergit-coder-2 are registered on Base Sepolia with a metadata URL (their ENS names
+    are coder-1 and coder-2). The API and the worker refuse to start for a deployed agent that `agents.toml`
+    does not name, or whose model has no price, so a roster that lists them needs these entries."""
     import tomllib
     from pathlib import Path
 

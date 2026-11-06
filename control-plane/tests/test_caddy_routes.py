@@ -202,7 +202,7 @@ def test_public_json_is_readable_from_the_other_site_host() -> None:
 
 
 def test_the_ledger_and_registration_files_are_not_reformatted_by_prettier() -> None:
-    """The ledger snapshot's hash is the hash of its exact bytes. `npm run format` (and CI's format:check) must
-    leave public/ledger and public/registrations alone, or the snapshot stops matching the ENS record."""
+    """The ledger snapshot's hash is the hash of its exact bytes. `npm run format` (and CI's format:check)
+    must leave public/ledger and public/registrations alone, or the snapshot stops matching the ENS record."""
     ignore = (CADDYFILE.parents[1] / "frontend" / ".prettierignore").read_text().splitlines()
     assert "public/ledger/" in ignore and "public/registrations/" in ignore
