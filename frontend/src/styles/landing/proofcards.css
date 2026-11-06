@@ -1,0 +1,238 @@
+/* ProofCards: the container sets every --pc-* token for its theme (story #s6, or the compact page). */
+.pc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 26px 26px 30px;
+  border-radius: 28px;
+  background: var(--pc-card);
+  border: 1px solid var(--pc-line);
+  box-shadow: 0 40px 70px -50px rgba(14, 16, 24, 0.45);
+  transition:
+    transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1),
+    box-shadow 0.35s ease;
+}
+.pc-card:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 50px 80px -46px rgba(14, 16, 24, 0.5);
+}
+.pc-art {
+  position: relative;
+  height: 320px;
+  border-radius: 20px;
+  background: var(--pc-art);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  padding: 40px 16px 20px;
+  margin-bottom: 8px;
+}
+.pc-ex {
+  position: absolute;
+  left: 16px;
+  top: 14px;
+  font: 500 11px var(--pc-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--pc-ink-3);
+}
+.pc-card h3 {
+  margin: 0;
+  font: 400 34px/1.1 var(--pc-serif);
+  letter-spacing: -0.01em;
+  color: var(--pc-ink);
+  text-wrap: balance;
+}
+.pc-card p {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.5;
+  color: var(--pc-ink-2);
+}
+.pc-btn {
+  align-self: flex-start;
+  margin-top: 10px;
+  padding: 14px 22px;
+  border-radius: 999px;
+  background: var(--pc-btn);
+  color: var(--pc-btn-ink);
+  font: 500 13px var(--pc-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+.pc-btn:focus-visible {
+  outline: 3px solid #3ccb98;
+  outline-offset: 3px;
+}
+/* The pictures are printed objects: fixed colours, the same in both themes. */
+.pc-money {
+  width: min(300px, 86%);
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: #12141d;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #eef0f6;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pc-k {
+  font: 500 12px var(--pc-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #9aa1b4;
+}
+.pc-money b {
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.pc-ok {
+  font-size: 13px;
+  color: #7fe6c0;
+}
+.pc-steps {
+  width: min(300px, 86%);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.pc-steps span {
+  padding: 10px 0;
+  text-align: center;
+  border-radius: 12px;
+  background: #1c1f2b;
+  color: #eef0f6;
+  font-size: 13px;
+  font-weight: 500;
+}
+.pc-rows span {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #b8bdd0;
+}
+.pc-rows em {
+  font-style: normal;
+  color: #7fe6c0;
+}
+.pc-slip {
+  position: relative;
+  width: min(250px, 78%);
+  padding: 18px 20px 22px;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #12141d;
+  border: 1px solid #e3e6ec;
+  box-shadow: 0 24px 40px -24px rgba(14, 16, 24, 0.35);
+  transform: rotate(-5deg);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+}
+.pc-slip b {
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+.pc-slip span {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px dashed #e3e6ec;
+  padding-bottom: 5px;
+  color: #4b5263;
+}
+.pc-slip em {
+  font-style: normal;
+  color: #0b7a58;
+  font-weight: 600;
+}
+.pc-slip code {
+  margin-top: 4px;
+  font: 400 12px var(--pc-mono);
+  color: #6d7383;
+}
+.pc-stamp {
+  position: absolute;
+  right: -12px;
+  bottom: -12px;
+  font: 600 11px var(--pc-mono);
+  font-style: normal;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #0b7a58;
+  background: #e3f6ef;
+  border: 1.5px solid #0b7a58;
+  border-radius: 999px;
+  padding: 8px 12px;
+  transform: rotate(8deg);
+}
+.pc-badge {
+  width: 170px;
+  height: 170px;
+  border-radius: 40px;
+  background: linear-gradient(145deg, #1c2033, #10131f);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 30px 50px -28px rgba(14, 16, 24, 0.6);
+  transform: rotate(-4deg);
+}
+.pc-badge svg {
+  width: 110px;
+  height: 110px;
+}
+.pc-badge .faces {
+  display: none;
+}
+.pc-pill {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: #12141d;
+  color: #eef0f6;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pc-pill::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7fe6c0;
+}
+.pc-p1 {
+  right: 18px;
+  top: 40px;
+}
+.pc-p2 {
+  left: 18px;
+  top: 48px;
+}
+.pc-p3 {
+  right: 18px;
+  bottom: 30px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pc-card,
+  .pc-card:hover {
+    transition: none;
+    transform: none;
+  }
+}
+/* On a dark page the picture area is dark too: lift the chips and the badge off it with an edge. */
+.pc-steps span,
+.pc-badge {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+:root[data-theme="dark"] .pc-steps span {
+  background: #2a2e40;
+}

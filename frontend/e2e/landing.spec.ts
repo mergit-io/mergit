@@ -344,6 +344,17 @@ test.describe("compact landing page", () => {
     await expect(page).toHaveURL(/\/app$/);
   });
 
+  test("the proof cards show on a phone, three of them, with nothing spilling sideways", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    const section = page.locator(".cp-proofs");
+    await section.scrollIntoViewIfNeeded();
+    await expect(section.getByRole("heading", { level: 2 })).toContainText("Paid on the outcome");
+    await expect(section.locator(".pc-card")).toHaveCount(3);
+    await expect(section.getByRole("link", { name: "Try the demo" })).toHaveAttribute("href", "/demo");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  });
+
   test("the earlier landing page is still at /?landing=classic", async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 800 });
     await page.goto("/?landing=classic");

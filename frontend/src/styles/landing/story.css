@@ -2267,3 +2267,44 @@
 .story[data-variant="lean"] #leaders {
   display: none;
 }
+
+/* ===== proof cards (#s6): the cards come from ProofCards (proofcards.css); this places them on the 1920 canvas. ===== */
+.story #s6 {
+  --pc-ink: var(--mg-ink);
+  --pc-ink-2: var(--mg-ink-2);
+  --pc-ink-3: var(--mg-ink-3);
+  --pc-card: var(--mg-card, #ffffff);
+  --pc-art: var(--mg-porcelain);
+  --pc-line: var(--mg-hair);
+  --pc-serif: var(--story-serif);
+  --pc-mono: var(--story-mono);
+  --pc-btn: var(--mg-ink);
+  --pc-btn-ink: #ffffff;
+}
+:root[data-theme="dark"] .story #s6 {
+  --pc-art: #1b1e2b;
+  --pc-btn: var(--mg-moon);
+  --pc-btn-ink: var(--mg-night);
+}
+#pc-h {
+  left: 0;
+  width: 1920px;
+  top: 120px;
+  font-family: var(--story-serif);
+  font-weight: 400;
+  font-size: 84px;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+#pc-h .mask {
+  display: inline-block;
+  margin-inline: 0.12em;
+}
+#pc-row {
+  left: 140px;
+  top: 300px;
+  width: 1640px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 40px;
+}

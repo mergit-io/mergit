@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { paths } from "../app/paths";
 import { useAuth } from "../auth/context";
 import { LIcon } from "./LIcon";
+import { ProofCards } from "./ProofCards";
 import { LandingNav } from "./sections/LandingNav";
 import { Faq } from "./sections/Faq";
 import { Footer } from "./sections/Cta";
@@ -119,6 +120,17 @@ export function CompactLanding() {
                   </li>
                 ))}
               </ol>
+            </div>
+          </section>
+
+          <section className="cp-section cp-proofs" aria-labelledby="cp-proofs">
+            <div className="l-container">
+              <h2 id="cp-proofs" className="cp-h2 cp-center">
+                {c.proofs.title[0]} <em>{c.proofs.title[1]}</em>
+              </h2>
+              <div className="cp-pc-row">
+                <ProofCards />
+              </div>
             </div>
           </section>
 

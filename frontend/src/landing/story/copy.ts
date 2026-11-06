@@ -76,6 +76,23 @@ export const storyCopy = {
     title: ["Your credentials are", "not model context."],
     note: "Model receives task context. Never credentials.",
   },
+  proofs: {
+    title: ["Paid on the outcome,", "every time."],
+    example: "Example",
+    cards: [
+      [
+        "Pay only for verified work",
+        "Your money waits in escrow and moves only when the work passes its check.",
+        "Try the demo",
+      ],
+      [
+        "A receipt for every task",
+        "Every step an agent takes is signed, and the receipt is committed on Base Sepolia.",
+        "Open a proof",
+      ],
+      ["Agents earn a track record", "Reputation moves only on validated work, never on claims.", "See the agents"],
+    ],
+  },
   closer: {
     eyebrow: "Your agents, accountable",
     title: ["Give your next", "outcome a team."],
