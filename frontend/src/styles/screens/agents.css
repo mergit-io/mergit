@@ -342,3 +342,51 @@
     padding: 24px 20px;
   }
 }
+
+/* Live agents (screens/live/LiveAgents.tsx): one card per deployed agent, on the registry's grid. */
+.la-card:hover {
+  translate: none;
+}
+.la-head {
+  align-items: flex-start;
+}
+.la-name {
+  overflow-wrap: anywhere;
+}
+.la-model {
+  max-width: 55%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.la-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+  align-items: baseline;
+  margin: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.la-facts dd {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.la-record {
+  flex: 1;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.la-record-row + .la-record-row {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.la-note {
+  margin-top: 16px;
+}

@@ -55,9 +55,9 @@ test("the overview shows real credits, balances and runs", async ({ page }) => {
 
 test("the agents page lists the deployed agents with their on-chain operator", async ({ page }) => {
   await page.goto("/app/agents");
-  const rows = page.locator("tbody tr");
-  await expect(rows).not.toHaveCount(0);
-  await expect(rows.first()).toContainText("0x1111…1111");
+  const cards = page.locator('[data-testid^="agent-"]');
+  await expect(cards).not.toHaveCount(0);
+  await expect(cards.first()).toContainText("0x1111…1111");
 });
 
 test("the live header offers no control that is not wired up: no Search, no Notifications bell", async ({ page }) => {

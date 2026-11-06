@@ -3,12 +3,13 @@ import type { Address } from "viem";
 import { useAgents } from "../../api/useAgents";
 import { byAgent, percent, usdc } from "../../api/reputation";
 import { useReputation } from "../../api/useReputation";
-import type { AgentInfo } from "../../api/types";
+import type { AgentInfo, AgentReputation } from "../../api/types";
 import { identityAbi } from "../../chain/abi";
 import { publicClient } from "../../chain/client";
 import { EnsIdentity } from "../../components/EnsIdentity";
 import { PageHeader } from "../../components/PageHeader";
 import { LIVE } from "../../config/live";
+import "../../styles/screens/agents.css";
 
 type Onchain = { operator: Address; runtimeKey: Address };
 
@@ -25,6 +26,20 @@ function AddressLink({ address }: { address: Address }) {
     <span className="mono">{short(address)}</span>
   );
 }
+
+/** An address read from the Identity contract: a link once read, "unavailable" if the read failed, "…" before. */
+function ChainAddress({ value, pick }: { value: Onchain | null | undefined; pick: (c: Onchain) => Address }) {
+  if (value === undefined) return <span className="c3">…</span>;
+  if (value === null) return <span className="c3">unavailable</span>;
+  return <AddressLink address={pick(value)} />;
+}
+
+/**
+ * Only categories with counted outcomes. A row with none holds the prior, which is configuration and not a measurement
+ * (CLAUDE.md: no number may be presented as measured), so it is not shown as a record.
+ */
+const validated = (rows: AgentReputation[] | undefined): AgentReputation[] =>
+  (rows ?? []).filter((r) => r.counted_outcomes > 0);
 
 /** Who owns each agent and which key signs its receipts, read from the Identity contract. */
 function useOnchain(agents: AgentInfo[] | null) {
@@ -76,66 +91,70 @@ export function LiveAgents() {
         title="Agents"
         subtitle={`The agents you can pick for a task. Owner and signing key are read from the Identity contract on ${LIVE.chainName}.`}
       />
-      <section className="card pad24">
-        {error && <p className="c2">{error}</p>}
-        {!error && agents === null && <p className="c2">Loading agents…</p>}
-        {agents?.length === 0 && <p className="c2">No agents are deployed yet.</p>}
-        {agents && agents.length > 0 && (
-          <table className="ledger-table">
-            <thead>
-              <tr>
-                <th scope="col">Agent</th>
-                <th scope="col">ENS name</th>
-                <th scope="col">Model</th>
-                <th scope="col">Operator (paid)</th>
-                <th scope="col">Receipt signing key</th>
-                <th scope="col">Validated record</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((a) => {
-                const chain = onchain[a.agent_id];
-                return (
-                  <tr key={a.agent_id}>
-                    <td>
-                      <span className="strong">{a.name}</span> <span className="mono c3">#{a.agent_id}</span>
-                    </td>
-                    <td>
-                      <EnsIdentity agentId={a.agent_id} name={a.name} />
-                    </td>
-                    <td className="mono">{a.model}</td>
-                    <td>{chain ? <AddressLink address={chain.operator} /> : chain === null ? "unavailable" : "…"}</td>
-                    <td>{chain ? <AddressLink address={chain.runtimeKey} /> : chain === null ? "unavailable" : "…"}</td>
-                    <td data-testid={`record-${a.agent_id}`}>
-                      {reputation === null ? (
-                        "…"
-                      ) : (seen.get(a.agent_id) ?? []).length === 0 ? (
-                        <span className="c3">No validated outcomes yet</span>
-                      ) : (
-                        <div className="col g4">
-                          {(seen.get(a.agent_id) ?? []).map((r) => (
-                            <span key={r.category} className="small">
-                              <span className="mono">{r.category}</span>: {percent(r.success_mean)} pass, about{" "}
-                              {usdc(r.cost_mean_micros)} USDC a task, {r.value_density_per_usdc.toFixed(2)} passes per
-                              USDC <span className="c3">({String(r.counted_outcomes)} validated)</span>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-        {reputation && (
-          <p className="small c3">
-            {reputation.note} Until an agent has validated outcomes, no figures are shown for it here: it would only be
-            a configured starting point, not a record.
-          </p>
-        )}
-      </section>
+      {error && <p className="c2">{error}</p>}
+      {!error && agents === null && <p className="c2">Loading agents…</p>}
+      {agents?.length === 0 && <p className="c2">No agents are deployed yet.</p>}
+      {agents && agents.length > 0 && (
+        <ul className="ag-grid la-grid">
+          {agents.map((a) => {
+            const chain = onchain[a.agent_id];
+            const record = validated(seen.get(a.agent_id));
+            return (
+              <li key={a.agent_id} className="card ag-card la-card" data-testid={`agent-${a.agent_id}`}>
+                <div className="row g12 la-head">
+                  <div className="col min0 grow">
+                    <h3 className="title la-name">{a.name}</h3>
+                    <span className="mono small c3">Agent #{a.agent_id}</span>
+                  </div>
+                  <span className="mono small la-model" title={a.model}>
+                    {a.model}
+                  </span>
+                </div>
+
+                <EnsIdentity agentId={a.agent_id} name={a.name} showReason />
+
+                <dl className="la-facts">
+                  <dt className="small c3">Owner (paid)</dt>
+                  <dd>
+                    <ChainAddress value={chain} pick={(c) => c.operator} />
+                  </dd>
+                  <dt className="small c3">Signs receipts</dt>
+                  <dd>
+                    <ChainAddress value={chain} pick={(c) => c.runtimeKey} />
+                  </dd>
+                </dl>
+
+                <div className="col g6 la-record" data-testid={`record-${a.agent_id}`}>
+                  {reputation === null ? (
+                    <span className="small c3">…</span>
+                  ) : record.length === 0 ? (
+                    <span className="small c3">No validated outcomes yet</span>
+                  ) : (
+                    record.map((r) => (
+                      <div key={r.category} className="col g4 la-record-row">
+                        <span className="row between g8 small">
+                          <span className="mono strong">{r.category}</span>
+                          <span className="c3">{String(r.counted_outcomes)} validated</span>
+                        </span>
+                        <span className="small c2">
+                          {percent(r.success_mean)} pass · about {usdc(r.cost_mean_micros)} USDC a task ·{" "}
+                          {r.value_density_per_usdc.toFixed(2)} passes per USDC
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {reputation && (
+        <p className="small c3 la-note">
+          {reputation.note} Until an agent has validated outcomes, no figures are shown for it here: they would only be
+          a configured starting point, not a record.
+        </p>
+      )}
     </>
   );
 }
