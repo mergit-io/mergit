@@ -1,4 +1,4 @@
-import type { Attempt, MoneyEvent, PendingDispatch, PlanTask } from "../../../api/types";
+import type { Attempt, MoneyEvent, PendingDispatch, PlanDetail, PlanTask } from "../../../api/types";
 
 /**
  * What each task of a running plan is doing, derived from its attempts, the attempts dispatched but not yet
@@ -51,6 +51,26 @@ export function taskProgress(task: PlanTask, attempts: Attempt[], pending: Pendi
 
 export function stuckTasks(tasks: PlanTask[], attempts: Attempt[], pending: PendingDispatch[] = []): PlanTask[] {
   return tasks.filter((t) => taskProgress(t, attempts, pending).kind === "stuck");
+}
+
+/**
+ * The tasks waiting on the requester. The control plane's own list when it sent one: between a job finishing
+ * and the orchestrator reacting to it, the screen's derivation alone would call a task stuck that is about to
+ * be retried, and offer a Retry the server refuses.
+ */
+export function waitingOnRequester(detail: PlanDetail): PlanTask[] {
+  const fromServer = detail.stuck_indexes;
+  return fromServer
+    ? detail.tasks.filter((t) => fromServer.includes(t.index))
+    : stuckTasks(detail.tasks, detail.attempts, detail.pending_dispatches ?? []);
+}
+
+/** The highest attempt number this task has had or has on its way. */
+export function lastAttempt(index: number, detail: PlanDetail): number {
+  const numbers = [...detail.attempts, ...(detail.pending_dispatches ?? [])]
+    .filter((a) => a.index === index)
+    .map((a) => a.attempt);
+  return Math.max(0, ...numbers);
 }
 
 /** Nothing was ever dispatched: every task still waits. A closed plan like this never funded, or was closed first. */

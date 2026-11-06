@@ -246,3 +246,26 @@ def view(e: MoneyEvent) -> dict[str, Any]:
         "tx": e.tx,
         "payload": payload(e),
     }
+
+
+_HOLDING = """
+SELECT max(j.attempt) FROM jobs j
+WHERE j.plan_uuid = %(plan)s AND j."index" = %(index)s
+  AND NOT EXISTS (SELECT 1 FROM jobs n
+                  WHERE n.plan_uuid = %(plan)s AND n."index" = %(index)s
+                    AND n.attempt = (SELECT max(attempt) FROM task_dispatches
+                                     WHERE plan_uuid = %(plan)s AND "index" = %(index)s))
+  AND NOT EXISTS (SELECT 1 FROM money_events m
+                  WHERE m.task_id = j.task_id AND m.kind IN ('task.released', 'task.returned'))
+"""
+
+
+async def holding_attempt(conn: AsyncConnection[TupleRow], plan_uuid: UUID | str, index: int) -> int | None:
+    """An earlier attempt of task ``index`` whose payment the ledger has not seen released or returned, when
+    the newest dispatch of that task never locked one (it has no job). The gateway only waits on attempt n-1
+    before locking attempt n, so a retry sent behind a given-up attempt would lock a second payment out of
+    the plan's shared balance while this one is still held. None when a retry is safe: the newest attempt
+    locked (the gateway waits on it), or nothing earlier holds money. It only reads the graph's tables."""
+    cur = await conn.execute(_HOLDING, {"plan": str(plan_uuid), "index": index})
+    row = await cur.fetchone()
+    return None if row is None or row[0] is None else int(row[0])

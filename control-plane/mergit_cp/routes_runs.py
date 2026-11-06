@@ -78,6 +78,7 @@ async def plan_detail(
     view["money_events"] = [money.view(m) for m in ledger]
     view["pending_dispatches"] = [runs.pending_view(p) for p in pending]
     view["stuck_indexes"] = stuck
+    view["max_requester_attempts"] = settings.max_requester_attempts
     return view
 
 

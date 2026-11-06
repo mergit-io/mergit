@@ -8,7 +8,7 @@ import { ProgressBadge } from "./badges";
 import { ClosePlan } from "./ClosePlan";
 import { PullRequestStep } from "./PullRequestStep";
 import { RetryTask } from "./RetryTask";
-import { attemptsOf, closedBeforeStart, stuckTasks, taskProgress } from "./progress";
+import { attemptsOf, closedBeforeStart, lastAttempt, taskProgress, waitingOnRequester } from "./progress";
 import { canStartAgain } from "./startAgain";
 import { StepLog } from "./StepLog";
 import { TaskFlow } from "./TaskFlow";
@@ -164,7 +164,8 @@ function RunBanner({
       </div>
     );
   }
-  const stuck = stuckTasks(detail.tasks, detail.attempts, detail.pending_dispatches ?? []);
+  const stuck = waitingOnRequester(detail);
+  const limit = detail.max_requester_attempts;
   if (stuck.length === 0) return null;
   const names = stuck.map((t) => `task ${String(t.index + 1)}`).join(", ");
   return (
@@ -176,9 +177,15 @@ function RunBanner({
         Nothing more runs on its own. Retry a task with another agent (it is paid from that task&apos;s own budget), or
         close the plan to stop it and get its unspent funds back.
       </span>
-      {stuck.map((t) => (
-        <RetryTask key={t.index} planUuid={detail.plan_uuid} task={t} agents={agents} onRetried={onClosed} />
-      ))}
+      {stuck.map((t) =>
+        limit !== undefined && lastAttempt(t.index, detail) >= limit ? (
+          <span key={t.index} className="small c2">
+            Task {t.index + 1} has had its last attempt ({limit}).
+          </span>
+        ) : (
+          <RetryTask key={t.index} planUuid={detail.plan_uuid} task={t} agents={agents} onRetried={onClosed} />
+        ),
+      )}
       <ClosePlan planUuid={detail.plan_uuid} onClosed={onClosed} />
     </div>
   );

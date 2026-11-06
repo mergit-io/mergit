@@ -78,6 +78,10 @@ export type PlanDetail = Plan & {
   attempts: Attempt[];
   money_events: MoneyEvent[];
   pending_dispatches?: PendingDispatch[];
+  /** The tasks only the requester can move on, as the control plane decides it (`outcomes.stuck_indexes`). */
+  stuck_indexes?: number[];
+  /** Attempts one task may reach in all, counting the requester's own retries. */
+  max_requester_attempts?: number;
 };
 
 export type PlanSummary = Pick<

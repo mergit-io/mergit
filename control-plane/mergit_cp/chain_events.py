@@ -5,7 +5,9 @@ same transaction as that one side effect, so a crash between the two can never h
 that drive the task graph are acted on here. The money and verdict events (``receipt.committed``,
 ``verdict.recorded``, ``task.released``, ``task.returned``, ``challenge.*``, ``credits.denied``) are
 written to the ``money_events`` ledger by ``mergit_cp/money.py`` in the same transaction (plan task O6,
-money half); they move money and reputation, never the graph. ``error`` stays only in the raw log.
+money half); they move money and reputation, never the graph. An ``error`` about a ``task.dispatch_requested``
+(its lock reverted: the plan was closed, or its balance was short) marks that dispatch given up, since no job
+will ever come for it; any other ``error`` stays only in the raw log.
 """
 
 from __future__ import annotations
@@ -84,6 +86,12 @@ async def receive(conn: AsyncConnection[TupleRow], envelope: dict[str, Any], set
         await on_plan_funded(conn, payload, settings)
     elif envelope["type"] == "task.escrowed":
         await on_task_escrowed(conn, payload)
+    elif envelope["type"] == "error":
+        await conn.execute(
+            "UPDATE outbox SET failed_at = coalesce(failed_at, now()), last_error = %s"
+            " WHERE event_id::text = %s AND type = 'task.dispatch_requested'",
+            (f"{payload['code']}: {payload['message']}", payload["ref_event_id"]),
+        )
     elif envelope["type"] in money.KINDS:
         await money.record(conn, envelope)
     return True

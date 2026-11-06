@@ -17,7 +17,7 @@ import pytest
 from psycopg.rows import TupleRow
 from pydantic import SecretStr
 
-from mergit_cp import chain_events, outcomes, plans
+from mergit_cp import chain_events, money, outcomes, plans
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool, migrate, open_pool
 from mergit_cp.planner import TaskDraft
@@ -520,5 +520,153 @@ def test_a_retry_after_a_given_up_dispatch_reuses_its_slot(database_url: str) ->
             await outcomes.retry(conn, plan, 0, "1", SETTINGS)
             loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
         assert loaded is not None and loaded.tasks[0].agents == ["1", "2", "1"]
+
+    run(database_url, body)
+
+
+def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "type": event_type,
+        "at": "2026-11-06T00:00:00.000Z",
+        "payload": payload,
+    }
+
+
+async def _deadline(conn: psycopg.AsyncConnection[TupleRow], attempt: int) -> int:
+    cur = await conn.execute(
+        "SELECT (body->'payload'->>'deadline_unix')::bigint FROM outbox"
+        " WHERE type = 'task.dispatch_requested' AND (body->'payload'->>'attempt')::int = %s",
+        (attempt,),
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_a_retrys_deadline_counts_from_when_it_can_lock(database_url: str) -> None:
+    """Attempt 2 locks no earlier than attempt 1's deadline (its payment comes back then), so its own deadline
+    is a full DISPATCH_DEADLINE_S after that, not after the moment it was queued."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+        await _process(pool)
+        async with pool.connection() as conn:
+            first, second = await _deadline(conn, 1), await _deadline(conn, 2)
+            window = await _window_s(conn, 2)
+        d = outcomes.dispatch
+        assert second >= first + d.RETURN_MARGIN_S + d.DISPATCH_DEADLINE_S
+        # And it keeps being delivered past the moment it can first lock.
+        assert window >= d.DISPATCH_DEADLINE_S + d.RETURN_MARGIN_S
+
+    run(database_url, body)
+
+
+def test_a_reverted_lock_gives_the_dispatch_up_so_the_requester_can_act(database_url: str) -> None:
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+        await _process(pool)
+        async with pool.connection() as conn, conn.transaction():
+            row = await (
+                await conn.execute(
+                    "UPDATE outbox SET delivered_at = now()"
+                    " WHERE (body->'payload'->>'attempt')::int = 2 RETURNING event_id::text"
+                )
+            ).fetchone()
+            assert row is not None
+            assert await outcomes.stuck_indexes(conn, plan, SETTINGS) == []  # delivered: waiting on its lock
+            error = {"ref_event_id": row[0], "code": "TX_REVERTED", "message": "InsufficientPlanBalance"}
+            await chain_events.receive(conn, _event("error", error), SETTINGS)
+            assert await outcomes.stuck_indexes(conn, plan, SETTINGS) == [0]
+
+    run(database_url, body)
+
+
+def test_an_older_attempt_finishing_late_dispatches_nothing(database_url: str) -> None:
+    """Attempt 1's dispatch looked given up, the requester sent attempt 2, then attempt 1's lock landed after
+    all and its job finished: it must not try to dispatch attempt 2 a second time (a unique-key error there
+    would roll back the whole outcome pass, for every plan)."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            first = await _dispatch_and_escrow(conn, plan, 0, 1, "1")
+            await outcomes.dispatch.dispatch_task(conn, plan, 0, 2, "2", SETTINGS)
+            await _fail(conn, first)
+        assert await _process(pool) == 1
+        async with pool.connection() as conn:
+            n = await (await conn.execute("SELECT count(*) FROM task_dispatches")).fetchone()
+        assert n is not None and n[0] == 2
+
+    run(database_url, body)
+
+
+def test_a_pass_cancels_the_tasks_dispatches_still_on_their_way(database_url: str) -> None:
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            first = await _dispatch_and_escrow(conn, plan, 0, 1, "1")
+            await conn.execute("UPDATE outbox SET delivered_at = now()")
+            await outcomes.dispatch.dispatch_task(conn, plan, 0, 2, "2", SETTINGS)
+            await conn.execute(
+                "UPDATE jobs SET status = 'done', phi_holds = true, finished_at = now() WHERE task_id = %s",
+                (first,),
+            )
+        await _process(pool)
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT failed_at IS NOT NULL, last_error FROM outbox"
+                    " WHERE (body->'payload'->>'attempt')::int = 2"
+                )
+            ).fetchone()
+        assert row == (True, "the task already passed")
+
+    run(database_url, body)
+
+
+def test_no_retry_behind_a_given_up_attempt_while_an_older_one_holds_money(database_url: str) -> None:
+    """The gateway only checks attempt n-1 before locking n: with attempt 2 given up and attempt 1 still
+    locked, attempt 3 would take a second payment out of the plan's shared balance."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            first = await _dispatch_and_escrow(conn, plan, 0, 1, "1")
+            await _fail(conn, first)
+        await _process(pool)
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE outbox SET failed_at = now() WHERE (body->'payload'->>'attempt')::int = 2"
+            )
+            assert await outcomes.stuck_indexes(conn, plan, SETTINGS) == [0]
+            assert await money.holding_attempt(conn, plan.plan_uuid, 0) == 1
+            returned = {
+                "task_id": first,
+                "amount_usdc_units": "500000",
+                "reason": "deadline",
+                "tx": "0x" + "d" * 64,
+            }
+            await chain_events.receive(conn, _event("task.returned", returned), SETTINGS)
+            assert await money.holding_attempt(conn, plan.plan_uuid, 0) is None
+
+    run(database_url, body)
+
+
+def test_a_retry_behind_a_locked_attempt_is_safe(database_url: str) -> None:
+    """Attempt 1 ran and failed: its payment may still be locked, but the gateway itself holds attempt 2 until
+    it is back, so the retry is allowed."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1"]})
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+        await _process(pool)
+        async with pool.connection() as conn:
+            assert await money.holding_attempt(conn, plan.plan_uuid, 0) is None
 
     run(database_url, body)

@@ -17,7 +17,7 @@ import psycopg.errors
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from . import accounts, outcomes, plans, redeem, repo_check, user_settings
+from . import accounts, money, outcomes, plans, redeem, repo_check, user_settings
 from .agents import Agent
 from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .events import enqueue
@@ -371,6 +371,12 @@ async def retry_task(
             raise _problems(422, [f"agent {body.agent_id} is not deployed"])
         if index not in await outcomes.stuck_indexes(conn, plan, settings):
             raise HTTPException(status_code=409, detail=f"task {index} is not waiting on you")
+        holding = await money.holding_attempt(conn, plan.plan_uuid, index)
+        if holding is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"attempt {holding} of task {index} still holds its payment; retry once it is back",
+            )
         attempt = await outcomes.next_attempt(conn, plan, index)
         if attempt > settings.max_requester_attempts:
             raise HTTPException(

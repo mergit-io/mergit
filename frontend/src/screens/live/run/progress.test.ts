@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { Attempt, MoneyEvent, PendingDispatch, PlanTask } from "../../../api/types";
-import { attemptOutcome, closedBeforeStart, creditsDenial, stuckTasks, taskProgress, verdictFor } from "./progress";
+import type { Attempt, MoneyEvent, PendingDispatch, PlanDetail, PlanTask } from "../../../api/types";
+import {
+  attemptOutcome,
+  closedBeforeStart,
+  creditsDenial,
+  lastAttempt,
+  stuckTasks,
+  taskProgress,
+  verdictFor,
+  waitingOnRequester,
+} from "./progress";
 
 const task = (agents: string[] | null = ["1", "2"]): PlanTask => ({
   index: 0,
@@ -154,5 +163,50 @@ describe("verdictFor and creditsDenial", () => {
       "Free credits were refused for this plan.",
     );
     expect(creditsDenial([])).toBeNull();
+  });
+});
+
+describe("waitingOnRequester", () => {
+  const detail = (over: Partial<PlanDetail>): PlanDetail => ({
+    plan_uuid: "p",
+    plan_id: "0x1",
+    requester: "0x2",
+    state: "running",
+    goal: "",
+    repo_url: "",
+    ref: "main",
+    category: "test-repair",
+    budget_usdc_units: "500000",
+    funding: "credits",
+    total_budget_usdc_units: "500000",
+    created_at: "",
+    approved_at: null,
+    tasks: [task(["1"])],
+    attempts: [failed(1)],
+    money_events: [],
+    ...over,
+  });
+
+  it("trusts the control plane's list when it sent one", () => {
+    // The job finished but the orchestrator has not reacted yet: the screen alone would call it stuck.
+    expect(waitingOnRequester(detail({ stuck_indexes: [] }))).toEqual([]);
+    expect(waitingOnRequester(detail({ stuck_indexes: [0] }))).toEqual([task(["1"])]);
+  });
+
+  it("derives it the server's way when the list is missing", () => {
+    expect(waitingOnRequester(detail({}))).toEqual([task(["1"])]);
+  });
+
+  it("counts attempts on their way as well as the ones that ran", () => {
+    const pending: PendingDispatch = {
+      index: 0,
+      attempt: 3,
+      agent_id: "2",
+      state: "sending",
+      last_error: null,
+      give_up_at: null,
+    };
+    expect(lastAttempt(0, detail({ pending_dispatches: [pending] }))).toBe(3);
+    expect(lastAttempt(1, detail({}))).toBe(0);
   });
 });

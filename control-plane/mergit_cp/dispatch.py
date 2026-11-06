@@ -29,10 +29,35 @@ log = logging.getLogger(__name__)
 DISPATCH_DEADLINE_S = 1800
 """How long a dispatched task has to be sealed before the plan may give up on it (spec/events-v0.md)."""
 
+RETURN_MARGIN_S = 300
+"""After an attempt's deadline, how long until its payment is surely back in the plan: the gateway
+keeper's slack (60s) and tick, then the outbox backoff before the next delivery (up to 60s)."""
+
 RETRY_WINDOW_S = DISPATCH_DEADLINE_S + 600
-"""How long a retry's dispatch keeps being delivered. The gateway refuses to lock attempt n while attempt n-1
-still holds its payment (503), and an attempt that ended without a receipt only gets it back once its deadline
-passes and the keeper returns it. A shorter window gives the retry up before then, for good."""
+"""The least a retry's dispatch keeps being delivered for. The gateway refuses to lock attempt n while
+attempt n-1 still holds its payment (503), and an attempt that ended without a receipt only gets it back
+once its deadline passes and the keeper returns it. A shorter window gives the retry up before then."""
+
+
+async def _retry_timing(
+    conn: AsyncConnection[TupleRow], plan: StoredPlan, index: int, attempt: int
+) -> tuple[int, int]:
+    """(deadline_unix, retry window) for attempt ``attempt``. A retry can only lock once attempt n-1's
+    payment is back, which may be up to that attempt's deadline: counting this attempt's deadline from now
+    would let it lock with almost none of it left, and the keeper would return it before a worker even
+    claimed the job."""
+    now = int(time.time())
+    if attempt == 1:
+        return now + DISPATCH_DEADLINE_S, 0
+    cur = await conn.execute(
+        "SELECT max((body->'payload'->>'deadline_unix')::bigint) FROM outbox"
+        " WHERE type = 'task.dispatch_requested' AND body->'payload'->>'task_id' = %s",
+        (mergit_receipt.task_id(plan.plan_id, index, attempt - 1),),
+    )
+    row = await cur.fetchone()
+    previous = None if row is None else row[0]
+    earliest_lock = now if previous is None else max(now, int(previous) + RETURN_MARGIN_S)
+    return earliest_lock + DISPATCH_DEADLINE_S, max(RETRY_WINDOW_S, earliest_lock - now + 600)
 
 
 async def _task_states(conn: AsyncConnection[TupleRow], plan_uuid: str) -> list[TaskState]:
@@ -70,6 +95,7 @@ async def dispatch_task(
     if task.phi_hash is None:
         raise ValueError(f"task {index} of plan {plan.plan_id} has no phi_hash; the plan is not approved")
     task_id = mergit_receipt.task_id(plan.plan_id, index, attempt)
+    deadline_unix, retry_window_s = await _retry_timing(conn, plan, index, attempt)
     await conn.execute(
         'INSERT INTO task_dispatches (task_id, plan_uuid, "index", attempt, agent_id)'
         " VALUES (%s, %s, %s, %s, %s)",
@@ -87,14 +113,10 @@ async def dispatch_task(
             "amount_usdc_units": str(task.draft.budget_usdc_units),
             "category": plan.category,
             "phi_hash": task.phi_hash,
-            "deadline_unix": int(time.time()) + DISPATCH_DEADLINE_S,
+            "deadline_unix": deadline_unix,
         },
         plan_id=plan.plan_id,
-        retry_window_s=(
-            settings.event_retry_window_s
-            if attempt == 1
-            else max(settings.event_retry_window_s, RETRY_WINDOW_S)
-        ),
+        retry_window_s=max(settings.event_retry_window_s, retry_window_s),
     )
     return task_id
 

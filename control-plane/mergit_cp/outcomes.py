@@ -132,7 +132,19 @@ async def process_one(conn: AsyncConnection[TupleRow], job: FinishedJob, setting
         await _mark_processed(conn, job.task_id)
         return
 
-    if job.holds is not True:
+    if job.holds is True:
+        # Nothing still on its way to the gateway for this index may lock more money once it passed
+        # (a requester retry sent while this attempt's own dispatch looked given up, say).
+        await conn.execute(
+            "UPDATE outbox SET failed_at = now(), last_error = 'the task already passed'"
+            " WHERE plan_id = %s AND type = 'task.dispatch_requested'"
+            " AND (body->'payload'->>'index')::int = %s"
+            " AND delivered_at IS NULL AND failed_at IS NULL",
+            (plan.plan_id, job.index),
+        )
+    elif job.attempt == await next_attempt(conn, plan, job.index) - 1:
+        # Only the newest attempt retries on its own: an older one finishing late (its dispatch looked
+        # given up and the requester already sent a newer one) must not reuse a taken attempt number.
         next_agent = _next_agent(task, job.attempt, settings.max_attempts)
         if next_agent is not None:
             await dispatch.dispatch_task(conn, plan, job.index, job.attempt + 1, next_agent, settings)
@@ -205,9 +217,9 @@ async def retry(
 ) -> str:
     """The requester sends a stuck index to one more agent. The agent takes slot ``attempt`` of
     ``tasks.agents`` (any later pick a given-up dispatch never reached is dropped), so attempt ``n`` keeps
-    naming ``agents[n - 1]`` as everywhere else. It is paid from the index's own escrow, which comes back to
-    the plan when the failed attempt's money is returned (the gateway holds the dispatch until then). The
-    caller checks the index is stuck and the agent exists."""
+    naming ``agents[n - 1]`` as everywhere else. It is paid from the plan's escrow once the failed attempt's
+    payment is back in it (the gateway holds the dispatch until then). The caller checks the index is stuck,
+    that no earlier attempt still holds money (``money.holding_attempt``), and that the agent exists."""
     attempt = await next_attempt(conn, plan, index)
     await conn.execute(
         "UPDATE tasks SET agents = coalesce(agents[1:%s], ARRAY[]::text[]) || ARRAY[%s::text]"
