@@ -4,12 +4,13 @@ import { permissionedRegistryAbi } from "./abi/permissionedRegistry.ts";
 import { permissionedResolverAbi } from "./abi/permissionedResolver.ts";
 import { dnsName } from "./dns.ts";
 import { agentRecords, recordCalls, type Chain, type OneShotAgent } from "./oneshot-plan.ts";
+import { parentCalls, readParentRecords, type ParentRecords } from "./parent-records.ts";
 import { ensNameOf } from "./registration.ts";
 import { deployResolverProxy, predictResolverAddress } from "./resolver-deploy.ts";
 
 export type OneShotConfig = { chain: Chain; agents: OneShotAgent[]; publisher: Address; editor: Address; saltNonce?: number };
 export type StepResult = { step: string; hash: Hex; gasUsed: bigint };
-export type OneShotResult = { resolver: Address; steps: StepResult[] };
+export type OneShotResult = { resolver: Address; steps: StepResult[]; /** What `mergit.eth` itself resolved to before the switch, carried to the new resolver. */ parent: ParentRecords };
 
 const ZERO_HASH: Hex = `0x${"00".repeat(32)}`;
 const MERGIT_LABEL_ID = BigInt(keccak256(toHex("mergit")));
@@ -45,6 +46,8 @@ export async function assertNotAlreadyConfigured(pub: PublicClient, cfg: OneShot
 export async function runOneShot(ctx: { pub: PublicClient; wallet: WalletClient; owner: Address }, cfg: OneShotConfig): Promise<OneShotResult> {
   const calls = recordCalls(cfg.agents, cfg.chain); // validates the agent list before anything is sent
   await assertNotAlreadyConfigured(ctx.pub, cfg);
+  // replacing the resolver replaces everything `mergit.eth` served: read it now, before anything is sent, and carry it over
+  const parent = await readParentRecords(ctx.pub as never, UR);
   const steps: StepResult[] = [];
   let resolver: Address | undefined;
   const fail = (name: string, e: unknown): never => {
@@ -78,18 +81,21 @@ export async function runOneShot(ctx: { pub: PublicClient; wallet: WalletClient;
 
   await send("grant publisher mergit.reputation", onResolver("grantSetterRoles", [setter("mergit.reputation"), cfg.publisher]));
   await send("grant publisher mergit.operator", onResolver("grantSetterRoles", [setter("mergit.operator"), cfg.publisher]));
+  await send("grant publisher mergit.ledger", onResolver("grantSetterRoles", [setter("mergit.ledger"), cfg.publisher]));
   await send("grant editor agent-context", onResolver("grantSetterRoles", [setter("agent-context"), cfg.editor]));
   await send("grant editor agent-endpoint[web]", onResolver("grantSetterRoles", [setter("agent-endpoint[web]"), cfg.editor]));
   await send(`write ${calls.length} agent records`, onResolver("multicall", [calls]));
+  const carry = parentCalls(parent);
+  if (carry.length > 0) await send("copy mergit.eth's address and profile records", onResolver("multicall", [carry]));
   await send("point mergit.eth at the resolver", () =>
     ctx.wallet.writeContract({ address: MAINNET.ethRegistry, abi: permissionedRegistryAbi, functionName: "setResolver", args: [MERGIT_LABEL_ID, resolver!] } as never));
-  return { resolver: resolver!, steps };
+  return { resolver: resolver!, steps, parent };
 }
 
 export type VerifyRow = { key: string; name: string; ok: boolean; got: string | null };
 
 /** Reads every planned record back through the ENSv2 Universal Resolver, plus the registry's resolver for `mergit.eth`. */
-export async function verifyOneShot(pub: PublicClient, cfg: OneShotConfig, resolver: Address): Promise<VerifyRow[]> {
+export async function verifyOneShot(pub: PublicClient, cfg: OneShotConfig, resolver: Address, parent?: ParentRecords): Promise<VerifyRow[]> {
   const rows: VerifyRow[] = [];
   for (const a of cfg.agents) {
     const name = ensNameOf(a.label);
@@ -98,6 +104,16 @@ export async function verifyOneShot(pub: PublicClient, cfg: OneShotConfig, resol
       try { got = (await pub.getEnsText({ name, key: r.key, universalResolverAddress: UR })) ?? null; } catch { got = null; }
       rows.push({ key: r.key, name, ok: got === r.value, got });
     }
+  }
+  if (parent?.address) {
+    let got: string | null = null;
+    try { got = (await pub.getEnsAddress({ name: "mergit.eth", universalResolverAddress: UR })) ?? null; } catch { got = null; }
+    rows.push({ key: "address", name: "mergit.eth", ok: got?.toLowerCase() === parent.address.toLowerCase(), got });
+  }
+  for (const [key, value] of Object.entries(parent?.texts ?? {})) {
+    let got: string | null = null;
+    try { got = (await pub.getEnsText({ name: "mergit.eth", key, universalResolverAddress: UR })) ?? null; } catch { got = null; }
+    rows.push({ key, name: "mergit.eth", ok: got === value, got });
   }
   const onChain = (await pub.readContract({ address: MAINNET.ethRegistry, abi: permissionedRegistryAbi, functionName: "getResolver", args: ["mergit"] })) as Address;
   rows.push({ key: "registry resolver", name: "mergit.eth", ok: onChain.toLowerCase() === resolver.toLowerCase(), got: onChain });

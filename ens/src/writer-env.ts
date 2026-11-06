@@ -12,7 +12,7 @@ export type WriterEnv = {
 
 const KEY = /^0x[0-9a-fA-F]{64}$/;
 
-function key(env: Record<string, string | undefined>, name: string): { key: Hex; address: Address } {
+export function key(env: Record<string, string | undefined>, name: string): { key: Hex; address: Address } {
   const v = env[name];
   if (!v) throw new Error(`${name} is required`);
   if (!KEY.test(v)) throw new Error(`${name} is not a 0x-prefixed 32-byte hex key`);
@@ -40,6 +40,13 @@ export function parseWriterEnv(env: Record<string, string | undefined>): WriterE
     editsPerAgentPerHour: int(env, "WRITER_EDITS_PER_AGENT_PER_HOUR", 6, 1, 100000), editsPerHour: int(env, "WRITER_EDITS_PER_HOUR", 60, 1, 100000),
     requestsPerMinute: int(env, "WRITER_REQUESTS_PER_MINUTE", 120, 1, 100000),
   };
+}
+
+/** The environment of the one-off publish: the publisher key only (no editor key, no service). */
+export function parsePublishOnceEnv(env: Record<string, string | undefined>): { ensRpc: string; baseRpc: string; publisherKey: Hex; configPath: string } {
+  for (const name of ["ENS_MAINNET_RPC", "BASE_SEPOLIA_RPC", "WRITER_CONFIG"]) if (!env[name]) throw new Error(`${name} is required`);
+  const publisher = key(env, "ENS_PUBLISHER_PRIVATE_KEY");
+  return { ensRpc: env.ENS_MAINNET_RPC!, baseRpc: env.BASE_SEPOLIA_RPC!, publisherKey: publisher.key, configPath: env.WRITER_CONFIG! };
 }
 
 /** Replaces every secret (keys, RPC URLs and the path or query of an RPC URL, where API keys usually sit) with `[redacted]`. */

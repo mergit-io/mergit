@@ -16,6 +16,8 @@ export type PublisherConfig = {
   chunk?: bigint;
   /** Blocks behind the Base head that a pass reads up to (default 5), so a lagging RPC node cannot make the cache skip blocks for good. */
   confirmations?: number;
+  /** Work out what would be written and return it without sending a transaction. */
+  dryRun?: boolean;
 };
 /** Outcomes fetched so far and the next block to read, kept in memory by the service so later passes fetch only new blocks. */
 export type OutcomeCache = { outcomes: Outcome[]; next: bigint };
@@ -77,6 +79,7 @@ export async function publishPass(ctx: { base: PublicClient; ens: PublicClient; 
   }
   if (changed.length === 0) return { asOfBlock, changed: [], hash: null };
 
+  if (cfg.dryRun) return { asOfBlock, changed: changed.map((d) => ({ label: d.label, key: d.key })), hash: null };
   const calls = changed.map((d) => encodeFunctionData({ abi: permissionedResolverAbi, functionName: "setText", args: [dnsName(d.name), d.key, d.value] }));
   const hash = await ctx.wallet.writeContract({ address: cfg.resolver, abi: permissionedResolverAbi, functionName: "multicall", args: [calls] } as never);
   const receipt = await ctx.ens.waitForTransactionReceipt({ hash });

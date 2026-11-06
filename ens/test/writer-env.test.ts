@@ -104,3 +104,23 @@ test("the edit limits have defaults and must be positive integers", () => {
     for (const v of ["0", "-1", "x"]) assert.throws(() => parseWriterEnv({ ...good(), [k]: v }), new RegExp(k));
   }
 });
+
+import { parsePublishOnceEnv } from "../src/writer-env.ts";
+
+test("publish-once needs the publisher key but not the editor key, and never echoes the key", () => {
+  const env = { ENS_MAINNET_RPC: "https://eth.example/v2/KEY1", BASE_SEPOLIA_RPC: "https://base.example/v2/KEY2", ENS_PUBLISHER_PRIVATE_KEY: PUB, WRITER_CONFIG: "writer.json" };
+  const e = parsePublishOnceEnv(env);
+  assert.equal(e.publisherKey, PUB);
+  assert.equal(e.configPath, "writer.json");
+  for (const name of ["ENS_PUBLISHER_PRIVATE_KEY", "ENS_MAINNET_RPC", "BASE_SEPOLIA_RPC", "WRITER_CONFIG"] as const) {
+    const bad: Record<string, string | undefined> = { ...env }; delete bad[name];
+    assert.throws(() => parsePublishOnceEnv(bad), new RegExp(name));
+  }
+  for (const badKey of ["0xabc", "nope", "0x" + "ff".repeat(32)]) {
+    assert.throws(() => parsePublishOnceEnv({ ...env, ENS_PUBLISHER_PRIVATE_KEY: badKey }), (err: unknown) => {
+      assert.match((err as Error).message, /ENS_PUBLISHER_PRIVATE_KEY/);
+      assert.ok(!(err as Error).message.includes(badKey), "must not echo the key");
+      return true;
+    });
+  }
+});

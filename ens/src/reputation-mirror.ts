@@ -1,7 +1,7 @@
 import { keccak256, toHex, type Address, type Hex } from "viem";
 
 export type Outcome = {
-  taskId: Hex; agentId: bigint; category: Hex; success: boolean; tier: number; source: number; blockNumber: bigint; logIndex: number;
+  taskId: Hex; agentId: bigint; category: Hex; success: boolean; costMicros: bigint; tier: number; source: number; blockNumber: bigint; logIndex: number;
 };
 type Split = { auditedStaked: number; verifiedStaked: number };
 export type Counts = Split & { byCategory: Map<Hex, Split> };

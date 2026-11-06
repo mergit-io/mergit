@@ -17,10 +17,10 @@ function decode(raw: unknown): Outcome {
   const l = raw as { args?: Record<string, unknown>; blockNumber?: unknown; logIndex?: unknown };
   const a = l?.args;
   const ok = a && typeof a.taskId === "string" && typeof a.agentId === "bigint" && typeof a.category === "string"
-    && typeof a.success === "boolean" && typeof a.tier === "number" && typeof a.source === "number"
+    && typeof a.success === "boolean" && typeof a.costMicros === "bigint" && typeof a.tier === "number" && typeof a.source === "number"
     && typeof l.blockNumber === "bigint" && typeof l.logIndex === "number";
   if (!ok) throw new Error(`outcomes: malformed log at block ${String(l?.blockNumber)}`);
-  return { taskId: a.taskId as Hex, agentId: a.agentId as bigint, category: a.category as Hex, success: a.success as boolean,
+  return { taskId: a.taskId as Hex, agentId: a.agentId as bigint, category: a.category as Hex, success: a.success as boolean, costMicros: a.costMicros as bigint,
     tier: a.tier as number, source: a.source as number, blockNumber: l.blockNumber as bigint, logIndex: l.logIndex as number };
 }
 

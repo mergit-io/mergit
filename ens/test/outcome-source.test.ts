@@ -48,6 +48,7 @@ test("outcomes from every chunk come back decoded and ordered by block then log 
   assert.equal(out[1].agentId, 2n);
   assert.equal(out[1].category, CAT);
   assert.equal(out[1].tier, 0);
+  assert.equal(out[1].costMicros, 10n, "the metered cost is carried: the ledger snapshot needs it");
   assert.equal(out[1].source, 0);
 });
 

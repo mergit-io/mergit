@@ -22,8 +22,8 @@ const unregistered = cfg!.agents.filter((a) => a.agentId === undefined).map((a) 
 if (unregistered.length) fail(`config: these agents have no agentId yet: ${unregistered.join(", ")}. Register them on Base first and put the returned ids in the config (ens/RUNBOOK.md, step 1).`);
 
 const readOwner = async (pub: PublicClient) => (await pub.readContract({ address: MAINNET.ethRegistry, abi: permissionedRegistryAbi, functionName: "findOwner", args: ["mergit"] })) as Address;
-// Measured in the fork rehearsal of the three-agent example (1,437,255 gas, seven steps); it grows with the number and size of records.
-const ESTIMATED_UNITS = 1_440_000n;
+// Measured in the fork rehearsal of the three-agent example (1,622,820 gas, nine steps); it grows with the number and size of records.
+const ESTIMATED_UNITS = 1_650_000n;
 const HEADROOM = 2n; // the balance check wants twice the estimate at the current gas price, since the price moves
 
 async function printPlan(pub: PublicClient, owner: Address, nRecords: number) {
@@ -33,7 +33,7 @@ async function printPlan(pub: PublicClient, owner: Address, nRecords: number) {
   out(`Publisher key holder: ${cfg.publisher}`);
   out(`Editor key holder:    ${cfg.editor}`);
   out("\nSteps, in order (the name is only pointed at the new resolver at the very end):");
-  ["deploy resolver", "grant publisher mergit.reputation", "grant publisher mergit.operator", "grant editor agent-context", "grant editor agent-endpoint[web]", `write ${nRecords} agent records`, "point mergit.eth at the resolver"]
+  ["deploy resolver", "grant publisher mergit.reputation", "grant publisher mergit.operator", "grant publisher mergit.ledger", "grant editor agent-context", "grant editor agent-endpoint[web]", `write ${nRecords} agent records`, "copy mergit.eth's address and profile records", "point mergit.eth at the resolver"]
     .forEach((s, i) => out(`  ${i + 1}. ${s}`));
   out("\nRecords:");
   for (const a of cfg.agents) for (const r of agentRecords(a, cfg.chain)) out(`  ${a.label}.mergit.eth  ${r.key.length > 40 ? r.key.slice(0, 22) + "..." + r.key.slice(-8) : r.key} = ${(() => { const v = r.value.replace(/\n+/g, " "); return v.length > 50 ? v.slice(0, 47) + "..." : v; })()}`);
@@ -58,7 +58,7 @@ try {
       await printPlan(fork.pub, owner, cfg.agents.length * 3);
       out("\nFORK RUN: a local copy of mainnet, the owner is impersonated, nothing is sent to mainnet.");
       const result = await runOneShot({ pub: fork.pub, wallet: fork.wallet(owner), owner }, cfg);
-      printResult(result, await verifyOneShot(fork.pub, cfg, result.resolver));
+      printResult(result, await verifyOneShot(fork.pub, cfg, result.resolver, result.parent));
     } finally { await fork.stop(); }
   } else {
     const pub = createPublicClient({ chain: mainnet, transport: http(rpc) }) as PublicClient;
@@ -79,7 +79,7 @@ try {
       out("\nEXECUTING ON MAINNET.");
       const wallet = createWalletClient({ account, chain: mainnet, transport: http(rpc) });
       const result = await runOneShot({ pub, wallet, owner }, cfg);
-      printResult(result, await verifyOneShot(pub, cfg, result.resolver));
+      printResult(result, await verifyOneShot(pub, cfg, result.resolver, result.parent));
     }
   }
 } catch (e) { fail((e as Error).message); }
