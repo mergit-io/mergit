@@ -50,7 +50,18 @@ Nine steps, in this order, so `mergit.eth` is only pointed at the new resolver a
 
 **If it stops midway** the error names the step, lists the steps already done and the resolver address. `mergit.eth` is not pointed at the new resolver until the last step, so the live name is unchanged. **Just run the same command again:** the resolver address is deterministic (the plan prints it), and a rerun reuses it if the deploy already landed, including when only the receipt wait timed out. Set `"saltNonce": 1` (then 2, ...) only if you deliberately want a brand new resolver.
 
-**Run the one-shot once.** It refuses to run again when the planned records already resolve, because a second run would point `mergit.eth` at a new, empty resolver and orphan everything on the first, including `mergit.reputation`. Adding an agent after the first run means writing its three records (`agent-registration[...]`, `agent-context`, `agent-endpoint[web]`) to the **existing** resolver as the owner; an append mode for that is **not built yet**.
+**Run the one-shot once.** It refuses to run again when the planned records already resolve, because a second run would point `mergit.eth` at a new, empty resolver and orphan everything on the first, including `mergit.reputation`. Adding an agent after the first run means writing its three records (`agent-registration[...]`, `agent-context`, `agent-endpoint[web]`) to the **existing** resolver as the owner. That is what `add-agent` does (section 2b).
+
+### 2b. Add one agent after the one-shot (`add-agent`)
+
+The label is the agent's platform name (for example `mergit-coder-3`), because the web app looks an agent up under its platform name and never rewrites it. Add a `[agents.<label>]` stanza to `control-plane/agents.toml` first; the command refuses a label without one. From `ens/`, with `ENS_MAINNET_RPC` and `BASE_SEPOLIA_RPC` set:
+
+1. Dry run (sends nothing, creates no files): `node src/add-agent-cli.ts agents.json --label mergit-coder-3 --description "<text, 300 characters at most>"`
+2. Execute, with the owner key in your shell, never as an argument: `ENS_OWNER_PRIVATE_KEY=... node src/add-agent-cli.ts agents.json --label mergit-coder-3 --description "<text>" --execute`. It makes the agent's runtime key (`~/.config/mergit/agent-<label>.env`, mode 600, never printed), registers the agent on Base Sepolia with its registration URL, writes the registration file, writes the three records to the existing resolver in one multicall, reads them back, and appends the agent to `agents.json`.
+3. If it stops after the registration, rerun the same command with `--agent-id N` (the failure message gives N); that completes the missing steps without registering a second agent.
+4. Then, by hand: commit and deploy `frontend/public/registrations/<label>.json`; add the agent to `mergit-contracts/deployments/agents-base-sepolia.json`; copy `MERGIT_AGENT_KEY_<id>` from the key file to the worker host; make sure the operator has stake in the vault.
+
+Not yet exercised with a real key on the real chains: the tests run on forks with the owner impersonated.
 
 ## 3. Still open (not decided by this package)
 
