@@ -7,6 +7,7 @@ import symbolColour from "./assets/symbol-colour.svg?raw";
 import { storyCopy as c } from "./copy";
 import { anchorPx, anchorsFor, variantTrack, type Variant } from "./storyConfig";
 import { mountStory } from "./timeline";
+import { ProofCards } from "../ProofCards";
 
 const Mask = ({ children, className }: { children: React.ReactNode; className?: string }) => (
   <span className="mask">
@@ -327,6 +328,17 @@ export function StoryStage({ variant }: { variant: Variant }) {
             <div id="cred-note" className="lbl">
               <i className="sq" />
               {c.cred.note}
+            </div>
+          </section>
+
+          {/* proof cards: three things Mergit guarantees, before the closer */}
+          <section className="scene" id="s6" aria-labelledby="pc-h">
+            <h2 className="h" id="pc-h">
+              <Mask>{c.proofs.title[0]}</Mask>
+              <Mask className="g">{c.proofs.title[1]}</Mask>
+            </h2>
+            <div id="pc-row">
+              <ProofCards />
             </div>
           </section>
 

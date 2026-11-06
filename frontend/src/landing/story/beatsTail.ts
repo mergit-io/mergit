@@ -49,24 +49,31 @@ export function beatsTail(h: Helpers, tl: gsap.core.Timeline, S: Scenes) {
   rise(q("#cred-note"), 95.3, { y: 14, d: 0.6 });
   sceneOut("#s5", 97);
 
-  /* closer 97-105 */
+  /* proof cards 96.8-101.8 */
+  sceneIn("#s6", 96.8);
+  mask("#s6", 97.1);
+  rise(qa("#s6 .pc-card"), 97.6, { y: 50, st: 0.18, d: 0.9 });
+  rise(qa("#s6 .pc-pill"), 98.6, { y: 14, st: 0.15, d: 0.5 });
+  sceneOut("#s6", 101.8);
+
+  /* closer 101.8-107 */
   const Z = S.closer;
-  sceneIn("#s7", 96.8);
+  sceneIn("#s7", 101.8);
   tl.set([Z.held, Z.fly, Z.stack[1] ?? []], { opacity: 0 }, 0);
   tl.set(Z.lock.closed, { opacity: 0 }, 0);
   tl.set(Z.lock.open, { opacity: 1 }, 0);
   if (Z.agent.stripe) tl.set(Z.agent.stripe, { attr: { class: "stripe lit" } }, 0);
-  ft(Z.root, { opacity: 0, y: 60 }, { opacity: 1, y: 0 }, 1, 97.2);
+  ft(Z.root, { opacity: 0, y: 60 }, { opacity: 1, y: 0 }, 1, 102.2);
   ft(
     Z.rec.seal,
     { opacity: 0, scale: 0.3, transformOrigin: "88px 120px" },
     { opacity: 1, scale: 1, ease: "back.out(2.4)" },
     0.45,
-    98.4,
+    103.4,
   );
-  ft(Z.paid, { opacity: 0, y: -80 }, { opacity: 1, y: 0, ease: "bounce.out" }, 0.9, 98.8);
-  mask("#s7", 97.5, 0.2);
-  rise(q("#z-sub"), 98.4, { y: 16 });
-  rise(q("#z-btns"), 98.7, { y: 16 });
-  rise(q("#z-foot"), 99.3, { y: 16 });
+  ft(Z.paid, { opacity: 0, y: -80 }, { opacity: 1, y: 0, ease: "bounce.out" }, 0.9, 103.8);
+  mask("#s7", 102.5, 0.2);
+  rise(q("#z-sub"), 103.4, { y: 16 });
+  rise(q("#z-btns"), 103.7, { y: 16 });
+  rise(q("#z-foot"), 104.3, { y: 16 });
 }

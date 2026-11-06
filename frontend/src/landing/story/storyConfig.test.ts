@@ -72,14 +72,15 @@ describe("how long each story is to scroll", () => {
     expect(total("full")).toBe((STORY_T - STORY_START) * SCROLL_PX);
   });
 
-  it("the flows story is under a third of the full one, about fifteen screens", () => {
+  // The proof-cards scene before the closer added about one screen to each story.
+  it("the flows story is under a third of the full one, about sixteen screens", () => {
     expect(total("flows")).toBeLessThan(total("full") / 3);
-    expect(total("flows")).toBeLessThan(15_000);
+    expect(total("flows")).toBeLessThan(15_500);
   });
 
-  it("the lean story is under half the flows story: seven screens at most", () => {
+  it("the lean story is under half the flows story: eight screens at most", () => {
     expect(total("lean")).toBeLessThan(total("flows") * 0.5);
-    expect(total("lean")).toBeLessThan(6_500);
+    expect(total("lean")).toBeLessThan(7_500);
   });
 
   it("a page snapped to a flow's start on a whole pixel is inside the flow, so the flow plays", () => {
@@ -159,20 +160,21 @@ describe("every story", () => {
 describe("the lean story", () => {
   const track = variantTrack("lean");
 
-  it("shows the hero, the problem, the settlement flow and the closer, and skips the rest", () => {
+  it("shows the hero, the problem, the settlement flow, the proof cards and the closer, and skips the rest", () => {
     const seen = (t: number) => track.pieces.some((p) => p.kind === "scrub" && t >= p.from && t <= p.to);
-    for (const t of [6, 10, 15.9, 55, 99, STORY_T]) expect(seen(t)).toBe(true);
+    for (const t of [6, 10, 15.9, 55, 99, 104, STORY_T]) expect(seen(t)).toBe(true);
     // How it works, the team, the integrations and the credentials are never reached by scrolling.
     for (const t of [20, 30, 45, 85, 92]) expect(seen(t)).toBe(false);
   });
 
   it("every skipped stretch begins and ends with the scenes on either side faded out", () => {
     // Scenes fade over half a second ending at these seconds (beatsIntro and beatsMid): the problem out at 16 and
-    // the settlement in at 54.8; the settlement out at 82 and the closer in at 96.8.
+    // the settlement in at 54.8; the settlement out at 82 and the proof cards in at 96.8, then the closer.
     const ends = track.pieces.flatMap((p) => (p.kind === "scrub" ? [[p.from, p.to]] : []));
     expect(ends).toContainEqual([6.8, 16]);
     expect(ends).toContainEqual([54.8, 56.2]);
-    expect(ends).toContainEqual([96.8, STORY_T]);
+    expect(ends).toContainEqual([96.8, 101.8]);
+    expect(ends).toContainEqual([101.8, STORY_T]);
   });
 
   it("the nav only offers parts the lean page has", () => {

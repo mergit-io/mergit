@@ -14,7 +14,7 @@ import { footer, nav as classicNav } from "../content";
 import { buildTrack, type Piece, type Track } from "./track";
 
 /** Timeline length in seconds. */
-export const STORY_T = 102;
+export const STORY_T = 107;
 /** Pixels of scroll per second in the full story. */
 export const SCROLL_PX = 520;
 /** The scroll story starts just before the hero leaves; the hero itself plays on load. */
@@ -101,14 +101,15 @@ const FULL_STOPS = [
   88.7, // integrations: the loop closed
   92.6, // credentials: boundary in place
   96, // credentials: key blocked
-  100.5, // closer
+  100.3, // proof cards
+  105.5, // closer
   STORY_T,
 ];
 
 /** Resting points outside the flows in the flows story (each flow adds its own two, in `snapPlan`). */
-const FLOWS_STOPS = [5.6, 11.9, 14.2, 18.6, 23.9, 84.9, 88.7, 92.6, 96, 100.5, STORY_T];
-/** The same for the lean story: the hero, the two halves of the problem, and the closer. */
-const LEAN_STOPS = [5.6, 11.9, 14.2, 96.8, 100.5, STORY_T];
+const FLOWS_STOPS = [5.6, 11.9, 14.2, 18.6, 23.9, 84.9, 88.7, 92.6, 96, 100.3, 105.5, STORY_T];
+/** The same for the lean story: the hero, the two halves of the problem, the proof cards and the closer. */
+const LEAN_STOPS = [5.6, 11.9, 14.2, 100.3, 105.5, STORY_T];
 
 const scrub = (from: number, to: number, pxPerSec = BASE_PX): Piece => ({
   kind: "scrub",
@@ -125,6 +126,7 @@ const [TEAM, SETTLE] = FLOWS;
  */
 const LEAN_PX = 340;
 const PROBLEM_PX = 240;
+const PROOF_CARDS_PX = 220;
 
 const PIECES: Record<Variant, Piece[]> = {
   full: [scrub(STORY_START, STORY_T, SCROLL_PX)],
@@ -146,7 +148,9 @@ const PIECES: Record<Variant, Piece[]> = {
     scrub(SETTLE.enter - 0.2, SETTLE.start, LEAN_PX),
     { kind: "play", flow: SETTLE.id, px: DWELL_PX },
     { kind: "out", flow: SETTLE.id, to: SETTLE.out, px: (SETTLE.out - SETTLE.end) * LEAN_PX },
-    scrub(96.8, STORY_T, LEAN_PX),
+    // The proof cards hold still once in; they scroll faster than the rest, so the story grows by about one screen.
+    scrub(96.8, 101.8, PROOF_CARDS_PX),
+    scrub(101.8, STORY_T, LEAN_PX),
   ],
 };
 

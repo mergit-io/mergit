@@ -293,3 +293,44 @@
     padding-top: 16px;
   }
 }
+
+/* Proof cards: the same cards as the scroll story, stacked on phones, three across when there is room. */
+.cp-proofs {
+  --pc-ink: var(--l-ink);
+  --pc-ink-2: var(--l-muted);
+  --pc-ink-3: var(--l-muted);
+  --pc-card: var(--l-card);
+  --pc-art: var(--l-alt);
+  --pc-line: var(--l-line);
+  --pc-serif: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --pc-mono: var(--l-mono);
+  --pc-btn: var(--l-ink);
+  --pc-btn-ink: var(--l-card);
+}
+.cp-center {
+  text-align: center;
+  text-wrap: balance;
+}
+.cp-pc-row {
+  margin-top: 36px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 20px;
+}
+.cp-pc-row .pc-card {
+  padding: 18px 18px 22px;
+}
+/* On a phone the picture grows to fit its content, so nothing overlaps the "Example" label. */
+.cp-pc-row .pc-art {
+  height: auto;
+  min-height: 260px;
+}
+.cp-pc-row .pc-card h3 {
+  font-size: 28px;
+}
+.cp-pc-row .pc-card p {
+  font-size: 16px;
+}
+:root[data-theme="dark"] .cp-proofs {
+  --pc-art: #1b1e2b;
+}
