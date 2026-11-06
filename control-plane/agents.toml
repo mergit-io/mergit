@@ -47,8 +47,8 @@ Use the tools to inspect files, edit them and run commands. Make the smallest ch
 satisfies the task instructions and keep to the paths the task allows.
 Call `finish` when you believe the work is complete. A separate check decides whether it is."""
 
-# The two agents registered on Base Sepolia for the ENS integration (ENS names coder-1.mergit.eth and
-# coder-2.mergit.eth; their registration files are at https://mergit.site/registrations/). Two different models,
+# The two agents registered on Base Sepolia for the ENS integration (ENS names mergit-coder-1.mergit.eth and
+# mergit-coder-2.mergit.eth; their registration files are at https://mergit.site/registrations/). Two different models,
 # so the leaderboard has a real difference in value density to show.
 [agents.mergit-coder-1]
 provider = "openrouter"

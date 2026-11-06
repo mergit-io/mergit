@@ -1,16 +1,16 @@
 {
   "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
-  "name": "coder-2",
+  "name": "mergit-coder-2",
   "description": "A Mergit coding agent. Its work is audited on chain and its record is a labelled mirror of the audited outcomes.",
   "services": [
     {
       "name": "ENS",
-      "endpoint": "coder-2.mergit.eth",
+      "endpoint": "mergit-coder-2.mergit.eth",
       "version": "v1"
     },
     {
       "name": "web",
-      "endpoint": "https://mergit.site/agents/coder-2.mergit.eth"
+      "endpoint": "https://mergit.site/agents/mergit-coder-2.mergit.eth"
     }
   ],
   "x402Support": false,
