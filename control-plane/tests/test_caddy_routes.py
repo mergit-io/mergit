@@ -139,6 +139,37 @@ def test_chain_events_is_never_reachable_through_caddy() -> None:
     assert "chain-events" not in config
 
 
+def _spa_patterns() -> list[str]:
+    """The paths the site answers with the app's index.html (`@spa` in the site_headers snippet)."""
+    matcher = re.search(r"^\s*@spa path ([^\n]+)$", CADDYFILE.read_text(), re.M)
+    assert matcher, "no `@spa path` matcher in the Caddyfile"
+    return matcher.group(1).split()
+
+
+def test_the_public_agent_profile_survives_a_direct_visit() -> None:
+    """https://mergit.site/agents/<name>.mergit.eth is the ENS `agent-endpoint[web]` value. Without a
+    fallback to index.html a direct visit or a reload is a 404."""
+    patterns = _spa_patterns()
+    assert "/agents" in patterns and "/agents/*" in patterns
+    assert any(fnmatch("/agents/coder-0.mergit.eth", pat) for pat in patterns)
+
+
+def test_registration_files_are_served_as_files() -> None:
+    """ENS agent registration files live at /registrations/<label>.json. Rewriting them to index.html
+    would hand every ENS reader an HTML page instead of the JSON."""
+    patterns = _spa_patterns()
+    assert not any(fnmatch("/registrations/coder-0.json", pat) for pat in patterns)
+    assert not any(pat.startswith("/registrations") for pat in patterns)
+
+
+def test_the_ledger_page_survives_a_reload_and_its_files_are_served_as_files() -> None:
+    """/ledger is the public final-ledger page; /ledger/<name>.json is the snapshot whose hash the ENS record
+    `mergit.ledger` commits to. Rewriting the file to index.html would make every hash check fail."""
+    patterns = _spa_patterns()
+    assert "/ledger" in patterns
+    assert not any(fnmatch("/ledger/final-123.json", pat) for pat in patterns)
+
+
 def test_every_internal_route_can_reach_the_api_from_the_worker_vm() -> None:
     """A new worker-facing route must not end up proxied nowhere. Today: /v0/internal/progress."""
     block = _block("api.mergit.site")
@@ -152,3 +183,26 @@ def test_every_internal_route_can_reach_the_api_from_the_worker_vm() -> None:
     assert internal_paths, "the internal router has no routes?"
     uncovered = [p for p in internal_paths if not fnmatch(p, pattern.group(1))]
     assert uncovered == [], f"worker-facing routes the Caddy rule does not cover: {uncovered}"
+
+
+def test_public_json_is_readable_from_the_other_site_host() -> None:
+    """The registration URL on Base is https://mergit.site/registrations/<label>.json and the ledger URL on
+    mainnet is on the same host, but the dashboard is also served from app.mergit.site. Without an
+    Access-Control-Allow-Origin header that fetch is cross-origin and fails, so every ENS badge reads "not
+    verified" and /ledger reads "unreachable" there."""
+    text = CADDYFILE.read_text()
+    matcher = re.search(r"^\s*@public_json path ([^\n]+)$", text, re.M)
+    assert matcher, "no `@public_json path` matcher in the Caddyfile"
+    patterns = matcher.group(1).split()
+    for path in ("/registrations/coder-0.json", "/ledger/final-123.json"):
+        assert any(fnmatch(path, pat) for pat in patterns), f"{path} must be CORS-readable"
+    assert not any(fnmatch("/ledger", pat) or fnmatch("/app", pat) for pat in patterns)
+    assert re.search(r"header @public_json Access-Control-Allow-Origin \"\*\"", text)
+    assert "https://mergit.site" in re.search(r"connect-src ([^;]+);", text).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+
+
+def test_the_ledger_and_registration_files_are_not_reformatted_by_prettier() -> None:
+    """The ledger snapshot's hash is the hash of its exact bytes. `npm run format` (and CI's format:check) must
+    leave public/ledger and public/registrations alone, or the snapshot stops matching the ENS record."""
+    ignore = (CADDYFILE.parents[1] / "frontend" / ".prettierignore").read_text().splitlines()
+    assert "public/ledger/" in ignore and "public/registrations/" in ignore

@@ -1,0 +1,56 @@
+/* The public agent profile (screens/agent/AgentProfile.tsx). The page frame is the pricing page's (.pr, .pr-bar). */
+.ap-main {
+  max-width: 820px;
+  gap: 20px;
+}
+.ap-title {
+  font-size: clamp(28px, 5vw, 44px);
+}
+.ap-line {
+  flex-wrap: wrap;
+}
+/* Chain text can be one long word: it wraps instead of widening the page. */
+.ap-break {
+  overflow-wrap: anywhere;
+}
+.ap-context {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink2);
+}
+.ap-dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+}
+.ap-dl dt {
+  color: var(--ink3);
+  font-size: 13px;
+}
+.ap-dl dd {
+  margin: 0;
+  min-width: 0;
+}
+.ap-list {
+  list-style: none;
+}
+/* The platform's own record is a different source from ENS, so it looks different too. */
+.ap-platform {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+@media (max-width: 560px) {
+  .ap-dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .ap-dl dd {
+    margin-bottom: 8px;
+  }
+}

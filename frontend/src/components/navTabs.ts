@@ -12,8 +12,8 @@ const ALL: NavTab[] = [
   { label: "Integrations", icon: "plug", to: paths.integrations },
 ];
 
-/** Reputation is not computed yet and no integration is wired, so live data has no Leaderboard or Integrations page. */
-const NO_LIVE_DATA = new Set<string>([paths.leaderboard, paths.integrations]);
+/** No integration is wired, so live data has no Integrations page. The leaderboard ranks the platform's reputation. */
+const NO_LIVE_DATA = new Set<string>([paths.integrations]);
 
 export function navTabs(mode: "mock" | "live"): NavTab[] {
   return mode === "live" ? ALL.filter((t) => !NO_LIVE_DATA.has(t.to)) : ALL;

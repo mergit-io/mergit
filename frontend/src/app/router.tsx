@@ -19,12 +19,16 @@ import { DATA_MODE, IN_DEMO } from "../config/live";
 import { LiveProofDetail } from "../screens/live/LiveProofDetail";
 import { LiveProofLedger } from "../screens/live/LiveProofLedger";
 import { LiveAgents } from "../screens/live/LiveAgents";
+import { LiveLeaderboard } from "../screens/live/LiveLeaderboard";
 import { LiveOverview } from "../screens/live/LiveOverview";
 import { LiveWallet } from "../screens/live/LiveWallet";
 import { LiveNewRun } from "../screens/live/run/LiveNewRun";
 import { LiveRunWorkspace } from "../screens/live/run/LiveRunWorkspace";
 import { LiveSettings } from "../screens/live/LiveSettings";
 import { LiveRuns } from "../screens/live/run/LiveRuns";
+import { AgentProfile } from "../screens/agent/AgentProfile";
+import { LedgerPage } from "../screens/ledger/LedgerPage";
+import { AGENT_ROUTE } from "./agentRoute";
 import { HardNavigate } from "./HardNavigate";
 import { paths } from "./paths";
 import { RootLayout } from "./RootLayout";
@@ -45,6 +49,10 @@ export const router = createBrowserRouter([
       { path: paths.landing, element: IN_DEMO ? <HardNavigate /> : <LandingPage /> },
       { path: paths.signIn, element: IN_DEMO ? <HardNavigate /> : <SignIn /> },
       { path: paths.pricing, element: IN_DEMO ? <HardNavigate /> : <Pricing /> },
+      // An agent's public ENS profile: no session needed. Live data only; the demo and mock builds fall to not-found.
+      ...(live ? [{ path: AGENT_ROUTE, element: <AgentProfile /> }] : []),
+      // The public final ledger (ENS record mergit.ledger and the file it commits to): no session, live data only.
+      ...(live ? [{ path: paths.ledger, element: <LedgerPage /> }] : []),
       { path: IN_DEMO ? `${paths.liveApp}/*` : `${paths.demo}/*`, element: <HardNavigate /> },
       {
         path: paths.app,
@@ -61,8 +69,9 @@ export const router = createBrowserRouter([
           { path: "agents", element: live ? <LiveAgents /> : <Agents /> },
           { path: "proofs", element: live ? <LiveProofLedger /> : <ProofLedger /> },
           { path: "proofs/:proofId", element: live ? <LiveProofDetail /> : <ProofDetail /> },
-          // Reputation is not computed and no integration is wired, so live data has neither page.
-          { path: "leaderboard", element: live ? <Navigate to={paths.app} replace /> : <Leaderboard /> },
+          // The live leaderboard ranks the platform's reputation. No integration is wired, so live data has no
+          // Integrations page.
+          { path: "leaderboard", element: live ? <LiveLeaderboard /> : <Leaderboard /> },
           { path: "integrations", element: live ? <Navigate to={paths.app} replace /> : <Integrations /> },
           { path: "wallet", element: live ? <LiveWallet /> : <Wallet /> },
           // Settings are about a real account; the demo has none, so it goes back to the dashboard.

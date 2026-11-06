@@ -1,0 +1,32 @@
+/* An agent's ENS name beside its identity badge (components/AgentIdentity.tsx). */
+.ens-identity {
+  min-width: 0;
+}
+.ens-pill {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.ens-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ens-line {
+  flex-wrap: wrap;
+}
+/* A name is at most 63 characters plus the parent, but it must never push a table wider than the page. */
+.ens-name {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+.ens-name:hover {
+  text-decoration-color: currentColor;
+}
+.ens-badge {
+  white-space: normal;
+}

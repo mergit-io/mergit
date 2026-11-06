@@ -18,10 +18,24 @@
 	# page (sign in, open a run, the wallet picker) and fix every violation before turning it into an enforcing
 	# Content-Security-Policy. Enforcing it blind could break sign-in or the wallet. Clickjacking is covered
 	# already by X-Frame-Options below.
-	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self' https://gateway.mergit.site https://store.mergit.site https://sepolia.base.org https://api.github.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+	# ethereum-rpc.publicnode.com is the Ethereum mainnet RPC the app reads ENS names from (VITE_ENS_RPC_URL; change
+	# it here too if build-sites.sh is given another ENS_RPC_URL). Mergit's own agent registration files are served
+	# from this origin (/registrations/), so 'self' covers them. A registration file an operator hosts on another
+	# host is not covered and cannot be listed in advance: it would need a server-side proxy before this policy is
+	# enforced.
+	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self' https://gateway.mergit.site https://store.mergit.site https://mergit.site https://sepolia.base.org https://ethereum-rpc.publicnode.com https://api.github.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 	# The app is a single-page app, so its own routes fall back to index.html. Anything else that is not a file is a
 	# real 404 (not the app shell with a 200, which scanners flag and search engines index as soft 404s).
-	@spa path / /signin /signin/* /pricing /demo /demo/* /app /app/*
+	# /agents/<name>.mergit.eth is the public agent profile that ENS names point to, so it must load on a direct visit.
+	# /registrations/ is deliberately not listed: its JSON files must be served as files, never as the app shell.
+	# /ledger is the public final-ledger page, but only the bare path: /ledger/<name>.json is the snapshot whose hash
+	# the ENS record mergit.ledger commits to, so it must be served byte for byte.
+	# Public read-only JSON: the registration files and the ledger snapshot. The URL committed on Base and on
+	# mainnet names mergit.site, but the dashboard is also served from app.mergit.site, so reading it there is a
+	# cross-origin fetch and needs this header. Nothing private is served from these two folders.
+	@public_json path /registrations/* /ledger/*
+	header @public_json Access-Control-Allow-Origin "*"
+	@spa path / /signin /signin/* /pricing /demo /demo/* /app /app/* /agents /agents/* /ledger
 	rewrite @spa /index.html
 }
 

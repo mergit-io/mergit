@@ -17,6 +17,8 @@ what=${1:-app}
 [ -f "$dep" ] || { echo "missing $dep: clone mergit-contracts next to this repository" >&2; exit 1; }
 [ -d "$out" ] && [ -w "$out" ] || { echo "$out must exist and be writable: sudo install -d -o $USER -g $USER $out" >&2; exit 1; }
 field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$dep" "$1"; }
+# Like field, but prints nothing (and succeeds) when the deployment file has no such field.
+optional_field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' "$dep" "$1"; }
 
 swap() { # swap <name>: replace $out/<name> with the freshly built $out/<name>.new
   rm -rf "$out/$1.old"
@@ -33,6 +35,17 @@ build_web() {
 
 build_app() {
   rm -rf "$out/app.new"
+  # ENS lives on Ethereum mainnet (read-only). The addresses are the ENS deployment's own; the RPC can be changed with
+  # ENS_RPC_URL (and then in the Caddyfile's connect-src too). The ReputationAnchor a `mergit.reputation` record must
+  # name comes from the deployment file; an older file without `reputation_anchor` leaves the app's built-in default.
+  local ens_args=(
+    --build-arg "VITE_ENS_RPC_URL=${ENS_RPC_URL:-https://ethereum-rpc.publicnode.com}"
+    --build-arg "VITE_ENS_UNIVERSAL_RESOLVER=${ENS_UNIVERSAL_RESOLVER:-0x06fdd07f007adac667177b46ab2eb9a75132cfd5}"
+    --build-arg "VITE_ENS_REGISTRY=${ENS_REGISTRY:-0xf60aba43e1f7f3dab1186ff03b561401c9df85e2}"
+  )
+  local anchor
+  anchor=$(optional_field reputation_anchor)
+  if [ -n "$anchor" ]; then ens_args+=(--build-arg "VITE_REPUTATION_ANCHOR=$anchor"); fi
   docker build -f "$repo/deploy/docker/sites.Dockerfile" --target app-dist --output "$out/app.new" \
     --build-arg "VITE_API_URL=${API_URL:-same-origin}" \
     --build-arg "VITE_AUTH_ORIGIN=${AUTH_ORIGIN:-https://app.$domain}" \
@@ -44,6 +57,7 @@ build_app() {
     --build-arg "VITE_USDC=$(field usdc)" \
     --build-arg "VITE_DEPLOY_BLOCK=$(field deploy_block)" \
     --build-arg "VITE_CHAIN_ID=$(field chain_id)" \
+    "${ens_args[@]}" \
     "$repo"
   swap app
 }
