@@ -63,7 +63,7 @@ export function LiveRuns() {
                   <span className="mono-s c3 hide-sm">{p.category}</span>
                   <span className="mono c2 w-90 text-right">{formatUsdc(BigInt(p.budget_usdc_units))} USDC</span>
                   <span className="w-130">
-                    <PlanBadge state={p.state} />
+                    <PlanBadge state={p.state} stuck={p.stuck_tasks} />
                   </span>
                 </Link>
               </li>

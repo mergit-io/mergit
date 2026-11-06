@@ -6,6 +6,7 @@ import type { AgentInfo, PlanDetail, StepEvent } from "../../../api/types";
 import { MergitLoader } from "../../../components/MergitLoader";
 import { PageHeader } from "../../../components/PageHeader";
 import { PlanBadge } from "./badges";
+import { stuckTasks } from "./progress";
 import { DraftPlanEditor } from "./DraftPlanEditor";
 import { FundingStep } from "./FundingStep";
 import { RunView } from "./RunView";
@@ -49,7 +50,7 @@ export function LiveRunWorkspace() {
       <PageHeader
         title={<span className="lr-title">{detail.goal}</span>}
         crumb={{ label: "Runs", to: paths.runs, id: detail.plan_uuid.slice(0, 8) }}
-        badge={<PlanBadge state={detail.state} />}
+        badge={<PlanBadge state={detail.state} stuck={stuckTasks(detail.tasks, detail.attempts).length} />}
         subtitle={
           <>
             <span className="mono">{detail.repo_url}</span> at <span className="mono">{detail.ref}</span>

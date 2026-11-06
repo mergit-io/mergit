@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import type { Address } from "viem";
 import { formatEther } from "viem";
 import { paths } from "../../app/paths";
-import type { PlanState } from "../../api/types";
+import type { PlanState, PlanSummary } from "../../api/types";
 import { usePlans } from "../../api/usePlans";
 import { isTrialSession } from "../../auth/account";
 import { useAuth } from "../../auth/context";
@@ -35,17 +35,25 @@ const TREND_DAYS = 14;
 const FILTERS = ["All", "Running", "Needs you", "Failed"] as const;
 type Filter = (typeof FILTERS)[number];
 
-const MATCH: Record<Filter, (s: PlanState) => boolean> = {
-  All: () => true,
-  Running: (s) => s === "funded" || s === "running",
-  "Needs you": (s) => s === "draft" || s === "approved",
-  Failed: (s) => s === "failed",
-};
-
 /** What a plan in each state waits on the requester for, and the button that does it. */
 const ASK: Partial<Record<PlanState, { what: string; action: string }>> = {
   draft: { what: "draft to review", action: "Review plan" },
   approved: { what: "awaiting funds", action: "Fund it" },
+};
+
+/** A running plan also waits on its requester once every agent picked for one of its tasks has failed. */
+function askOf(p: PlanSummary): { what: string; action: string } | undefined {
+  const stuck = p.stuck_tasks ?? 0;
+  if (p.state === "running" && stuck > 0)
+    return { what: stuck === 1 ? "1 task stuck" : `${String(stuck)} tasks stuck`, action: "Open run" };
+  return ASK[p.state];
+}
+
+const MATCH: Record<Filter, (p: PlanSummary) => boolean> = {
+  All: () => true,
+  Running: (p) => (p.state === "funded" || p.state === "running") && !askOf(p),
+  "Needs you": (p) => askOf(p) !== undefined,
+  Failed: (p) => p.state === "failed",
 };
 
 /** The dashboard on live data, laid out as the design: stat cards, recent runs, what needs you, and activity. */
@@ -69,8 +77,8 @@ export function LiveOverview() {
   const rate = successRate(mine);
   const finished = counts ? counts.done + counts.failed : 0;
   const spentShare = credits && credits.granted > 0n ? Number(credits.spent) / Number(credits.granted) : 0;
-  const visible = mine.filter((p) => MATCH[filter](p.state)).slice(0, RECENT);
-  const asks = mine.filter((p) => ASK[p.state]).slice(0, NEEDS_YOU);
+  const visible = mine.filter((p) => MATCH[filter](p)).slice(0, RECENT);
+  const asks = mine.filter((p) => askOf(p)).slice(0, NEEDS_YOU);
 
   return (
     <>
@@ -215,7 +223,7 @@ export function LiveOverview() {
                 <span className="w-90 hide-md mono c2 text-right">{formatUsdc(BigInt(p.budget_usdc_units))}</span>
                 <span className="w-84 small c2 hide-sm">{timeAgo(p.created_at)}</span>
                 <span className="w-130 ov-status">
-                  <PlanBadge state={p.state} />
+                  <PlanBadge state={p.state} stuck={p.stuck_tasks} />
                 </span>
               </Link>
             ))}
@@ -257,7 +265,7 @@ export function LiveOverview() {
               )}
             </div>
             {asks.map((p, i) => {
-              const ask = ASK[p.state];
+              const ask = askOf(p);
               return ask ? (
                 <div key={p.plan_uuid} className="inner pad-md col g8 rise" style={stagger(i)}>
                   <div className="row between ov-ask-head">
@@ -274,7 +282,9 @@ export function LiveOverview() {
               ) : null;
             })}
             {asks.length === 0 && (
-              <p className="small c3">Nothing is waiting on you. Drafts to review and plans to fund show up here.</p>
+              <p className="small c3">
+                Nothing is waiting on you. Drafts to review, plans to fund and stuck tasks show up here.
+              </p>
             )}
           </div>
 

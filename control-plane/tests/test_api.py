@@ -159,6 +159,26 @@ def test_plans_list_only_shows_own_plans(client: TestClient, settings: Settings)
     assert [p["plan_uuid"] for p in body] == [mine]
 
 
+def test_plans_list_counts_a_running_plans_stuck_tasks(client: TestClient, settings: Settings):
+    address = sign_in(client)
+    stuck_plan, _, task_ids = run(settings.database_url, lambda pool: seed_plan(pool, requester=address))
+    moving_plan, _, _ = run(settings.database_url, lambda pool: seed_plan(pool, requester=address))
+
+    async def every_pick_failed(pool: Pool) -> None:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', finished_at = now(), outcome_processed_at = now()"
+                " WHERE task_id = %s",
+                (task_ids[1],),
+            )
+
+    run(settings.database_url, every_pick_failed)
+    body = {p["plan_uuid"]: p for p in client.get("/v0/plans").json()}
+    assert body[stuck_plan]["state"] == "running"
+    assert body[stuck_plan]["stuck_tasks"] == 1
+    assert body[moving_plan]["stuck_tasks"] == 0
+
+
 def test_plans_list_requires_a_session(client: TestClient):
     assert client.get("/v0/plans").status_code == 401
 
