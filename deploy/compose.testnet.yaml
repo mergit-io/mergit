@@ -60,9 +60,13 @@ services:
       # empty history before the first use; without it the gateway reads from the deployment's deploy block.
       # The gateway reads LOG_RANGE blocks every 2 seconds, so it keeps up only if that is more than the chain adds in
       # 2 seconds. Base Sepolia made 5 blocks a second on 2026-11-06 (10 per 2 s), which LOG_RANGE 10 only just matches:
-      # it never caught up and ran about 19 hours behind, so funding showed up hours late. On a node that allows
-      # larger ranges set LOG_RANGE in deploy/.env (the public https://sepolia.base.org allows 200; 150 leaves room).
-      LOG_RANGE: "${LOG_RANGE:-10}"
+      # it never caught up and ran about 19 hours behind, so funding showed up hours late. A range above 10 needs a
+      # node that allows it: Alchemy's free tier refuses (error -32600 every round), the public
+      # https://sepolia.base.org allows 200, and https://base-sepolia-rpc.publicnode.com answered a 50000 block range
+      # on 2026-11-06. So the gateway alone reads logs from PublicNode (GATEWAY_RPC_URL in deploy/.env overrides it);
+      # the other services keep RPC_URL from secrets/testnet.env. Set LOG_RANGE in deploy/.env to change the range.
+      LOG_RANGE: "${LOG_RANGE:-2000}"
+      RPC_URL: "${GATEWAY_RPC_URL:-https://base-sepolia-rpc.publicnode.com}"
       GATEWAY_ADDR: "0.0.0.0:8082"
     ports: ["8082:8082"]
     depends_on:
