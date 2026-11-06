@@ -54,6 +54,9 @@ export function TopNav() {
             to={tab.to}
             className={`tab${active === tab.to ? " on" : ""}`}
             aria-current={active === tab.to ? "page" : undefined}
+            // Below 1100px only the icon shows (shell.css hides .tab-label), so the name is given here too.
+            aria-label={tab.label}
+            title={tab.label}
           >
             <Icon name={tab.icon} size={15} />
             <span className="tab-label">{tab.label}</span>
