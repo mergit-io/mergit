@@ -465,3 +465,10 @@
     justify-content: center;
   }
 }
+/* What the picked kind of work means, under the chips. */
+.nr-kind-hint {
+  max-width: 640px;
+  margin: -4px auto 0;
+  text-align: center;
+  text-wrap: balance;
+}

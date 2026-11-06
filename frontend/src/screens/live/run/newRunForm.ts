@@ -7,29 +7,61 @@ import type { IconName } from "../../../components/Icon";
 
 export const GOAL_LIMIT = 8000;
 
+/** Said under every kind's hint: what picking a kind changes. */
+export const KIND_EFFECT =
+  "The kind shapes the tasks Mergit drafts, which agents are suggested (by their record in this kind of work), and which record the result counts toward.";
+
 /** Kinds of work. The planner is told the kind (its prompt names the task category); the API takes any slug. */
-export const KINDS: { value: string; label: string; icon: IconName; placeholder: string }[] = [
+export const KINDS: {
+  value: string;
+  label: string;
+  icon: IconName;
+  placeholder: string;
+  /** What this kind of work means, shown under the chips for the one picked. */
+  hint: string;
+}[] = [
   {
     value: "test-repair",
     label: "Fix failing tests",
     icon: "flask",
     placeholder: "The refund test in payments/ passes again",
+    hint: "A test that fails today passes again, without the test being weakened or skipped.",
   },
-  { value: "bug-fix", label: "Fix a bug", icon: "bug", placeholder: "Expired sessions no longer log users out" },
+  {
+    value: "bug-fix",
+    label: "Fix a bug",
+    icon: "bug",
+    placeholder: "Expired sessions no longer log users out",
+    hint: "Something behaves wrongly. It is fixed, and a new test shows it stays fixed.",
+  },
   {
     value: "security",
     label: "Security",
     icon: "shield",
     placeholder: "The upload endpoint rejects paths outside the uploads folder",
+    hint: "A way to misuse the code is closed: unsafe input, access or paths are refused, with a test that tries it.",
   },
   {
     value: "performance",
     label: "Performance",
     icon: "bolt",
     placeholder: "The search endpoint answers in under 200 ms on the test data",
+    hint: "Something gets faster or lighter. Give a target that can be measured, like a time or a size.",
   },
-  { value: "refactor", label: "Refactor", icon: "wrench", placeholder: "The billing module has no circular imports" },
-  { value: "docs", label: "Docs", icon: "book", placeholder: "Every public function in api/ has a docstring" },
+  {
+    value: "refactor",
+    label: "Refactor",
+    icon: "wrench",
+    placeholder: "The billing module has no circular imports",
+    hint: "The code is reorganised without changing what it does: the existing tests still pass.",
+  },
+  {
+    value: "docs",
+    label: "Docs",
+    icon: "book",
+    placeholder: "Every public function in api/ has a docstring",
+    hint: "Documentation is written or corrected, such as docstrings or a README, to match what the code does.",
+  },
 ];
 
 /** Starting points: each fills the goal with a sentence to finish, and picks its kind of work. */

@@ -213,3 +213,17 @@ test("what was typed is still there after visiting another page, until the plan 
   await page.goto("/app/runs/new");
   await expect(page.getByLabel("Goal")).toHaveValue("");
 });
+
+test("each kind of work says what it means, and the line follows the one picked", async ({ page }) => {
+  await mockBackend(page);
+  await mockPlanApi(page);
+  await fakeGitHub(page);
+  await page.goto("/app/runs/new");
+  const hint = page.getByTestId("kind-hint");
+  await expect(hint).toContainText("Fix failing tests:");
+  await expect(hint).toContainText("which agents are suggested");
+  await page.getByRole("radio", { name: "Security" }).check();
+  await expect(hint).toContainText("Security:");
+  await expect(hint).toContainText("a test that tries it");
+  await expect(page.getByRole("group", { name: "Kind of work" })).toHaveAccessibleDescription(/Security:/);
+});

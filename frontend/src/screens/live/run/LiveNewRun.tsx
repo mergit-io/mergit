@@ -13,7 +13,7 @@ import { formatUsdc, parseUsdc, usdcText } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon, type IconName } from "../../../components/Icon";
 import { Combo, type ComboOption } from "./Combo";
-import { fieldProblems, GOAL_LIMIT, INITIAL, KINDS, STARTERS, toRepoUrl, type Fields } from "./newRunForm";
+import { fieldProblems, GOAL_LIMIT, INITIAL, KIND_EFFECT, KINDS, STARTERS, toRepoUrl, type Fields } from "./newRunForm";
 import { clearDraft, draftKey, loadDraft, saveDraft, type NewRunDraft } from "./newRunDraft";
 import { Problems } from "./Problems";
 import {
@@ -359,13 +359,14 @@ export function LiveNewRun() {
         </p>
       )}
 
-      <fieldset className="nr-kinds">
+      <fieldset className="nr-kinds" aria-describedby="nr-kind-hint">
         <legend className="sr-only">Kind of work</legend>
         {KINDS.map((k, i) => (
           <label
             key={k.value}
             className={`nr-kind rise${fields.category === k.value ? " on" : ""}`}
             style={{ animationDelay: `${String(100 + i * 40)}ms` }}
+            title={k.hint}
           >
             <input
               type="radio"
@@ -381,6 +382,11 @@ export function LiveNewRun() {
           </label>
         ))}
       </fieldset>
+      {kind && (
+        <p id="nr-kind-hint" className="small c2 nr-kind-hint" aria-live="polite" data-testid="kind-hint">
+          <span className="strong">{kind.label}:</span> {kind.hint} <span className="c3">{KIND_EFFECT}</span>
+        </p>
+      )}
 
       <div className="nr-starters">
         {STARTERS.map((s, i) => {
