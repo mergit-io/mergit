@@ -159,6 +159,50 @@ describe("the real source tree", () => {
     }
   });
 
+  const sourceOf = (path: string): string => {
+    const found = Object.entries(everything).find(([key]) => appPath(key) === path)?.[1];
+    expect(found, `${path} must exist`).toBeDefined();
+    return found ?? "";
+  };
+
+  it("lets the agent picker show identity only through EnsIdentity, never by reading ENS itself (E11)", () => {
+    const imports = importsOf(sourceOf("/src/screens/live/run/AgentPicks.tsx"));
+    expect(imports.filter(forbiddenForRouting)).toEqual([]);
+    expect(imports.some((p) => /components\/EnsIdentity$/.test(p))).toBe(true);
+  });
+
+  it("keeps ENS code out of the leaderboard ranking and the pick suggestions, through any module (E11)", () => {
+    const sources = Object.fromEntries(Object.entries(everything).map(([key, source]) => [appPath(key), source]));
+    const graph = buildGraph(sources);
+    for (const root of ["/src/screens/live/leaderboard.ts", "/src/screens/live/run/suggest.ts"]) {
+      expect(graph.has(root), `${root} must exist`).toBe(true);
+      expect([...reachableFrom(graph, [root])].filter(forbiddenForRouting), root).toEqual([]);
+    }
+  });
+
+  // A tripwire, not a proof: it only catches the obvious mistake of naming ENS values in the code that orders agents or
+  // builds the pick options. The import checks above are the real guard.
+  // Case matters: "density" must not count as "ens".
+  const ENS_WORDS = /\b(?:ENS|ens)\b|\bens[A-Z]|Ens(?:\b|[A-Z])|[Bb]adge|[Ii]dentity/;
+  const withoutComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+  it("finds no ENS words in the leaderboard ranking code (tripwire)", () => {
+    // The tripwire can fire, and does not fire on ordinary words.
+    for (const hit of ["byBadge(rows)", "ens.badge", "useAgentEns(a)", "ensName", "AgentIdentity", "liveEns()"])
+      expect(ENS_WORDS.test(hit), hit).toBe(true);
+    for (const miss of ["valueDensity", "value_density_per_usdc", "lengths", "sense"])
+      expect(ENS_WORDS.test(miss), miss).toBe(false);
+    const code = withoutComments(sourceOf("/src/screens/live/leaderboard.ts"));
+    expect(code.split("\n").filter((line) => ENS_WORDS.test(line))).toEqual([]);
+  });
+
+  it("finds no ENS words in the lines that build the pick options (tripwire)", () => {
+    const source = sourceOf("/src/screens/live/run/AgentPicks.tsx");
+    const select = /<select[\s\S]*?<\/select>/.exec(source)?.[0];
+    expect(select, "AgentPicks must still build its options in a <select>").toBeDefined();
+    expect((select ?? "").split("\n").filter((line) => ENS_WORDS.test(line))).toEqual([]);
+  });
+
   it("keeps chain/ens/ free of app config, React and extensionless imports", () => {
     const files = Object.entries(ens).filter(([p]) => !p.endsWith("boundary.test.ts")); // this file's own sample strings are not imports
     expect(files.length).toBeGreaterThan(5);

@@ -1,0 +1,22 @@
+{
+  "chainId": 84532,
+  "identity": "0x72eAc041Ee897fF0385022639452fE08Dcd4B7D6",
+  "publisher": "0x1FaAFAD03AAcf4cBDE05c95393cea1079d551E64",
+  "editor": "0x95e7e83f8735865621b229f4B8760B79fDdF37be",
+  "agents": [
+    {
+      "label": "mergit-coder-1",
+      "name": "mergit-coder-1",
+      "description": "A Mergit coding agent. Its work is audited on chain and its record is a labelled mirror of the audited outcomes.",
+      "profileUrl": "https://mergit.site/agents/mergit-coder-1.mergit.eth",
+      "agentId": 2
+    },
+    {
+      "label": "mergit-coder-2",
+      "name": "mergit-coder-2",
+      "description": "A Mergit coding agent. Its work is audited on chain and its record is a labelled mirror of the audited outcomes.",
+      "profileUrl": "https://mergit.site/agents/mergit-coder-2.mergit.eth",
+      "agentId": 3
+    }
+  ]
+}

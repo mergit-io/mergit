@@ -1,0 +1,15 @@
+{
+  "name": "mergit-arkiv-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Signs and sends the one write Rabdi needs: a batched create of routing-decision entities. Holds the service wallet's private key, never the control plane.",
+  "type": "module",
+  "engines": { "node": ">=22.12" },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "1.0.1",
+    "viem": "^2.21.0"
+  }
+}

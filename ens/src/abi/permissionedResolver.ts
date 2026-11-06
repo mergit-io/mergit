@@ -1,4 +1,4 @@
-// PermissionedResolverImpl ABI, trimmed to what the ens package calls.
+// PermissionedResolver (deployed implementation) ABI, trimmed to what the ens package calls.
 // Source: Sourcify exact-match verified ABI for mainnet 0x565b0f456a04ac9b48758190e90030623cff57c5 (fetched 2026-11-06).
 export const permissionedResolverAbi = [
   {
@@ -706,6 +706,29 @@ export const permissionedResolverAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "name": "setAddress",
+    "type": "function",
+    "inputs": [
+      {
+        "name": "name",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "coinType",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "addressBytes",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "name": "setText",

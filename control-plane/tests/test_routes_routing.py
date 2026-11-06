@@ -16,13 +16,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import psycopg
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 from mergit_cp import routes_routing
 from mergit_cp.agents import Agent
 from mergit_cp.app import create_app
+from mergit_cp.arkiv_mirror import ArkivMirror
 from mergit_cp.config import Settings
 from mergit_cp.db import Pool
 from mergit_cp.eligibility import AT_CAP, IN_PROBATION
@@ -578,3 +581,114 @@ def test_an_empty_answer_with_agents_out_for_probation_does_not_blame_the_budget
         assert why(task) == {"3": IN_PROBATION} | dict.fromkeys("1245", OVER_BUDGET)
         assert task["reason"] == PARTLY_LEFT_OUT + NO_FIT
         assert task["reason"].startswith("some agents are left out for probation or the operator cap")
+
+
+# -- Arkiv mirror (ETHGlobal Mumbai "Build on Arkiv" track): routing_decisions also written to Arkiv
+# (one batched call to the sidecar, chain/arkiv/), and readable back through its own endpoint. Both the
+# sidecar and the Rabdi RPC are mocked at the HTTP layer (`respx`), never a real network or process. --
+
+ARKIV_RPC = "https://rpc.example"
+ARKIV_SIDECAR = "https://sidecar.example"
+ARKIV_OWNER = "0x1111111111111111111111111111111111111111"
+
+
+def _fake_entity(decision: dict[str, Any]) -> dict[str, Any]:
+    """An entity shaped like a real `arkiv_query` match, encoding one decision the sidecar "wrote"
+    (`_entity` in `test_arkiv_mirror.py` is the unit-level version of this)."""
+    encoded_body = (
+        "0x" + json.dumps({"candidates": decision["candidates"], "picks": decision["picks"]}).encode().hex()
+    )
+    return {
+        "key": f"0xe{decision['task_index']}",
+        "attributes": [
+            {"name": "taskIndex", "type": "i32", "value": decision["task_index"]},
+            {"name": "category", "type": "str", "value": decision["category"]},
+            {"name": "decidedAt", "type": "str", "value": decision["decided_at"]},
+            {"name": "body", "type": "bytes", "value": encoded_body},
+        ],
+    }
+
+
+@contextmanager
+def arkiv_client(settings: Settings, llm: FakeLLM) -> Iterator[tuple[TestClient, respx.MockRouter]]:
+    arkiv = ArkivMirror(ARKIV_RPC, None, ARKIV_OWNER, ARKIV_SIDECAR, "sidecar-secret", 30)
+    with (
+        respx.mock(assert_all_called=False) as mock,
+        TestClient(
+            create_app(settings, llm=llm, deliver_events=False, arkiv=arkiv),
+            base_url="https://testserver",
+        ) as c,
+    ):
+        mock.get(f"{ARKIV_SIDECAR}/healthz").respond(200, text="ok")
+        # Registered last on purpose: tests take `mock.routes[-1]` as the write route.
+        mock.post(f"{ARKIV_SIDECAR}/internal/mirror").respond(json={"tx_hash": "0xdead", "entity_keys": []})
+        yield c, mock
+
+
+def test_an_exploring_suggestion_is_mirrored_to_arkiv_and_readable_back(settings: Settings, llm: FakeLLM):
+    with arkiv_client(settings, llm) as (c, mock):
+        sign_in(c)
+        plan = create(c)
+        write_route = mock.routes[-1]  # the default write mock registered by arkiv_client
+        got = c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"}).json()
+
+        # One write call, carrying every task's decision — never one call per task.
+        assert write_route.call_count == 1
+        sent = json.loads(write_route.calls[0].request.content)
+        assert len(sent["decisions"]) == len(got["tasks"]) == 2
+        assert all(d["plan_id"] == plan["plan_id"] for d in sent["decisions"])
+        # Replayable, not just a record of the outcome: links back to the real Postgres row and
+        # carries what a replay needs (migration 0016's own reason routing_decisions exists).
+        assert all(isinstance(d["decision_id"], int) for d in sent["decisions"])
+        assert all(d["seed"] == got["seed"] for d in sent["decisions"])
+        assert all(isinstance(d["budget_micros"], int) for d in sent["decisions"])
+        assert all("requester" not in d for d in sent["decisions"])
+
+        # The read endpoint decodes what was (supposedly) written on Arkiv, not a copy kept in Postgres.
+        entities = [_fake_entity(d) for d in sent["decisions"]]
+        mock.post(ARKIV_RPC).respond(json={"jsonrpc": "2.0", "id": 1, "result": {"data": entities}})
+        mirrored = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions").json()
+        assert mirrored["enabled"] is True
+        assert mirrored["writer"] == "ok"
+        assert {d["task_index"] for d in mirrored["decisions"]} == {0, 1}
+
+
+def test_arkiv_suggestions_degrades_instead_of_500_when_arkiv_is_unreachable(
+    settings: Settings, llm: FakeLLM
+):
+    """A bad key or a down RPC must not 500 the page for an unrelated feature; the owner still sees
+    their plan, just told Arkiv could not be reached."""
+    with arkiv_client(settings, llm) as (c, mock):
+        sign_in(c)
+        plan = create(c)
+        c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"})
+
+        mock.post(ARKIV_RPC).mock(side_effect=httpx.ConnectError("rpc unreachable"))
+        resp = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["enabled"] is True
+        assert body["decisions"] == []
+        # The real reason is in there, not swallowed behind a generic message — a misconfigured
+        # ARKIV_OWNER_ADDRESS and a down RPC must not look identical from this endpoint's response.
+        assert "could not read from Arkiv" in body["error"]
+        assert "rpc unreachable" in body["error"]
+
+
+def test_arkiv_suggestions_is_owner_only(settings: Settings, llm: FakeLLM):
+    with arkiv_client(settings, llm) as (c, _mock):
+        sign_in(c)
+        plan = create(c)
+        c.get(f"/v0/plans/{plan['plan_uuid']}/suggestions", params={"explore": "true"})
+        c.post("/v0/auth/logout")
+        sign_in(c)  # a different, freshly generated account
+        resp = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions")
+        assert resp.status_code == 403
+
+
+def test_arkiv_suggestions_is_disabled_when_arkiv_is_not_configured(app_client: TestClient):
+    sign_in(app_client)
+    plan = create(app_client)
+    got = app_client.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions").json()
+    assert got == {"enabled": False, "decisions": []}

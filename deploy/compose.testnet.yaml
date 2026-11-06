@@ -58,7 +58,11 @@ services:
       CONFIRMATIONS: "2"
       # Alchemy's free tier allows getLogs over at most 10 blocks. START_BLOCK (optional, in testnet.env) skips the
       # empty history before the first use; without it the gateway reads from the deployment's deploy block.
-      LOG_RANGE: "10"
+      # The gateway reads LOG_RANGE blocks every 2 seconds, so it keeps up only if that is more than the chain adds in
+      # 2 seconds. Base Sepolia made 5 blocks a second on 2026-11-06 (10 per 2 s), which LOG_RANGE 10 only just matches:
+      # it never caught up and ran about 19 hours behind, so funding showed up hours late. On a node that allows
+      # larger ranges set LOG_RANGE in deploy/.env (the public https://sepolia.base.org allows 200; 150 leaves room).
+      LOG_RANGE: "${LOG_RANGE:-10}"
       GATEWAY_ADDR: "0.0.0.0:8082"
     ports: ["8082:8082"]
     depends_on:

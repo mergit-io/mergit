@@ -1,11 +1,14 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
+import { paths } from "../../../app/paths";
 import { agentName } from "../../../api/useAgents";
 import type { AgentInfo, PlanDetail, PlanTask, StepEvent } from "../../../api/types";
 import { Icon } from "../../../components/Icon";
 import { ProgressBadge } from "./badges";
 import { ClosePlan } from "./ClosePlan";
 import { PullRequestStep } from "./PullRequestStep";
-import { attemptsOf, stuckTasks, taskProgress } from "./progress";
+import { attemptsOf, closedBeforeStart, stuckTasks, taskProgress } from "./progress";
+import { canStartAgain } from "./startAgain";
 import { StepLog } from "./StepLog";
 import { TaskFlow } from "./TaskFlow";
 import { TaskDetail } from "./TaskDetail";
@@ -122,11 +125,15 @@ function RunBanner({ detail, onClosed }: { detail: PlanDetail; onClosed: () => v
     );
   }
   if (detail.state === "closed") {
+    const text = closedBeforeStart(detail.tasks, detail.attempts)
+      ? "This plan was closed before any task started."
+      : "This plan is closed.";
     return (
-      <p className="card pad row g10 lr-banner" role="status">
+      <div className="card pad row g10 lr-banner" role="status">
         <Icon name="x" size={18} color="var(--ink3)" />
-        This plan is closed. Its unspent funds go back to you.
-      </p>
+        <span className="grow">{text} Its unspent funds go back to you.</span>
+        {canStartAgain(detail.state) && <StartAgain planUuid={detail.plan_uuid} />}
+      </div>
     );
   }
   // Not currently reachable (nothing transitions a plan here yet), but it's a real PlanState the
@@ -138,7 +145,10 @@ function RunBanner({ detail, onClosed }: { detail: PlanDetail; onClosed: () => v
           <Icon name="hand" size={16} color="var(--amber)" /> This plan failed.
         </span>
         <span className="small c2">Close it to stop it and get its unspent funds back.</span>
-        <ClosePlan planUuid={detail.plan_uuid} onClosed={onClosed} />
+        <div className="row g8">
+          <ClosePlan planUuid={detail.plan_uuid} onClosed={onClosed} />
+          {canStartAgain(detail.state) && <StartAgain planUuid={detail.plan_uuid} />}
+        </div>
       </div>
     );
   }
@@ -156,5 +166,14 @@ function RunBanner({ detail, onClosed }: { detail: PlanDetail; onClosed: () => v
       </span>
       <ClosePlan planUuid={detail.plan_uuid} onClosed={onClosed} />
     </div>
+  );
+}
+
+/** Opens the new-run form filled in from this plan. It only opens the form: nothing is drafted, approved or funded. */
+function StartAgain({ planUuid }: { planUuid: string }) {
+  return (
+    <Link to={paths.startAgain(planUuid)} className="btn secondary compact self-start">
+      Start again
+    </Link>
   );
 }

@@ -186,3 +186,15 @@ test("a pass counts only blocks with enough confirmations: a fresh outcome is no
   assert.equal(await counted(), start + 1);
   assert.equal(later.asOfBlock, (await base.pub.getBlockNumber({ cacheTime: 0 })) - 3n, "asOfBlock is the confirmed block, not the head");
 });
+
+test("a dry run reports what would be written and sends nothing; the real pass then writes exactly that", { skip }, async () => {
+  await record(true);
+  const before = await ens.pub.getBlockNumber({ cacheTime: 0 });
+  const dry = await publishPass(ctx(), { ...cfg, dryRun: true });
+  assert.equal(dry.hash, null);
+  assert.deepEqual(dry.changed.map((c) => c.key), ["mergit.reputation"]);
+  assert.equal(await ens.pub.getBlockNumber({ cacheTime: 0 }), before, "a dry run must not send a transaction");
+  const real = await publishPass(ctx(), cfg);
+  assert.ok(real.hash);
+  assert.deepEqual(real.changed, dry.changed);
+});

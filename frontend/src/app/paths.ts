@@ -18,6 +18,8 @@ export const paths = {
   runs: `${APP}/runs`,
   newRun: `${APP}/runs/new`,
   run: (id: string) => `${APP}/runs/${id}`,
+  /** The new-run form, filled in from an earlier plan that ended closed or failed. */
+  startAgain: (id: string) => `${APP}/runs/new?from=${encodeURIComponent(id)}`,
   agents: `${APP}/agents`,
   proofs: `${APP}/proofs`,
   proof: (id: string) => `${APP}/proofs/${id}`,

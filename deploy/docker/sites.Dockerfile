@@ -29,6 +29,11 @@ ARG VITE_DEPLOY_BLOCK
 ARG VITE_RPC_URL=https://sepolia.base.org
 ARG VITE_CHAIN_ID=84532
 ARG VITE_CHAIN_NAME="Base Sepolia"
+# ENS on Ethereum mainnet (read-only). Unset, the app uses its built-in defaults (src/config/live.ts).
+ARG VITE_ENS_RPC_URL
+ARG VITE_ENS_UNIVERSAL_RESOLVER
+ARG VITE_ENS_REGISTRY
+ARG VITE_REPUTATION_ANCHOR
 ENV VITE_DATA_MODE=live
 RUN bash scripts/build-wasm.sh && npm ci && npm run build
 

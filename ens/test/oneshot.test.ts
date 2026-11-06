@@ -26,9 +26,11 @@ const EXPECTED_STEPS = [
   "deploy resolver",
   "grant publisher mergit.reputation",
   "grant publisher mergit.operator",
+  "grant publisher mergit.ledger",
   "grant editor agent-context",
   "grant editor agent-endpoint[web]",
   "write 9 agent records",
+  "copy mergit.eth's address and profile records",
   "point mergit.eth at the resolver",
 ];
 
@@ -52,6 +54,8 @@ test("the one-shot runs on a mainnet fork in the planned order and every record 
   fork = await startFork();
   await impersonate(fork, OWNER);
   originalResolver = await currentResolver(fork);
+  const addressBefore = await fork.pub.getEnsAddress({ name: "mergit.eth", universalResolverAddress: MAINNET.universalResolverV2 });
+  assert.equal(addressBefore, OWNER, "precondition: mergit.eth resolves to its owner before the one-shot");
   const predicted = await predictResolverAddress(fork.pub, OWNER, 0n);
   result = await runOneShot({ pub: fork.pub, wallet: fork.wallet(OWNER), owner: OWNER }, cfg);
 
@@ -60,8 +64,14 @@ test("the one-shot runs on a mainnet fork in the planned order and every record 
   assert.notEqual(result.resolver.toLowerCase(), originalResolver.toLowerCase());
   assert.equal((await currentResolver(fork)).toLowerCase(), result.resolver.toLowerCase());
 
-  const rows = await verifyOneShot(fork.pub, cfg, result.resolver);
-  assert.equal(rows.length, 9 + 1);
+  // the bug this guards against: replacing the resolver used to make mergit.eth stop resolving to its address
+  const addressAfter = await fork.pub.getEnsAddress({ name: "mergit.eth", universalResolverAddress: MAINNET.universalResolverV2 });
+  assert.equal(addressAfter, addressBefore, "mergit.eth must still resolve to the same address after the one-shot");
+  assert.equal(result.parent.address, OWNER);
+
+  const rows = await verifyOneShot(fork.pub, cfg, result.resolver, result.parent);
+  assert.equal(rows.length, 9 + 1 + 1 + Object.keys(result.parent.texts).length);
+  assert.ok(rows.some((r) => r.name === "mergit.eth" && r.key === "address" && r.ok));
   assert.deepEqual(rows.filter((r) => !r.ok), [], "every record and the registry resolver must read back");
   assert.ok(rows.some((r) => r.key === agentRegistrationKey(CHAIN.identity, CHAIN.chainId, 2) && r.name === "coder-0.mergit.eth" && r.got === "1"));
 
@@ -74,6 +84,7 @@ test("after the one-shot the publisher and the editor can write only their keys,
   const r = result.resolver;
   await writeText(fork, r, ACCOUNTS.publisher, "coder-0.mergit.eth", "mergit.reputation", '{"v":0}');
   await writeText(fork, r, ACCOUNTS.publisher, "coder-0.mergit.eth", "mergit.operator", ACCOUNTS.alice.address);
+  await writeText(fork, r, ACCOUNTS.publisher, "mergit.eth", "mergit.ledger", '{"v":0}'); // the final ledger snapshot record, on the parent name
   await writeText(fork, r, ACCOUNTS.mergit, "coder-0.mergit.eth", "agent-endpoint[web]", "https://mergit.site/agents/changed");
   await writeText(fork, r, ACCOUNTS.mergit, "coder-1.mergit.eth", "agent-context", "# changed");
   await refused(writeText(fork, r, ACCOUNTS.alice, "coder-0.mergit.eth", "mergit.reputation", "x"));
@@ -82,6 +93,8 @@ test("after the one-shot the publisher and the editor can write only their keys,
   await refused(writeText(fork, r, ACCOUNTS.mergit, "coder-0.mergit.eth", agentRegistrationKey(CHAIN.identity, CHAIN.chainId, 2), "1"));
   await refused(writeText(fork, r, ACCOUNTS.publisher, "coder-0.mergit.eth", "agent-endpoint[web]", "x"));
   await refused(writeText(fork, r, ACCOUNTS.mergit, "coder-0.mergit.eth", "mergit.operator", "x")); // the editor may not write the operator record
+  await refused(writeText(fork, r, ACCOUNTS.mergit, "mergit.eth", "mergit.ledger", "x")); // nor the ledger record
+  await refused(writeText(fork, r, ACCOUNTS.alice, "mergit.eth", "mergit.ledger", "x"));
   await refused(writeText(fork, r, ACCOUNTS.alice, "coder-0.mergit.eth", "mergit.operator", "x"));
 });
 

@@ -46,3 +46,23 @@ You are a software engineer working in a sandboxed checkout of a repository.
 Use the tools to inspect files, edit them and run commands. Make the smallest change that
 satisfies the task instructions and keep to the paths the task allows.
 Call `finish` when you believe the work is complete. A separate check decides whether it is."""
+
+# The two agents registered on Base Sepolia for the ENS integration (ENS names mergit-coder-1.mergit.eth and
+# mergit-coder-2.mergit.eth; their registration files are at https://mergit.site/registrations/). Two different models,
+# so the leaderboard has a real difference in value density to show.
+[agents.mergit-coder-1]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-5"
+system_prompt = """\
+You are a software engineer working in a sandboxed checkout of a repository.
+Use the tools to inspect files, edit them and run commands. Make the smallest change that
+satisfies the task instructions and keep to the paths the task allows.
+Call `finish` when you believe the work is complete. A separate check decides whether it is."""
+
+[agents.mergit-coder-2]
+provider = "openrouter"
+model = "deepseek/deepseek-v4-flash"
+system_prompt = """\
+You are a careful software engineer working in a sandboxed checkout of a repository.
+Read the relevant code before changing it, run the tests you can, and keep changes minimal.
+Call `finish` when you believe the work is complete. A separate check decides whether it is."""

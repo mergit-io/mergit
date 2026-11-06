@@ -8,6 +8,10 @@ dependencies = [
   # siwe 4.4 (last release Oct 2024) defines ALPHA in its grammar; abnf 2.9 refuses that at import.
   "abnf>=2.2,<2.9",
   "anthropic>=2.3,<3",
+  # NOT arkiv-sdk (Python): verified live against Rabdi that its query options and write target
+  # (processor address) are both wrong for this network — see arkiv/friction.md. Reads here are
+  # plain httpx against arkiv_query; writes go to chain/arkiv/ (the JS SDK, which is correct for
+  # Rabdi) over HTTP.
   "docker>=7.1",
   "fastapi>=0.115",
   "httpx>=0.28",

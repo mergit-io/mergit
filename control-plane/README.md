@@ -204,6 +204,31 @@ without it, `GET /v0/plans/{plan_uuid}/events` sees no session and answers `401`
 **Database.** The control plane uses its own database, not the gateway's: both have tables named `plans`,
 `tasks` and `outbox`, and spec/events-v0.md says neither reads the other's.
 
+## Arkiv mirror (ETHGlobal Mumbai, "Build on Arkiv" track)
+
+An exploring `GET /v0/plans/{uuid}/suggestions?explore=true` call already records its draw in this
+service's own `routing_decisions` table (pre-existing, migration `0016`); `mergit_cp/arkiv_mirror.py`
+additionally mirrors it as a public entity on Arkiv's Rabdi testnet, scheduled with FastAPI's
+`BackgroundTasks` so it runs after the response is already on its way — a down testnet or a slow
+write (the sidecar waits for the transaction to land) never holds up the request
+(`routes_routing._mirror_decisions` catches and logs any failure). `GET
+/v0/plans/{uuid}/arkiv-suggestions` reads the mirror back for the plan's owner. See
+`../arkiv/schema.md` for the entity shape and `../chain/arkiv/README.md` for the write side.
+
+**Reads** are plain httpx against Rabdi's `arkiv_query` JSON-RPC — no SDK; the only Python Arkiv SDK
+on PyPI targets a different, incompatible network (confirmed live, `../arkiv/friction.md`). **Writes**
+go to `../chain/arkiv/`, a small Node sidecar holding the service wallet's private key and using the
+official JS SDK (the one confirmed correct for Rabdi), so this service's own process and env never
+hold that key.
+
+All optional, all unset by default (`Settings.arkiv_enabled`): `ARKIV_RPC_URL` (Rabdi's RPC,
+`https://rpc.rabdi.db-chain.testnet.arkiv.network`), `ARKIV_OWNER_ADDRESS` (the service wallet's
+*public* address, to filter reads by `$owner` — not its key, which this service never holds),
+`ARKIV_ACCESS_KEY` (from `hub.arkiv.network/access-keys`, raises the public RPC's rate limit),
+`ARKIV_SIDECAR_URL` (the sidecar's internal address) and `ARKIV_SIDECAR_TOKEN` (the shared secret
+sent as `Authorization: Bearer`, same pattern as `WORKER_TOKEN`), `ARKIV_ENTITY_TTL_DAYS` (default
+30). No extra Python dependency: reads are plain `httpx`, already a dependency.
+
 ## The worker
 
 `python -m mergit_worker` claims one `queued` job at a time (`SELECT … FOR UPDATE SKIP LOCKED`), runs the
