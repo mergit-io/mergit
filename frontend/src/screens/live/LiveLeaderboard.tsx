@@ -6,9 +6,16 @@ import { EnsBadge } from "../../components/EnsIdentity";
 import { PageHeader } from "../../components/PageHeader";
 import { LIVE } from "../../config/live";
 import { useAgentsEns } from "../../chain/useAgentEns";
-import { boardCategories, boardRows, categoryLabel } from "../../ens/leaderboard";
+import { boardCategories, boardRows, categoryLabel, type BoardRow } from "../../ens/leaderboard";
 
 const ALL = "";
+
+/** Why a listed agent has no counts, in words. */
+const NO_COUNTS: Record<Exclude<BoardRow["mirror"], "ok">, string> = {
+  absent: "Nothing mirrored yet: no staked outcome has been counted for this agent.",
+  unavailable: "The reputation record could not be read this time.",
+  malformed: "The reputation record is not one the publisher wrote, so it is not shown.",
+};
 
 /**
  * The first leaderboard on live data: each agent's ENS reputation mirror, which counts tier 0 (staked) outcomes.
@@ -64,7 +71,7 @@ export function LiveLeaderboard() {
             {offline
               ? offline
               : category === ALL
-                ? "No agent has a verified ENS name with a reputation mirror yet."
+                ? "No agent has an ENS name linked to it both ways yet."
                 : `No agent has a mirrored outcome in ${categoryLabel(category)} yet.`}
           </p>
         )}
@@ -86,7 +93,7 @@ export function LiveLeaderboard() {
                   const check = checks[r.agentId];
                   return (
                     <tr key={r.agentId}>
-                      <td className="mono c3">{i + 1}</td>
+                      <td className="mono c3">{r.counts ? i + 1 : "—"}</td>
                       <td className="strong">{r.name}</td>
                       <td>
                         <span className="ens-id">
@@ -96,9 +103,17 @@ export function LiveLeaderboard() {
                           {check && <EnsBadge state={check} />}
                         </span>
                       </td>
-                      <td>{r.counts.verifiedStaked}</td>
-                      <td>{r.counts.auditedStaked}</td>
-                      <td className="mono small c3">{r.asOfBlock.toLocaleString("en-US")}</td>
+                      {r.counts && r.asOfBlock !== null ? (
+                        <>
+                          <td>{r.counts.verifiedStaked}</td>
+                          <td>{r.counts.auditedStaked}</td>
+                          <td className="mono small c3">{r.asOfBlock.toLocaleString("en-US")}</td>
+                        </>
+                      ) : (
+                        <td colSpan={3} className="small c2" data-testid="no-counts">
+                          {r.mirror === "ok" ? null : NO_COUNTS[r.mirror]}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

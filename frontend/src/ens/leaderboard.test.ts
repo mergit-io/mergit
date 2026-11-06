@@ -52,14 +52,36 @@ describe("boardRows", () => {
     expect(boardRows(agents, states, null)).toHaveLength(2);
   });
 
-  it("skips absent, unavailable and malformed mirrors, errors and unanswered agents without failing", () => {
+  it("keeps a linked agent with no usable mirror on the board, without counts, after the counted ones", () => {
     const states: Record<string, AgentEnsState> = {
-      1: state("verified", { status: "absent" }),
+      1: state("unconfirmed", { status: "absent" }),
       2: state("verified", { status: "malformed", detail: "x" }),
+      3: ok(mirror(0, 1)),
+      4: state("verified", { status: "unavailable" }),
+    };
+    const rows = boardRows(agents, states, null);
+    expect(rows.map((r) => [r.name, r.mirror, r.counts, r.asOfBlock])).toEqual([
+      ["coder-c", "ok", { verifiedStaked: 0, auditedStaked: 1 }, 100],
+      ["coder-a", "absent", null, null],
+      ["coder-b", "malformed", null, null],
+      ["coder-d", "unavailable", null, null],
+    ]);
+  });
+
+  it("leaves agents without counts out of a chosen category", () => {
+    expect(boardRows(agents, { 1: state("verified", { status: "absent" }) }, "bugfix")).toEqual([]);
+  });
+
+  it("skips errors and unanswered agents without failing", () => {
+    const states: Record<string, AgentEnsState> = {
       3: { state: "error", message: "offline" },
       4: { state: "loading" },
     };
     expect(boardRows(agents, states, null)).toEqual([]);
+  });
+
+  it("does not list a name whose two-way check failed even without a mirror", () => {
+    expect(boardRows(agents, { 1: state("not-verified", { status: "absent" }) }, null)).toEqual([]);
   });
 
   it("uses per-category counts when a category is chosen, and leaves out agents with none in it", () => {
