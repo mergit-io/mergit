@@ -7,7 +7,7 @@ import { publicClient } from "./client";
 
 let ensClient: PublicClient | undefined;
 /** Ethereum mainnet, where the `mergit.eth` names live. Reads go to the configured RPC, never through the wallet. */
-const mainnetClient = (): PublicClient =>
+export const mainnetClient = (): PublicClient =>
   (ensClient ??= createPublicClient({ chain: mainnet, transport: http(LIVE.ens.rpcUrl) }));
 
 /** The clients the ENS reader uses in the app: mainnet for the names, the existing Base client for Identity, a guarded fetch for the registration file. */

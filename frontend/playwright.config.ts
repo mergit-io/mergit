@@ -21,6 +21,10 @@ export const LIVE_ENV = {
   // The registry in the EIP-712 domain of the receipts in spec/vectors: their signatures only verify against it.
   VITE_RECEIPT_REGISTRY: "0x0000000000000000000000000000000000000001",
   VITE_IDENTITY: "0x00000000000000000000000000000000000000d1",
+  // ENS answers come from fixed chain fixtures (src/chain/ens/stubClients.ts) that still go through the real two-way
+  // check, one agent per outcome; nothing reaches a real mainnet RPC.
+  VITE_ENS_READER: "stub",
+  VITE_ENS_RPC_URL: "http://mainnet.test",
 };
 
 const shared = {
