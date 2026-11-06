@@ -150,3 +150,13 @@
   line-height: 18px;
   white-space: pre;
 }
+
+/* The chosen agent's ENS name under its picker slot, lined up with the select. */
+.lr-pick-ens {
+  padding-left: 70px;
+}
+@media (max-width: 760px) {
+  .lr-pick-ens {
+    padding-left: 0;
+  }
+}

@@ -6,6 +6,7 @@ import { useReputation } from "../../api/useReputation";
 import type { AgentInfo } from "../../api/types";
 import { identityAbi } from "../../chain/abi";
 import { publicClient } from "../../chain/client";
+import { EnsIdentity } from "../../components/EnsIdentity";
 import { PageHeader } from "../../components/PageHeader";
 import { LIVE } from "../../config/live";
 
@@ -84,6 +85,7 @@ export function LiveAgents() {
             <thead>
               <tr>
                 <th scope="col">Agent</th>
+                <th scope="col">ENS name</th>
                 <th scope="col">Model</th>
                 <th scope="col">Operator (paid)</th>
                 <th scope="col">Receipt signing key</th>
@@ -97,6 +99,9 @@ export function LiveAgents() {
                   <tr key={a.agent_id}>
                     <td>
                       <span className="strong">{a.name}</span> <span className="mono c3">#{a.agent_id}</span>
+                    </td>
+                    <td>
+                      <EnsIdentity agentId={a.agent_id} name={a.name} />
                     </td>
                     <td className="mono">{a.model}</td>
                     <td>{chain ? <AddressLink address={chain.operator} /> : chain === null ? "unavailable" : "…"}</td>

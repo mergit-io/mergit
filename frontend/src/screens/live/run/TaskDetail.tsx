@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { agentName } from "../../../api/useAgents";
+import { EnsIdentity } from "../../../components/EnsIdentity";
 import type { AgentInfo, Attempt, MoneyEvent, PlanTask, StepEvent } from "../../../api/types";
 import { formatUsdc } from "../../../chain/funding";
 import { OutcomeBadge, ProgressBadge, VerdictBadge } from "./badges";
@@ -90,6 +91,10 @@ export function TaskDetail({
                   </span>
                   <OutcomeBadge outcome={attemptOutcome(a)} />
                 </div>
+                <EnsIdentity
+                  agentId={a.agent_id}
+                  name={agents ? (agents.find((x) => x.agent_id === a.agent_id)?.name ?? "") : null}
+                />
                 <AttemptMeta
                   steps={stepCount(a.task_id)}
                   verdict={verdict}
