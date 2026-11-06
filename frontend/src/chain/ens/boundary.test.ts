@@ -165,10 +165,10 @@ describe("the real source tree", () => {
     return found ?? "";
   };
 
-  it("lets the agent picker show identity only through AgentIdentity, never by reading ENS itself (E11)", () => {
+  it("lets the agent picker show identity only through EnsIdentity, never by reading ENS itself (E11)", () => {
     const imports = importsOf(sourceOf("/src/screens/live/run/AgentPicks.tsx"));
     expect(imports.filter(forbiddenForRouting)).toEqual([]);
-    expect(imports.some((p) => /components\/AgentIdentity$/.test(p))).toBe(true);
+    expect(imports.some((p) => /components\/EnsIdentity$/.test(p))).toBe(true);
   });
 
   it("keeps ENS code out of the leaderboard ranking and the pick suggestions, through any module (E11)", () => {

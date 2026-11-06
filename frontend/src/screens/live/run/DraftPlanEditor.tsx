@@ -22,6 +22,7 @@ import {
 } from "./draft";
 import { Problems } from "./Problems";
 import { SuggestAgents } from "./SuggestAgents";
+import { TrackRecordHint } from "./TrackRecordHint";
 import { applySuggestions } from "./suggest";
 import { TaskDraftCard } from "./TaskDraftCard";
 import { DiscardDraft } from "./DiscardDraft";
@@ -105,6 +106,7 @@ export function DraftPlanEditor({
           </span>
           <span className="small c3">of {formatUsdc(BigInt(plan.budget_usdc_units))} USDC you offered</span>
         </div>
+        <TrackRecordHint category={plan.category} />
         <SuggestAgents
           planUuid={plan.plan_uuid}
           onUse={(suggestions) => {

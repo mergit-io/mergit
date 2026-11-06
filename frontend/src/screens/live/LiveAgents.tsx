@@ -6,7 +6,7 @@ import { useReputation } from "../../api/useReputation";
 import type { AgentInfo } from "../../api/types";
 import { identityAbi } from "../../chain/abi";
 import { publicClient } from "../../chain/client";
-import { AgentIdentity } from "../../components/AgentIdentity";
+import { EnsIdentity } from "../../components/EnsIdentity";
 import { PageHeader } from "../../components/PageHeader";
 import { LIVE } from "../../config/live";
 
@@ -100,12 +100,8 @@ export function LiveAgents() {
                     <td>
                       <span className="strong">{a.name}</span> <span className="mono c3">#{a.agent_id}</span>
                     </td>
-                    <td data-testid={`ens-${a.agent_id}`}>
-                      {/^\d+$/.test(a.agent_id) ? (
-                        <AgentIdentity agent={{ agentId: BigInt(a.agent_id), name: a.name }} />
-                      ) : (
-                        <span className="c3">No ENS name</span>
-                      )}
+                    <td>
+                      <EnsIdentity agentId={a.agent_id} name={a.name} />
                     </td>
                     <td className="mono">{a.model}</td>
                     <td>{chain ? <AddressLink address={chain.operator} /> : chain === null ? "unavailable" : "…"}</td>

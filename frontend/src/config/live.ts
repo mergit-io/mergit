@@ -40,6 +40,18 @@ export const LIVE = {
     registry: (env.VITE_ENS_REGISTRY ?? "0xf60aba43e1f7f3dab1186ff03b561401c9df85e2") as Address,
     /** The Base ReputationAnchor a `mergit.reputation` record must name as its source. */
     anchor: (env.VITE_REPUTATION_ANCHOR ?? "0xf9DBfF75887361A67269765DA6F8732b233Fda76") as Address,
+    /** How long one agent's ENS reading is reused before it is read again (VITE_ENS_CACHE_MS). */
+    cacheTtlMs: Number(env.VITE_ENS_CACHE_MS ?? 60_000),
+    /**
+     * How many recent mainnet blocks are searched for who last wrote each record (VITE_ENS_WRITER_BLOCKS). Public RPCs
+     * cap one log query's range; a record last written before the window shows its writer as unknown, never a guess.
+     */
+    writerBlocks: BigInt(env.VITE_ENS_WRITER_BLOCKS ?? 45_000),
+    /**
+     * Where ENS answers come from (VITE_ENS_READER): `mainnet` (the default) or `stub`, fixed chain answers for the
+     * end-to-end tests that still go through the real two-way check. The live site never sets `stub`.
+     */
+    reader: env.VITE_ENS_READER === "stub" ? ("stub" as const) : ("mainnet" as const),
   },
   faucets: {
     eth: "https://portal.cdp.coinbase.com/products/faucet",

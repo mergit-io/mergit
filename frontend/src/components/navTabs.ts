@@ -12,7 +12,7 @@ const ALL: NavTab[] = [
   { label: "Integrations", icon: "plug", to: paths.integrations },
 ];
 
-/** No integration is wired, so live data has no Integrations page. The leaderboard ranks the platform's reputation. */
+/** No integration is wired, so live data has no Integrations page. Its Leaderboard is the ENS reputation mirror. */
 const NO_LIVE_DATA = new Set<string>([paths.integrations]);
 
 export function navTabs(mode: "mock" | "live"): NavTab[] {

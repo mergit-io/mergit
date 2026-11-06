@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import type { Address, Hex } from "viem";
+import { useAgents } from "../../api/useAgents";
+import { EnsIdentity } from "../../components/EnsIdentity";
 import { MergitLoader } from "../../components/MergitLoader";
 import { PageHeader } from "../../components/PageHeader";
 import { publicClient } from "../../chain/client";
@@ -16,7 +18,7 @@ type View =
   | { kind: "missing" }
   | { kind: "error"; message: string }
   | { kind: "no-verifier" }
-  | { kind: "verified"; d: Described; steps: number; root: string };
+  | { kind: "verified"; d: Described; steps: number; root: string; agentId: string };
 
 async function load(task: Hex): Promise<View> {
   const onChain = await readCommitment(task);
@@ -50,6 +52,7 @@ async function load(task: Hex): Promise<View> {
     d: describeReport(checked),
     steps: bundle.receipt.steps.length,
     root: bundle.receipt.root,
+    agentId: onChain.agentId.toString(),
   };
 }
 
@@ -58,6 +61,7 @@ export function LiveProofDetail() {
   const { proofId } = useParams();
   const task = proofId as Hex;
   const [view, setView] = useState<View>({ kind: "loading" });
+  const { agents } = useAgents();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -99,6 +103,13 @@ export function LiveProofDetail() {
         {view.kind === "verified" && (
           <>
             <h2 className={`title ${view.d.tone === "ok" ? "cm" : "cr"}`}>{view.d.label}</h2>
+            <div className="row g8 small c2" data-testid="proof-agent">
+              <span>Agent {view.agentId}, as committed on chain</span>
+              <EnsIdentity
+                agentId={view.agentId}
+                name={agents ? (agents.find((a) => a.agent_id === view.agentId)?.name ?? "") : null}
+              />
+            </div>
             <p>{view.d.phi}</p>
             {view.d.reasons.length > 0 && (
               <ul>

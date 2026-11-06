@@ -595,3 +595,22 @@ button.link {
     padding-right: 6px;
   }
 }
+
+/* ENS name plus its verdict badge (EnsIdentity), wherever an agent is shown on live data. */
+.ens-id {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.ens-name {
+  overflow-wrap: anywhere;
+}
+.ens-reason {
+  flex-basis: 100%;
+}
+/* A wide ENS table scrolls inside its card on a phone instead of widening the page. */
+.ens-scroll {
+  overflow-x: auto;
+}
