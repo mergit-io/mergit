@@ -21,7 +21,7 @@ defaults:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,7 +43,11 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
+      # The browser only. `--with-deps` also apt-installs nine font packages (CJK, unifont) that no test needs,
+      # since the app bundles its own fonts and no test compares pixels; the browser's libraries are already on
+      # the runner. That apt download from the Azure mirror has taken 9 minutes and timed the whole job out.
+      - run: npx playwright install chromium
+        timeout-minutes: 5
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
