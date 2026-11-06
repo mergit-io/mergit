@@ -667,7 +667,10 @@ def test_arkiv_suggestions_degrades_instead_of_500_when_arkiv_is_unreachable(
         body = resp.json()
         assert body["enabled"] is True
         assert body["decisions"] == []
-        assert body["error"] == "could not reach Arkiv"
+        # The real reason is in there, not swallowed behind a generic message — a misconfigured
+        # ARKIV_OWNER_ADDRESS and a down RPC must not look identical from this endpoint's response.
+        assert "could not read from Arkiv" in body["error"]
+        assert "rpc unreachable" in body["error"]
 
 
 def test_arkiv_suggestions_is_owner_only(settings: Settings, llm: FakeLLM):
