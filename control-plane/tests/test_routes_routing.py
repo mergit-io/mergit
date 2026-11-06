@@ -619,6 +619,8 @@ def arkiv_client(settings: Settings, llm: FakeLLM) -> Iterator[tuple[TestClient,
             base_url="https://testserver",
         ) as c,
     ):
+        mock.get(f"{ARKIV_SIDECAR}/healthz").respond(200, text="ok")
+        # Registered last on purpose: tests take `mock.routes[-1]` as the write route.
         mock.post(f"{ARKIV_SIDECAR}/internal/mirror").respond(json={"tx_hash": "0xdead", "entity_keys": []})
         yield c, mock
 
@@ -647,6 +649,7 @@ def test_an_exploring_suggestion_is_mirrored_to_arkiv_and_readable_back(settings
         mock.post(ARKIV_RPC).respond(json={"jsonrpc": "2.0", "id": 1, "result": {"data": entities}})
         mirrored = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions").json()
         assert mirrored["enabled"] is True
+        assert mirrored["writer"] == "ok"
         assert {d["task_index"] for d in mirrored["decisions"]} == {0, 1}
 
 
@@ -667,7 +670,10 @@ def test_arkiv_suggestions_degrades_instead_of_500_when_arkiv_is_unreachable(
         body = resp.json()
         assert body["enabled"] is True
         assert body["decisions"] == []
-        assert body["error"] == "could not reach Arkiv"
+        # The real reason is in there, not swallowed behind a generic message — a misconfigured
+        # ARKIV_OWNER_ADDRESS and a down RPC must not look identical from this endpoint's response.
+        assert "could not read from Arkiv" in body["error"]
+        assert "rpc unreachable" in body["error"]
 
 
 def test_arkiv_suggestions_is_owner_only(settings: Settings, llm: FakeLLM):

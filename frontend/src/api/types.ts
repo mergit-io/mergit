@@ -138,6 +138,9 @@ export type ArkivSuggestions = {
   /** Set when the server reached Arkiv's RPC and the query itself failed; distinct from `decisions: []`,
    * which also means the query ran fine but matched nothing yet. */
   error?: string;
+  /** The write side: `"ok"`, `"not configured"`, or why the sidecar is not answering. Writes run in the
+   * background and only log on failure, so this is the one place a never-started sidecar shows up. */
+  writer?: string;
   decisions: ArkivDecision[];
 };
 

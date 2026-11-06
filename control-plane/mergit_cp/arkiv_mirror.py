@@ -81,6 +81,18 @@ class ArkivMirror:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def writer_status(self) -> str:
+        """Whether the write side can work at all: ``"ok"``, ``"not configured"``, or why the sidecar
+        is not answering. Writes run in a background task and only log on failure, so without this a
+        sidecar that never started looks exactly like "nothing mirrored yet" from the read side."""
+        if not self._sidecar_url:
+            return "not configured"
+        try:
+            response = await self._http.get(f"{self._sidecar_url}/healthz", timeout=3.0)
+        except httpx.HTTPError as exc:
+            return f"unreachable ({type(exc).__name__})"
+        return "ok" if response.status_code == 200 else f"unhealthy (HTTP {response.status_code})"
+
     async def write_decisions(self, plan_id: str, decisions: list[Decision]) -> None:
         """One HTTP call to the sidecar, one on-chain transaction for every task in `decisions`. Raises
         on failure (no sidecar configured, unreachable, out of funds, a bad key); the caller decides

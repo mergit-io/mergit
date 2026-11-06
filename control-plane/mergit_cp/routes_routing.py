@@ -242,14 +242,25 @@ async def arkiv_suggestions(
                 status_code=403, detail="only the requester may see suggestions for this plan"
             )
     query = arkiv.describe_query(plan.plan_id)
+    writer = await arkiv.writer_status()
     try:
         decisions = await arkiv.read_decisions(plan.plan_id)
-    except Exception:  # any SDK/RPC failure; see the docstring
+    except Exception as exc:  # any SDK/RPC failure; see the docstring
         log.warning("arkiv read failed for plan %s", plan.plan_id, exc_info=True)
-        return {"enabled": True, "query": query, "decisions": [], "error": "could not reach Arkiv"}
+        # The real reason (a bad query, a rejected address, a timeout) is worth more than a generic
+        # "unreachable": a misconfigured ARKIV_OWNER_ADDRESS looks identical to a down RPC otherwise,
+        # and the RPC's own error text is already public (it's what `arkiv_query` itself returned).
+        return {
+            "enabled": True,
+            "query": query,
+            "writer": writer,
+            "decisions": [],
+            "error": f"could not read from Arkiv: {exc}"[:300],
+        }
     return {
         "enabled": True,
         "query": query,
+        "writer": writer,
         "decisions": [
             {
                 "entity_key": d.entity_key,
