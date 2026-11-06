@@ -439,3 +439,20 @@ test("the agents list shows a validated record only where there is one, and says
   await expect(page.getByTestId("record-1")).toHaveText("No validated outcomes yet");
   await expect(page.getByText("configuration, not a measurement")).toBeVisible();
 });
+
+test("the agents list shows no figures for an agent whose rows are only the prior (0 validated)", async ({ page }) => {
+  await mockBackend(page);
+  const prior = {
+    ...SEASONED,
+    agent_id: "1",
+    name: "coder-a",
+    basis: "prior (no counted outcomes)",
+    counted_outcomes: 0,
+  };
+  await mockPlanApi(page, { reputation: [prior, SEASONED] });
+  await page.goto("/app/agents");
+
+  await expect(page.getByTestId("record-2")).toContainText("7 validated");
+  await expect(page.getByTestId("record-1")).toHaveText("No validated outcomes yet");
+  await expect(page.getByTestId("record-1")).not.toContainText("% pass");
+});
