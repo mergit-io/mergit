@@ -86,6 +86,57 @@ async def attempts(conn: AsyncConnection[TupleRow], plan_uuid: UUID | str) -> li
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class PendingDispatch:
+    """An attempt the orchestrator asked for that has no job yet: still being sent to the gateway (a retry
+    waits there until the previous attempt's payment is back), sent and waiting for its escrow to lock, or
+    given up."""
+
+    index: int
+    attempt: int
+    agent_id: str
+    state: str
+    last_error: str | None
+    give_up_at: datetime | None
+
+
+_PENDING = """
+SELECT d."index", d.attempt, d.agent_id, o.delivered_at IS NOT NULL, o.failed_at IS NOT NULL, o.last_error,
+       o.give_up_at
+FROM task_dispatches d
+LEFT JOIN jobs j ON j.task_id = d.task_id
+LEFT JOIN outbox o ON o.type = 'task.dispatch_requested' AND o.body->'payload'->>'task_id' = d.task_id
+WHERE d.plan_uuid = %s AND j.task_id IS NULL
+ORDER BY d."index", d.attempt
+"""
+
+
+async def pending_dispatches(conn: AsyncConnection[TupleRow], plan_uuid: UUID | str) -> list[PendingDispatch]:
+    cur = await conn.execute(_PENDING, (str(plan_uuid),))
+    return [
+        PendingDispatch(
+            index=index,
+            attempt=attempt,
+            agent_id=agent_id,
+            state="given_up" if failed else "escrowing" if delivered else "sending",
+            last_error=last_error,
+            give_up_at=give_up_at,
+        )
+        for index, attempt, agent_id, delivered, failed, last_error, give_up_at in await cur.fetchall()
+    ]
+
+
+def pending_view(p: PendingDispatch) -> dict[str, Any]:
+    return {
+        "index": p.index,
+        "attempt": p.attempt,
+        "agent_id": p.agent_id,
+        "state": p.state,
+        "last_error": p.last_error,
+        "give_up_at": None if p.give_up_at is None else p.give_up_at.isoformat(),
+    }
+
+
 def attempt_view(a: Attempt) -> dict[str, Any]:
     return {
         "task_id": a.task_id,

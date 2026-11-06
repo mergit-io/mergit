@@ -1,20 +1,21 @@
-import type { Attempt, MoneyEvent, PlanTask } from "../../../api/types";
+import type { Attempt, MoneyEvent, PendingDispatch, PlanTask } from "../../../api/types";
 
 /**
- * What each task of a running plan is doing, derived from its attempts and the requester's agent picks,
- * the same rule the control plane applies (plan task O6): a failed or inconclusive attempt is retried with
- * the next agent the requester picked; once every pick has been tried, the task waits on the requester.
- * The API does not store that last state, so the screen derives it the way the server does.
+ * What each task of a running plan is doing, derived from its attempts, the attempts dispatched but not yet
+ * started, and the requester's agent picks, the same rule the control plane applies (plan task O6,
+ * `outcomes.stuck_indexes`): a failed or inconclusive attempt is retried with the next agent the requester
+ * picked; once every pick has been tried, or the next attempt could not be started, the task waits on the
+ * requester. The API does not store that last state, so the screen derives it the way the server does.
  */
 export type TaskProgress =
   /** Not dispatched yet: waiting on a dependency, or on its escrow. */
   | { kind: "waiting" }
   | { kind: "running"; attempt: Attempt }
   | { kind: "passed"; attempt: Attempt }
-  /** The last attempt did not pass and the next pick is being dispatched. */
-  | { kind: "retrying"; failed: Attempt; nextAgent: string }
-  /** Every agent the requester picked has been tried: only the requester can move this task on. */
-  | { kind: "stuck"; failed: Attempt };
+  /** The last attempt did not pass and the next pick is on its way; `pending` says where, once known. */
+  | { kind: "retrying"; failed: Attempt; nextAgent: string; pending?: PendingDispatch }
+  /** Only the requester can move this task on: every pick was tried, or `givenUp` never started. */
+  | { kind: "stuck"; failed?: Attempt; givenUp?: PendingDispatch };
 
 export type AttemptOutcome = "in progress" | "passed" | "failed" | "inconclusive";
 
@@ -28,21 +29,28 @@ export function attemptOutcome(attempt: Attempt): AttemptOutcome {
   return attempt.phi_holds === false ? "failed" : "inconclusive";
 }
 
-export function taskProgress(task: PlanTask, attempts: Attempt[]): TaskProgress {
+export function taskProgress(task: PlanTask, attempts: Attempt[], pending: PendingDispatch[] = []): TaskProgress {
   const mine = attemptsOf(task.index, attempts);
   const passed = mine.find((a) => a.phi_holds === true);
   if (passed) return { kind: "passed", attempt: passed };
   const latest = mine.at(-1);
+  // An attempt dispatched after the newest job: on its way to the gateway, or given up before it started.
+  const next = pending
+    .filter((p) => p.index === task.index && p.attempt > (latest?.attempt ?? 0))
+    .sort((a, b) => a.attempt - b.attempt)
+    .at(-1);
+  if (next?.state === "given_up") return { kind: "stuck", failed: latest, givenUp: next };
   if (!latest) return { kind: "waiting" };
   if (attemptOutcome(latest) === "in progress") return { kind: "running", attempt: latest };
+  if (next) return { kind: "retrying", failed: latest, nextAgent: next.agent_id, pending: next };
   // Attempt n ran with agents[n - 1], so the retry's pick is agents[n]. Approval caps the list at the
   // service's attempt limit, so the list running out is the limit.
   const nextAgent = task.agents?.[latest.attempt];
   return nextAgent === undefined ? { kind: "stuck", failed: latest } : { kind: "retrying", failed: latest, nextAgent };
 }
 
-export function stuckTasks(tasks: PlanTask[], attempts: Attempt[]): PlanTask[] {
-  return tasks.filter((t) => taskProgress(t, attempts).kind === "stuck");
+export function stuckTasks(tasks: PlanTask[], attempts: Attempt[], pending: PendingDispatch[] = []): PlanTask[] {
+  return tasks.filter((t) => taskProgress(t, attempts, pending).kind === "stuck");
 }
 
 /** Nothing was ever dispatched: every task still waits. A closed plan like this never funded, or was closed first. */

@@ -389,3 +389,136 @@ def test_abandon_twice_is_idempotent(database_url: str) -> None:
         assert n is not None and n[0] == 2  # both events still sent; the state change was the idempotent part
 
     run(database_url, body)
+
+
+async def _fail(conn: psycopg.AsyncConnection[TupleRow], task_id: str) -> None:
+    await conn.execute(
+        "UPDATE jobs SET status = 'error', phi_holds = NULL, finished_at = now() WHERE task_id = %s",
+        (task_id,),
+    )
+
+
+async def _window_s(conn: psycopg.AsyncConnection[TupleRow], attempt: int) -> float:
+    cur = await conn.execute(
+        "SELECT extract(epoch FROM give_up_at - created_at) FROM outbox"
+        " WHERE type = 'task.dispatch_requested' AND (body->'payload'->>'attempt')::int = %s",
+        (attempt,),
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    return float(row[0])
+
+
+def test_a_retry_outlasts_the_previous_attempts_deadline(database_url: str) -> None:
+    """The gateway holds attempt 2 until attempt 1's payment is back, which for an attempt that never
+    sealed a receipt is its deadline. A retry given up before then never runs."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+        await _process(pool)
+
+        async with pool.connection() as conn:
+            first, retry = await _window_s(conn, 1), await _window_s(conn, 2)
+            stuck = await outcomes.stuck_indexes(conn, plan, SETTINGS)
+        assert first == pytest.approx(SETTINGS.event_retry_window_s, abs=5)
+        assert retry > outcomes.dispatch.DISPATCH_DEADLINE_S + 60
+        assert stuck == []  # on its way, not waiting on the requester
+
+    run(database_url, body)
+
+
+def test_a_retry_given_up_before_it_started_waits_on_the_requester(database_url: str) -> None:
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+        await _process(pool)
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE outbox SET failed_at = now(), last_error = 'gave up'"
+                " WHERE (body->'payload'->>'attempt')::int = 2"
+            )
+            stuck = await outcomes.stuck_indexes(conn, plan, SETTINGS)
+        assert stuck == [0]
+
+    run(database_url, body)
+
+
+def test_closing_cancels_attempts_not_yet_sent(database_url: str) -> None:
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2"]})
+            await conn.execute("UPDATE plans SET state = 'running' WHERE plan_uuid = %s", (plan.plan_uuid,))
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+            await conn.execute("UPDATE outbox SET delivered_at = now()")  # attempt 1 reached the gateway
+        await _process(pool)  # dispatches attempt 2, which the gateway would hold
+
+        async with pool.connection() as conn, conn.transaction():
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid), for_update=True)
+            assert loaded is not None
+            await outcomes.abandon(conn, loaded, SETTINGS)
+
+        async with pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT type, delivered_at IS NOT NULL, failed_at IS NOT NULL, last_error"
+                    " FROM outbox ORDER BY id"
+                )
+            ).fetchall()
+        assert rows == [
+            ("task.dispatch_requested", True, False, None),
+            ("task.dispatch_requested", False, True, "the requester closed the plan first"),
+            ("plan.closed", False, False, None),
+        ]
+
+    run(database_url, body)
+
+
+def test_a_requester_retry_takes_the_next_slot_and_dispatches(database_url: str) -> None:
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1"]})
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+        await _process(pool)
+
+        async with pool.connection() as conn, conn.transaction():
+            assert await outcomes.stuck_indexes(conn, plan, SETTINGS) == [0]
+            task_id = await outcomes.retry(conn, plan, 0, "3", SETTINGS)
+
+        async with pool.connection() as conn:
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+            dispatched = await (
+                await conn.execute(
+                    "SELECT attempt, agent_id FROM task_dispatches WHERE task_id = %s", (task_id,)
+                )
+            ).fetchone()
+            stuck = await outcomes.stuck_indexes(conn, plan, SETTINGS)
+            window = await _window_s(conn, 2)
+        assert loaded is not None and loaded.tasks[0].agents == ["1", "3"]
+        assert dispatched == (2, "3")
+        assert stuck == []
+        assert window > outcomes.dispatch.DISPATCH_DEADLINE_S
+
+    run(database_url, body)
+
+
+def test_a_retry_after_a_given_up_dispatch_reuses_its_slot(database_url: str) -> None:
+    """Attempt n always names agents[n - 1]: a pick the given-up attempt never reached is replaced."""
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn, conn.transaction():
+            plan = await _plan(conn, [task(0)], {0: ["1", "2", "3"]})
+            await _fail(conn, await _dispatch_and_escrow(conn, plan, 0, 1, "1"))
+        await _process(pool)
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE outbox SET failed_at = now() WHERE (body->'payload'->>'attempt')::int = 2"
+            )
+            assert await outcomes.stuck_indexes(conn, plan, SETTINGS) == [0]
+            await outcomes.retry(conn, plan, 0, "1", SETTINGS)
+            loaded = await plans.load(conn, uuid.UUID(plan.plan_uuid))
+        assert loaded is not None and loaded.tasks[0].agents == ["1", "2", "1"]
+
+    run(database_url, body)

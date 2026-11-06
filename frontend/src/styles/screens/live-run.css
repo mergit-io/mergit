@@ -101,6 +101,15 @@
   border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
   background: var(--amber-wash);
 }
+.lr-retry-row {
+  flex-wrap: wrap;
+}
+/* The retry picker sizes to its agent names, not to the banner's width. */
+.lr-select.lr-retry-select {
+  width: auto;
+  min-width: min(280px, 100%);
+  max-width: 100%;
+}
 .lr-list {
   list-style: none;
 }

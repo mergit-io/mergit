@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Attempt, MoneyEvent, PlanTask } from "../../../api/types";
+import type { Attempt, MoneyEvent, PendingDispatch, PlanTask } from "../../../api/types";
 import { attemptOutcome, closedBeforeStart, creditsDenial, stuckTasks, taskProgress, verdictFor } from "./progress";
 
 const task = (agents: string[] | null = ["1", "2"]): PlanTask => ({
@@ -62,6 +62,43 @@ describe("taskProgress", () => {
 
   it("only counts attempts at its own index", () => {
     expect(taskProgress(task(), [{ ...failed(1), index: 1 }])).toEqual({ kind: "waiting" });
+  });
+
+  const sending = (n: number, over: Partial<PendingDispatch> = {}): PendingDispatch => ({
+    index: 0,
+    attempt: n,
+    agent_id: "3",
+    state: "sending",
+    last_error: "503: attempt 1 of this task still holds its payment",
+    give_up_at: null,
+    ...over,
+  });
+
+  it("names the retry the server actually dispatched, and why it waits", () => {
+    expect(taskProgress(task(["1", "2"]), [failed(1)], [sending(2)])).toEqual({
+      kind: "retrying",
+      failed: failed(1),
+      nextAgent: "3",
+      pending: sending(2),
+    });
+  });
+
+  it("waits on the requester when the next attempt was given up before it started", () => {
+    const gaveUp = sending(2, { state: "given_up" });
+    expect(taskProgress(task(["1", "2"]), [failed(1)], [gaveUp])).toEqual({
+      kind: "stuck",
+      failed: failed(1),
+      givenUp: gaveUp,
+    });
+  });
+
+  it("is retrying, not stuck, once the requester sent a stuck task to another agent", () => {
+    expect(taskProgress(task(["1"]), [failed(1)], [sending(2)]).kind).toBe("retrying");
+  });
+
+  it("ignores a dispatch older than the newest attempt", () => {
+    expect(taskProgress(task(["1"]), [failed(1)], [sending(1, { state: "given_up" })]).kind).toBe("stuck");
+    expect(taskProgress(task(), [], [sending(1, { state: "escrowing" })])).toEqual({ kind: "waiting" });
   });
 });
 

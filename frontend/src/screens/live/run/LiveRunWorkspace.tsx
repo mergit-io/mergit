@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { useAgents } from "../../../api/useAgents";
@@ -6,12 +7,15 @@ import type { AgentInfo, PlanDetail, StepEvent } from "../../../api/types";
 import { MergitLoader } from "../../../components/MergitLoader";
 import { PageHeader } from "../../../components/PageHeader";
 import { PlanBadge } from "./badges";
-import { stuckTasks } from "./progress";
+import { stuckTasks, taskProgress } from "./progress";
 import { DraftPlanEditor } from "./DraftPlanEditor";
 import { FundingStep } from "./FundingStep";
 import { RunView } from "./RunView";
 import "../../../styles/screens/run.css";
 import "../../../styles/screens/live-run.css";
+
+/** The stream carries jobs, not dispatches, so a retry on its way to the gateway is followed by reloading. */
+const RELOAD_WHILE_RETRYING_MS = 15_000;
 
 const STREAM_LABEL: Record<StreamStatus, string> = {
   connecting: "Connecting…",
@@ -27,6 +31,16 @@ export function LiveRunWorkspace() {
   const { runId = "" } = useParams();
   const { detail, steps, error, stream, reload } = usePlan(runId);
   const { agents } = useAgents();
+  const retrying =
+    detail?.state === "running" &&
+    detail.tasks.some((t) => taskProgress(t, detail.attempts, detail.pending_dispatches ?? []).kind === "retrying");
+  useEffect(() => {
+    if (!retrying) return;
+    const timer = setInterval(reload, RELOAD_WHILE_RETRYING_MS);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [retrying, reload]);
 
   if (!detail) {
     return (
@@ -50,7 +64,12 @@ export function LiveRunWorkspace() {
       <PageHeader
         title={<span className="lr-title">{detail.goal}</span>}
         crumb={{ label: "Runs", to: paths.runs, id: detail.plan_uuid.slice(0, 8) }}
-        badge={<PlanBadge state={detail.state} stuck={stuckTasks(detail.tasks, detail.attempts).length} />}
+        badge={
+          <PlanBadge
+            state={detail.state}
+            stuck={stuckTasks(detail.tasks, detail.attempts, detail.pending_dispatches ?? []).length}
+          />
+        }
         subtitle={
           <>
             <span className="mono">{detail.repo_url}</span> at <span className="mono">{detail.ref}</span>

@@ -68,6 +68,12 @@ class ApprovePlan(BaseModel):
     funding: Literal["wallet", "credits"]
 
 
+class RetryTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+
+
 def _problems(status: int, problems: list[str]) -> HTTPException:
     return HTTPException(status_code=status, detail={"problems": problems})
 
@@ -337,3 +343,39 @@ async def abandon_plan(
             raise HTTPException(status_code=409, detail=f"the plan is already {plan.state}")
         await outcomes.abandon(conn, plan, settings)
     return {"plan_id": plan.plan_id, "state": "closed"}
+
+
+@router.post("/{plan_uuid}/tasks/{index}/retry")
+async def retry_task(
+    plan_uuid: UUID,
+    index: int,
+    body: RetryTask,
+    principal: PrincipalDep,
+    settings: SettingsDep,
+    pool: PoolDep,
+    agents: Annotated[list[Agent], Depends(get_agents)],
+) -> dict[str, Any]:
+    """The requester sends a task that waits on them (every picked agent failed, or its dispatch was given
+    up) to one more agent of their choice, instead of closing the whole plan."""
+    async with pool.connection() as conn, conn.transaction():
+        plan = await plans.load(conn, plan_uuid, for_update=True)
+        if plan is None:
+            raise HTTPException(status_code=404, detail="no such plan")
+        if not principal.owns(plan.requester):
+            raise HTTPException(status_code=403, detail="only the requester may retry a task of this plan")
+        if plan.state != "running":
+            raise HTTPException(status_code=409, detail=f"the plan is {plan.state}, not running")
+        if all(t.draft.index != index for t in plan.tasks):
+            raise HTTPException(status_code=404, detail=f"the plan has no task {index}")
+        if all(a.agent_id != body.agent_id for a in agents):
+            raise _problems(422, [f"agent {body.agent_id} is not deployed"])
+        if index not in await outcomes.stuck_indexes(conn, plan, settings):
+            raise HTTPException(status_code=409, detail=f"task {index} is not waiting on you")
+        attempt = await outcomes.next_attempt(conn, plan, index)
+        if attempt > settings.max_requester_attempts:
+            raise HTTPException(
+                status_code=409,
+                detail=f"task {index} has had {attempt - 1} attempts, the most one task may have",
+            )
+        task_id = await outcomes.retry(conn, plan, index, body.agent_id, settings)
+    return {"task_id": task_id, "index": index, "attempt": attempt, "agent_id": body.agent_id}

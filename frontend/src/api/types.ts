@@ -60,7 +60,25 @@ export type Attempt = {
 /** A gateway event about this plan's money or verdicts, as the gateway sent it. */
 export type MoneyEvent = { type: string; at: string; payload: Record<string, unknown> };
 
-export type PlanDetail = Plan & { attempts: Attempt[]; money_events: MoneyEvent[] };
+/**
+ * An attempt the orchestrator asked for that has no job yet. `sending`: still being delivered to the gateway,
+ * which holds a retry until the previous attempt's payment is back (`last_error` says so). `escrowing`: sent,
+ * its payment not locked yet. `given_up`: never started.
+ */
+export type PendingDispatch = {
+  index: number;
+  attempt: number;
+  agent_id: string;
+  state: "sending" | "escrowing" | "given_up";
+  last_error: string | null;
+  give_up_at: string | null;
+};
+
+export type PlanDetail = Plan & {
+  attempts: Attempt[];
+  money_events: MoneyEvent[];
+  pending_dispatches?: PendingDispatch[];
+};
 
 export type PlanSummary = Pick<
   Plan,

@@ -7,6 +7,7 @@ import { Icon } from "../../../components/Icon";
 import { ProgressBadge } from "./badges";
 import { ClosePlan } from "./ClosePlan";
 import { PullRequestStep } from "./PullRequestStep";
+import { RetryTask } from "./RetryTask";
 import { attemptsOf, closedBeforeStart, stuckTasks, taskProgress } from "./progress";
 import { canStartAgain } from "./startAgain";
 import { StepLog } from "./StepLog";
@@ -27,11 +28,13 @@ export function RunView({
 }) {
   const [selected, setSelected] = useState(detail.tasks[0]?.index ?? 0);
   const task = detail.tasks.find((t) => t.index === selected);
-  const passed = detail.tasks.filter((t) => taskProgress(t, detail.attempts).kind === "passed").length;
+  const passed = detail.tasks.filter(
+    (t) => taskProgress(t, detail.attempts, detail.pending_dispatches ?? []).kind === "passed",
+  ).length;
 
   return (
     <>
-      <RunBanner detail={detail} onClosed={onClosed} />
+      <RunBanner detail={detail} agents={agents} onClosed={onClosed} />
       {detail.state === "done" && <PullRequestStep planUuid={detail.plan_uuid} />}
       <section className="rw-grid">
         <div className="col g16 min0">
@@ -73,6 +76,7 @@ export function RunView({
             key={task.index}
             task={task}
             attempts={detail.attempts}
+            pending={detail.pending_dispatches ?? []}
             money={detail.money_events}
             steps={steps}
             agents={agents}
@@ -96,7 +100,7 @@ function TaskRow({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const progress = taskProgress(task, detail.attempts);
+  const progress = taskProgress(task, detail.attempts, detail.pending_dispatches ?? []);
   const latest = attemptsOf(task.index, detail.attempts).at(-1);
   const agentId = latest?.agent_id ?? task.agents?.[0];
   return (
@@ -115,7 +119,15 @@ function TaskRow({
 }
 
 /** What the requester needs to know about the whole plan right now, if anything. */
-function RunBanner({ detail, onClosed }: { detail: PlanDetail; onClosed: () => void }) {
+function RunBanner({
+  detail,
+  agents,
+  onClosed,
+}: {
+  detail: PlanDetail;
+  agents: AgentInfo[] | null;
+  onClosed: () => void;
+}) {
   if (detail.state === "done") {
     return (
       <p className="card pad row g10 lr-banner" role="status">
@@ -152,18 +164,21 @@ function RunBanner({ detail, onClosed }: { detail: PlanDetail; onClosed: () => v
       </div>
     );
   }
-  const stuck = stuckTasks(detail.tasks, detail.attempts);
+  const stuck = stuckTasks(detail.tasks, detail.attempts, detail.pending_dispatches ?? []);
   if (stuck.length === 0) return null;
   const names = stuck.map((t) => `task ${String(t.index + 1)}`).join(", ");
   return (
-    <div className="card pad col g10 lr-banner lr-banner-warn" role="alert">
+    <div className="card pad col g12 lr-banner lr-banner-warn" role="alert">
       <span className="strong">
-        <Icon name="hand" size={16} color="var(--amber)" /> Needs you: {names} failed its check with every agent you
-        picked.
+        <Icon name="hand" size={16} color="var(--amber)" /> Needs you: {names} cannot go on without you.
       </span>
       <span className="small c2">
-        Nothing more runs on its own. Close the plan to stop it and get its unspent funds back.
+        Nothing more runs on its own. Retry a task with another agent (it is paid from that task&apos;s own budget), or
+        close the plan to stop it and get its unspent funds back.
       </span>
+      {stuck.map((t) => (
+        <RetryTask key={t.index} planUuid={detail.plan_uuid} task={t} agents={agents} onRetried={onClosed} />
+      ))}
       <ClosePlan planUuid={detail.plan_uuid} onClosed={onClosed} />
     </div>
   );

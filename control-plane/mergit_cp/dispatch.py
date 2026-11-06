@@ -29,6 +29,11 @@ log = logging.getLogger(__name__)
 DISPATCH_DEADLINE_S = 1800
 """How long a dispatched task has to be sealed before the plan may give up on it (spec/events-v0.md)."""
 
+RETRY_WINDOW_S = DISPATCH_DEADLINE_S + 600
+"""How long a retry's dispatch keeps being delivered. The gateway refuses to lock attempt n while attempt n-1
+still holds its payment (503), and an attempt that ended without a receipt only gets it back once its deadline
+passes and the keeper returns it. A shorter window gives the retry up before then, for good."""
+
 
 async def _task_states(conn: AsyncConnection[TupleRow], plan_uuid: str) -> list[TaskState]:
     cur = await conn.execute(
@@ -85,7 +90,11 @@ async def dispatch_task(
             "deadline_unix": int(time.time()) + DISPATCH_DEADLINE_S,
         },
         plan_id=plan.plan_id,
-        retry_window_s=settings.event_retry_window_s,
+        retry_window_s=(
+            settings.event_retry_window_s
+            if attempt == 1
+            else max(settings.event_retry_window_s, RETRY_WINDOW_S)
+        ),
     )
     return task_id
 

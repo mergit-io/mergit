@@ -179,6 +179,51 @@ def test_plans_list_counts_a_running_plans_stuck_tasks(client: TestClient, setti
     assert body[moving_plan]["stuck_tasks"] == 0
 
 
+def test_a_stuck_task_can_be_retried_with_another_agent(client: TestClient, settings: Settings):
+    address = sign_in(client)
+    plan_uuid, _, task_ids = run(settings.database_url, lambda pool: seed_plan(pool, requester=address))
+
+    async def every_pick_failed(pool: Pool) -> None:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE jobs SET status = 'error', finished_at = now(), outcome_processed_at = now()"
+                " WHERE task_id = %s",
+                (task_ids[1],),
+            )
+
+    run(settings.database_url, every_pick_failed)
+    before = client.get(f"/v0/plans/{plan_uuid}").json()
+    assert (before["stuck_indexes"], before["pending_dispatches"]) == ([1], [])
+
+    assert client.post(f"/v0/plans/{plan_uuid}/tasks/1/retry", json={"agent_id": "9"}).status_code == 422
+    assert client.post(f"/v0/plans/{plan_uuid}/tasks/0/retry", json={"agent_id": "1"}).status_code == 409
+    assert client.post(f"/v0/plans/{plan_uuid}/tasks/7/retry", json={"agent_id": "1"}).status_code == 404
+
+    r = client.post(f"/v0/plans/{plan_uuid}/tasks/1/retry", json={"agent_id": "1"})
+    assert r.status_code == 200, r.text
+    assert (r.json()["attempt"], r.json()["agent_id"]) == (2, "1")
+
+    after = client.get(f"/v0/plans/{plan_uuid}").json()
+    assert after["stuck_indexes"] == []
+    assert after["tasks"][1]["agents"] == ["1", "1"]
+    [pending] = after["pending_dispatches"]
+    assert (pending["index"], pending["attempt"], pending["agent_id"], pending["state"]) == (
+        1,
+        2,
+        "1",
+        "sending",
+    )
+    # Retrying again before that attempt has run is refused: the task no longer waits on the requester.
+    assert client.post(f"/v0/plans/{plan_uuid}/tasks/1/retry", json={"agent_id": "1"}).status_code == 409
+
+
+def test_only_the_requester_may_retry_a_task(client: TestClient, settings: Settings):
+    other = Account.create().address.lower()
+    plan_uuid, _, _ = run(settings.database_url, lambda pool: seed_plan(pool, requester=other))
+    sign_in(client)
+    assert client.post(f"/v0/plans/{plan_uuid}/tasks/1/retry", json={"agent_id": "1"}).status_code == 403
+
+
 def test_plans_list_requires_a_session(client: TestClient):
     assert client.get("/v0/plans").status_code == 401
 

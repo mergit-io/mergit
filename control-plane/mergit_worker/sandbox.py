@@ -49,6 +49,19 @@ class SandboxError(Exception):
     """The sandbox could not be created or used."""
 
 
+def require_image(image: str, client: docker.DockerClient | None = None) -> None:
+    """The sandbox image is on this host. Checked at start-up too: a worker without it would fail every job
+    it claims, each costing the requester an agent pick, so it refuses to start and jobs stay queued."""
+    dc = client or docker.from_env()
+    try:
+        dc.images.get(image)
+    except docker.errors.ImageNotFound as exc:
+        raise SandboxError(
+            f"sandbox image {image!r} is not built on this host:"
+            f" docker build -t {image} control-plane/sandbox"
+        ) from exc
+
+
 class SandboxPort(Protocol):
     """What the harness needs from a sandbox. `Sandbox` is the production implementation; tests that do
     not need isolation provide a process-based stand-in."""
@@ -98,10 +111,7 @@ class Sandbox:
         client: docker.DockerClient | None = None,
     ) -> Sandbox:
         dc = client or docker.from_env()
-        try:
-            dc.images.get(cfg.image)
-        except docker.errors.ImageNotFound as exc:
-            raise SandboxError(f"sandbox image {cfg.image!r} is not built on this host") from exc
+        require_image(cfg.image, dc)
         workspace = Workspace.clone(repo_url, ref, cfg.workspace_root, cfg.git)
         try:
             container = _create_container(dc, workspace.work, cfg)

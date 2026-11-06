@@ -59,12 +59,28 @@ FOR UPDATE SKIP LOCKED
 LIMIT %s
 """
 
-_PROCESSED_INDEXES = """
-SELECT "index", bool_or(phi_holds = true) AS passed, max(attempt) AS last_attempt
-FROM jobs
-WHERE plan_uuid = %s AND outcome_processed_at IS NOT NULL
-GROUP BY "index"
+_DISPATCHES = """
+SELECT d."index", d.attempt,
+       j.task_id IS NOT NULL,
+       j.outcome_processed_at IS NOT NULL,
+       coalesce(j.phi_holds, false),
+       EXISTS (SELECT 1 FROM outbox o
+               WHERE o.type = 'task.dispatch_requested' AND o.body->'payload'->>'task_id' = d.task_id
+                 AND o.failed_at IS NOT NULL)
+FROM task_dispatches d LEFT JOIN jobs j ON j.task_id = d.task_id
+WHERE d.plan_uuid = %s
 """
+
+
+@dataclass(frozen=True, slots=True)
+class _Dispatch:
+    attempt: int
+    has_job: bool
+    processed: bool
+    holds: bool
+    given_up: bool
+    """Its `task.dispatch_requested` was never delivered: the gateway never locked it, so no job will come."""
+
 
 _ALL_PASSED = """
 SELECT NOT EXISTS (
@@ -150,21 +166,55 @@ async def process_due(conn: AsyncConnection[TupleRow], settings: Settings, limit
 
 
 async def stuck_indexes(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings) -> list[int]:
-    """Indexes whose latest processed attempt did not pass and will never be retried: the attempt cap or
-    the requester's agent list is exhausted. ``needs_requester`` in plan task O6's own words, computed on
-    demand from ``jobs`` and ``tasks.agents`` rather than stored, since it is exactly what
-    ``dispatch_ready`` already would not find ready."""
-    cur = await conn.execute(_PROCESSED_INDEXES, (plan.plan_uuid,))
-    by_index = {index: (passed, last_attempt) for index, passed, last_attempt in await cur.fetchall()}
+    """Indexes nothing will move on without the requester (``needs_requester`` in plan task O6's own
+    words): the newest attempt did not pass and no retry follows it (the attempt cap or the requester's
+    agent list is exhausted), or the newest attempt's dispatch was given up before the gateway locked it.
+    Computed on demand from ``task_dispatches``, ``jobs``, the outbox and ``tasks.agents`` rather than stored.
+    An attempt still being delivered, waiting on its escrow, or running is in flight, not stuck."""
+    cur = await conn.execute(_DISPATCHES, (plan.plan_uuid,))
+    by_index: dict[int, list[_Dispatch]] = {}
+    for index, attempt, has_job, processed, holds, given_up in await cur.fetchall():
+        by_index.setdefault(index, []).append(_Dispatch(attempt, has_job, processed, holds, given_up))
     stuck: list[int] = []
     for task in plan.tasks:
-        state = by_index.get(task.draft.index)
-        if state is None:
-            continue  # never dispatched, or still in flight
-        passed, last_attempt = state
-        if not passed and _next_agent(task, int(last_attempt), settings.max_attempts) is None:
+        sent = by_index.get(task.draft.index)
+        if not sent or any(d.holds for d in sent):
+            continue  # never dispatched, or passed
+        newest = max(sent, key=lambda d: d.attempt)
+        if not newest.has_job:
+            if newest.given_up:
+                stuck.append(task.draft.index)
+            continue
+        if newest.processed and _next_agent(task, newest.attempt, settings.max_attempts) is None:
             stuck.append(task.draft.index)
     return stuck
+
+
+async def next_attempt(conn: AsyncConnection[TupleRow], plan: StoredPlan, index: int) -> int:
+    cur = await conn.execute(
+        'SELECT coalesce(max(attempt), 0) + 1 FROM task_dispatches WHERE plan_uuid = %s AND "index" = %s',
+        (plan.plan_uuid, index),
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+async def retry(
+    conn: AsyncConnection[TupleRow], plan: StoredPlan, index: int, agent_id: str, settings: Settings
+) -> str:
+    """The requester sends a stuck index to one more agent. The agent takes slot ``attempt`` of
+    ``tasks.agents`` (any later pick a given-up dispatch never reached is dropped), so attempt ``n`` keeps
+    naming ``agents[n - 1]`` as everywhere else. It is paid from the index's own escrow, which comes back to
+    the plan when the failed attempt's money is returned (the gateway holds the dispatch until then). The
+    caller checks the index is stuck and the agent exists."""
+    attempt = await next_attempt(conn, plan, index)
+    await conn.execute(
+        "UPDATE tasks SET agents = coalesce(agents[1:%s], ARRAY[]::text[]) || ARRAY[%s::text]"
+        ' WHERE plan_uuid = %s AND "index" = %s',
+        (attempt - 1, agent_id, plan.plan_uuid, index),
+    )
+    return await dispatch.dispatch_task(conn, plan, index, attempt, agent_id, settings)
 
 
 async def abandon(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: Settings) -> None:
@@ -175,6 +225,14 @@ async def abandon(conn: AsyncConnection[TupleRow], plan: StoredPlan, settings: S
         "UPDATE plans SET state = 'closed', updated_at = now() WHERE plan_uuid = %s"
         " AND state NOT IN ('closed', 'done')",
         (plan.plan_uuid,),
+    )
+    # An attempt not yet sent to the gateway must not lock money after the requester gave up, and a retry
+    # waiting on its escrow would otherwise hold `plan.closed` back for up to half an hour.
+    await conn.execute(
+        "UPDATE outbox SET failed_at = now(), last_error = 'the requester closed the plan first'"
+        " WHERE plan_id = %s AND type = 'task.dispatch_requested'"
+        " AND delivered_at IS NULL AND failed_at IS NULL",
+        (plan.plan_id,),
     )
     await enqueue(
         conn,
