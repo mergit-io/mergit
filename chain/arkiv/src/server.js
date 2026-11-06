@@ -22,7 +22,24 @@ const TOKEN = process.env.ARKIV_SIDECAR_TOKEN;
 if (!PRIVATE_KEY) throw new Error("ARKIV_PRIVATE_KEY is required");
 if (!TOKEN) throw new Error("ARKIV_SIDECAR_TOKEN is required");
 
-const account = privateKeyToAccount(PRIVATE_KEY);
+// MetaMask's "Show private key" exports 64 hex characters without the 0x prefix viem requires; the
+// first live deploy crash-looped on exactly that. Accept either form, and say clearly what is wrong
+// with anything else instead of dying on viem's own error.
+const key = PRIVATE_KEY.trim().startsWith("0x") ? PRIVATE_KEY.trim() : `0x${PRIVATE_KEY.trim()}`;
+if (!/^0x[0-9a-fA-F]{64}$/.test(key)) {
+  throw new Error("ARKIV_PRIVATE_KEY must be 64 hex characters, with or without a 0x prefix");
+}
+const account = privateKeyToAccount(key);
+
+// u64 fields must arrive as decimal strings. A JSON number past 2^53 has already been rounded by
+// JSON.parse before this code sees it (a 62-bit seed landed on chain 15 off), and a wrong seed makes
+// the draw impossible to replay, so refuse it rather than store it.
+function u64Of(value, name) {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw new TypeError(`${name} must be a decimal string, got ${JSON.stringify(value)}`);
+  }
+  return u64(BigInt(value));
+}
 const walletClient = createWalletClient({
   account,
   chain: rabdi({ accessKey: ACCESS_KEY }),
@@ -80,27 +97,29 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  let creates;
   try {
-    const { txHash, createdEntities } = await enqueue(() =>
-      walletClient.executeBatch({
-        creates: decisions.map((d) => ({
-          schema: RoutingDecision,
-          values: {
-            planId: d.plan_id,
-            decisionId: u64(BigInt(d.decision_id)),
-            taskIndex: d.task_index,
-            category: d.category,
-            seed: u64(BigInt(d.seed)),
-            budgetMicros: u64(BigInt(d.budget_micros)),
-            decidedAt: d.decided_at,
-            body: new TextEncoder().encode(
-              JSON.stringify({ candidates: d.candidates, picks: d.picks }),
-            ),
-          },
-          expiration: ExpirationTime.fromDays(ttlDays ?? 30),
-        })),
-      }),
-    );
+    creates = decisions.map((d) => ({
+      schema: RoutingDecision,
+      values: {
+        planId: d.plan_id,
+        decisionId: u64Of(d.decision_id, "decision_id"),
+        taskIndex: d.task_index,
+        category: d.category,
+        seed: u64Of(d.seed, "seed"),
+        budgetMicros: u64Of(d.budget_micros, "budget_micros"),
+        decidedAt: d.decided_at,
+        body: new TextEncoder().encode(JSON.stringify({ candidates: d.candidates, picks: d.picks })),
+      },
+      expiration: ExpirationTime.fromDays(ttlDays ?? 30),
+    }));
+  } catch (err) {
+    send(res, 400, { error: String(err?.message ?? err) });
+    return;
+  }
+
+  try {
+    const { txHash, createdEntities } = await enqueue(() => walletClient.executeBatch({ creates }));
     // `createdEntities` is already `Hex[]` (the SDK's own type), not objects with a `.key` — an
     // earlier version mapped `.key` off each string here, which silently produced `[null, ...]`.
     send(res, 200, { tx_hash: txHash, entity_keys: createdEntities });

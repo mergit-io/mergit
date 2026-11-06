@@ -109,11 +109,14 @@ class ArkivMirror:
             "decisions": [
                 {
                     "plan_id": plan_id,
-                    "decision_id": d.decision_id,
+                    # u64s go as decimal strings: the sidecar is Node, whose JSON.parse rounds integers past
+                    # 2^53 to the nearest double. A 62-bit seed came out of it 15 off on the live chain,
+                    # which breaks replaying the draw from the Arkiv copy.
+                    "decision_id": str(d.decision_id),
                     "task_index": d.task_index,
                     "category": d.category,
-                    "seed": d.seed,
-                    "budget_micros": d.budget_micros,
+                    "seed": str(d.seed),
+                    "budget_micros": str(d.budget_micros),
                     "decided_at": d.decided_at,
                     "candidates": d.candidates,
                     "picks": d.picks,
