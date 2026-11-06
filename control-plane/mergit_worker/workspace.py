@@ -242,9 +242,14 @@ class Workspace:
 
     def apply_patch(self, patch: str) -> None:
         """Apply a stored task patch onto the checkout and stage it. `git apply` refuses paths inside
-        `.git`, so a patch cannot plant hooks or config."""
+        `.git`, so a patch cannot plant hooks or config.
+
+        `--3way`: every stored patch is taken against the plan's base commit, so a dependent task's patch
+        carries its dependencies' changes again. A plain apply refuses that repeat once those changes are
+        in; a three-way merge sees the same change on both sides and takes it once. Two different changes
+        to the same lines still conflict and fail here."""
         _git(
-            [*self._base_args(), "apply", "--index", "--whitespace=nowarn", "-"],
+            [*self._base_args(), "apply", "--index", "--3way", "--whitespace=nowarn", "-"],
             _git_env(()),
             self._git_timeout_s,
             patch.encode(),

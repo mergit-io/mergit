@@ -252,6 +252,50 @@ def test_a_patch_that_does_not_apply_names_the_task_and_pushes_nothing(remotes: 
     assert out.strip() == ""
 
 
+def _patch_after(tmp_path: Path, name: str, files: dict[str, str]) -> str:
+    """What the worker stores for a task: `git diff --binary HEAD` of a checkout of the fixture repository
+    after `files` were written, the way `Workspace.diff_from_head` takes it."""
+    work = tmp_path / name
+    git(tmp_path, "clone", "-q", make_repo(tmp_path / f"{name}-origin"), str(work))
+    for path, text in files.items():
+        (work / path).write_text(text)
+    git(work, "add", "-N", "--", ".")
+    return git(work, "diff", "--binary", "HEAD")
+
+
+FIXED = "def refund(amount, fee):\n    return amount - fee\n"
+
+
+@respx.mock
+def test_a_dependent_tasks_patch_that_repeats_its_dependencys_change_still_combines(
+    remotes: Path, tmp_path: Path
+):
+    """A dependent task runs on top of its dependency's change, and its stored patch, taken against the base
+    commit, carries that change again. Applying both in order must not fail on the repeat."""
+    respx.post(f"{API}/repos/acme/widgets/pulls").mock(return_value=created())
+    fix = _patch_after(tmp_path, "t0", {"payments/refund.py": FIXED})
+    both = {"payments/refund.py": FIXED, "docs/notes.md": "notes\nmore\n"}
+    fix_and_docs = _patch_after(tmp_path, "t1", both)
+    result = opener(remotes, tmp_path).open(
+        spec(tasks=[PrTask(0, "0x" + "a" * 64, "fix", fix), PrTask(1, "0x" + "b" * 64, "docs", fix_and_docs)])
+    )
+    bare = remotes / "acme" / "widgets.git"
+    assert git(bare, "show", f"{result.commit_sha}:payments/refund.py") == FIXED
+    assert git(bare, "show", f"{result.commit_sha}:docs/notes.md") == "notes\nmore\n"
+
+
+@respx.mock
+def test_two_tasks_that_change_the_same_line_differently_still_refuse(remotes: Path, tmp_path: Path):
+    route = respx.post(f"{API}/repos/acme/widgets/pulls").mock(return_value=created())
+    one = _patch_after(tmp_path, "t0", {"payments/refund.py": FIXED})
+    other = _patch_after(tmp_path, "t1", {"payments/refund.py": "def refund(amount, fee):\n    return 0\n"})
+    with pytest.raises(GitHubError, match="task 1 does not apply"):
+        opener(remotes, tmp_path).open(
+            spec(tasks=[PrTask(0, "0x" + "a" * 64, "fix", one), PrTask(1, "0x" + "b" * 64, "zero", other)])
+        )
+    assert not route.called
+
+
 @respx.mock
 def test_patch_cannot_write_into_dot_git(remotes: Path, tmp_path: Path):
     respx.post(f"{API}/repos/acme/widgets/pulls").mock(return_value=created())
