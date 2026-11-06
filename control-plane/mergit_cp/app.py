@@ -24,6 +24,7 @@ from . import (
     routes_runs,
     wallet_interest,
 )
+from .arkiv_mirror import ArkivMirror
 from .config import Settings
 from .db import migrate, open_pool
 from .events import EventDeliverer
@@ -46,6 +47,7 @@ def create_app(
     process_outcomes: bool = True,
     update_reputation: bool = True,
     mailer: otp.Mailer | None = None,
+    arkiv: ArkivMirror | None = None,
 ) -> FastAPI:
     """``deliver_events=False`` leaves events in the outbox, and ``process_outcomes=False`` leaves
     finished jobs unprocessed, for tests that want to inspect or drive that state directly."""
@@ -69,6 +71,18 @@ def create_app(
         app.state.costs = PgCostSink(pool, prices)
         app.state.broadcaster = PlanBroadcaster()
         app.state.mailer = mailer or (otp.SmtpMailer(settings) if settings.email_enabled else None)
+        app.state.arkiv = arkiv or (
+            ArkivMirror(
+                settings.arkiv_rpc_url,  # type: ignore[arg-type]  # non-None: arkiv_enabled checked it
+                settings.arkiv_access_key.get_secret_value() if settings.arkiv_access_key else None,
+                settings.arkiv_owner_address,  # type: ignore[arg-type]  # non-None: arkiv_enabled checked it
+                settings.arkiv_sidecar_url,
+                settings.arkiv_sidecar_token.get_secret_value() if settings.arkiv_sidecar_token else None,
+                settings.arkiv_entity_ttl_days,
+            )
+            if settings.arkiv_enabled
+            else None
+        )
 
         stop = asyncio.Event()
         deliverer = EventDeliverer(
@@ -95,6 +109,8 @@ def create_app(
                 if task is not None:
                     with suppress(asyncio.CancelledError):
                         await task
+            if app.state.arkiv is not None:
+                await app.state.arkiv.aclose()
             await deliverer.aclose()
             await costs.aclose()
             app.state.pr_store.close()

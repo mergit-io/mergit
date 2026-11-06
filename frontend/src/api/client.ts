@@ -5,6 +5,7 @@ import type {
   AgentInfo,
   ApproveRequest,
   ApproveResponse,
+  ArkivSuggestions,
   NewPlanRequest,
   Plan,
   PlanDetail,
@@ -122,6 +123,11 @@ export const getReputation = () => request<ReputationResponse>("GET", "/v0/agent
 /** Advice for a draft plan's agent picks. `explore` asks for a seeded Thompson draw instead of the greedy ranking. */
 export const getSuggestions = (planUuid: string, explore: boolean) =>
   request<Suggestions>("GET", `${planPath(planUuid)}/suggestions${explore ? "?explore=true" : ""}`);
+
+/** The same exploring suggestions, read back from Arkiv's Rabdi testnet rather than from Postgres
+ * (ETHGlobal Mumbai's "Build on Arkiv" track). `enabled: false` when the server has no Arkiv configured. */
+export const getArkivSuggestions = (planUuid: string) =>
+  request<ArkivSuggestions>("GET", `${planPath(planUuid)}/arkiv-suggestions`);
 
 /** Server-Sent Events for one plan. Open with `withCredentials: true`, or the session cookie is not sent. */
 export const planEventsUrl = (planUuid: string) => `${base()}${planPath(planUuid)}/events`;

@@ -125,6 +125,33 @@ after the run.
 Documentation lived in a separate `mergit-docs` repository until October 2026 and now lives here
 under `docs/`.
 
+## ETHGlobal Mumbai — Arkiv track
+
+Continuity Track pick: Arkiv's ["Build on Arkiv (existing projects)"](https://ethglobal.com/events/mumbai/prizes/arkiv).
+Mergit's router already picks agents for a task and, on an exploring call, records the draw in its
+own Postgres (`routing_decisions`, pre-existing); what's new at this event is a second, public copy
+of each exploring decision written to Arkiv's Rabdi testnet and read back through a new endpoint.
+Full writeup: [`arkiv/schema.md`](arkiv/schema.md), [`arkiv/why-arkiv.md`](arkiv/why-arkiv.md),
+[`arkiv/how-you-use-arkiv.md`](arkiv/how-you-use-arkiv.md), [`arkiv/reach.md`](arkiv/reach.md),
+[`arkiv/friction.md`](arkiv/friction.md).
+
+- **Service wallet (writes every mirrored entity):** `<TODO: fill in once a funded
+  ARKIV_PRIVATE_KEY is set on chain/arkiv/'s deploy — see chain/arkiv/README.md>`
+- **One query anyone can run**, against `https://rpc.rabdi.db-chain.testnet.arkiv.network`
+  (`arkiv_query`) or through the hosted app's `GET /v0/plans/{uuid}/arkiv-suggestions`:
+  ```
+  arkiv.schema = str('mergit.routing_decision') AND planId = str('<a real plan_id>') AND $owner = addr(<service wallet address above>)
+  ```
+- **In the app:** the live run screen's "Suggested agents" panel, after asking for an exploring
+  suggestion, shows a "View on Arkiv" button that reads the mirrored entities back from Arkiv live
+  (`frontend/src/screens/live/run/SuggestAgents.tsx`).
+- **Writes go through a small sidecar** (`chain/arkiv/`, Node, the official JS SDK), not the Python
+  control plane directly — the only Python Arkiv SDK targets a different, incompatible network,
+  confirmed live (`arkiv/friction.md`). Reads stay plain Python (httpx against `arkiv_query`).
+- **AI disclosure:** this track's implementation (`mergit_cp/arkiv_mirror.py`, the
+  `/arkiv-suggestions` route, the frontend panel, the `arkiv/*.md` files, this section) was written
+  with AI assistance (Claude Code), reviewed and tested by the team before merging.
+
 ## Repository layout
 
 | Path | What | Language |
@@ -133,7 +160,7 @@ under `docs/`.
 | `runtime/` | Receipt builder (`receipt/`) and its Python binding (`py/`, module `mergit_receipt`) | Rust |
 | `verifier/` | Receipt verifier library and `mergit-verify` CLI; `wasm/` builds it for the browser. Never imports `runtime/` | Rust |
 | `evidence/` | Receipt store (`store/`) and validator (`validator/`) | Rust |
-| `chain/` | Contract client (`client/`), chain gateway with payment path and free credits (`gateway/`), generated ABIs (`abi/`) | Rust |
+| `chain/` | Contract client (`client/`), chain gateway with payment path and free credits (`gateway/`), generated ABIs (`abi/`); the Arkiv write sidecar (`arkiv/`) is Node/JS, not Rust | Rust |
 | `control-plane/` | Planner, task graph, approvals, router, agent workers | Python |
 | `frontend/` | Web app | TypeScript, React |
 | `deploy/` | Docker images, local compose, hosting | |
