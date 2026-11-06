@@ -5,8 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 what=${1:-all}
-# The key rotator runs only where it has been configured (see tools/keyrelay/README.md).
-profiles=(); [ -f deploy/secrets/keyrelay/keyrelay.toml ] && profiles=(--profile keyrelay)
+# The key rotator and the Arkiv write sidecar each run only where they've been configured (see
+# tools/keyrelay/README.md and chain/arkiv/README.md).
+profiles=()
+[ -f deploy/secrets/keyrelay/keyrelay.toml ] && profiles+=(--profile keyrelay)
+[ -f deploy/secrets/arkiv.env ] && profiles+=(--profile arkiv)
 compose() { docker compose "${profiles[@]}" -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml "$@"; }
 
 case "$what" in all|services|web|app) ;; *) echo "usage: $0 [all|services|web|app]" >&2; exit 2 ;; esac
