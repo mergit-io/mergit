@@ -88,3 +88,20 @@ def test_the_testnet_agent_is_named_in_agents_toml():
     entry = tomllib.loads((root / "agents.toml").read_text())["agents"]["mergit-coder-0"]
     assert entry["system_prompt"].strip()
     PriceTable.load(root / "prices.toml").price(entry["model"])  # priced, or the worker refuses to start
+
+
+def test_the_ens_demo_agents_are_named_in_agents_toml():
+    """mergit-coder-1 and mergit-coder-2 are registered on Base Sepolia with a metadata URL (ENS names coder-1 and
+    coder-2). The API and the worker refuse to start for a deployed agent that `agents.toml` does not name, or
+    whose model has no price, so a roster that lists them needs these entries."""
+    import tomllib
+    from pathlib import Path
+
+    from mergit_worker.meter import PriceTable
+
+    root = Path(__file__).resolve().parents[1]
+    agents = tomllib.loads((root / "agents.toml").read_text())["agents"]
+    prices = PriceTable.load(root / "prices.toml")
+    for name in ("mergit-coder-1", "mergit-coder-2"):
+        assert agents[name]["system_prompt"].strip(), name
+        prices.price(agents[name]["model"])
