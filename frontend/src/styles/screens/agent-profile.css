@@ -1,0 +1,108 @@
+/* The public agent profile (/agents/<label>): outside the dashboard shell, so it has its own bar and column. */
+.ap {
+  min-height: 100vh;
+  overflow-x: clip;
+}
+.ap-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 24px 0;
+}
+.ap-main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+.ap-title {
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ap-owners {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+.ap-owners dd {
+  margin: 0;
+}
+.ap-scroll {
+  overflow-x: auto;
+}
+@media (max-width: 760px) {
+  .ap-bar {
+    padding: 16px 16px 0;
+  }
+  .ap-main {
+    padding: 28px 16px 64px;
+  }
+  .ap-title {
+    font-size: 22px;
+  }
+  .ap-owners {
+    grid-template-columns: 1fr;
+  }
+}
+.ap-badges {
+  flex-wrap: wrap;
+}
+
+/* ENS records: fixed columns so the record names get room and every row lines up at the top. */
+.ap-records {
+  table-layout: fixed;
+}
+.ap-col-key {
+  width: 34%;
+}
+.ap-col-writer {
+  width: 140px;
+}
+.ap-records td {
+  vertical-align: top;
+}
+.ap-params {
+  display: block;
+  margin-top: 4px;
+  word-break: break-all;
+}
+.ap-value {
+  overflow-wrap: anywhere;
+}
+.ap-writer {
+  white-space: nowrap;
+}
+/* On a phone each record is a small stack (name, value, writer) instead of three squeezed columns. */
+@media (max-width: 760px) {
+  .ap-records,
+  .ap-records tbody,
+  .ap-records tr,
+  .ap-records td {
+    display: block;
+    width: 100%;
+  }
+  .ap-records colgroup,
+  .ap-records thead {
+    display: none;
+  }
+  .ap-records tr {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .ap-records tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .ap-records td {
+    padding: 4px 0;
+    border-bottom: 0;
+  }
+  .ap-records td[data-label="Written by"]::before {
+    content: "Written by ";
+    color: var(--ink3);
+    font-size: 12px;
+  }
+}

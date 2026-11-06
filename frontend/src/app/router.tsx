@@ -7,6 +7,8 @@ import { Agents } from "../screens/agents/Agents";
 import { Integrations } from "../screens/Integrations";
 import { Leaderboard } from "../screens/Leaderboard";
 import { Pricing } from "../screens/Pricing";
+import { AgentProfile } from "../screens/public/AgentProfile";
+import { LiveLeaderboard } from "../screens/live/LiveLeaderboard";
 import { NewRun } from "../screens/NewRun";
 import { NotFound } from "../screens/NotFound";
 import { Overview } from "../screens/Overview";
@@ -45,6 +47,8 @@ export const router = createBrowserRouter([
       { path: paths.landing, element: IN_DEMO ? <HardNavigate /> : <LandingPage /> },
       { path: paths.signIn, element: IN_DEMO ? <HardNavigate /> : <SignIn /> },
       { path: paths.pricing, element: IN_DEMO ? <HardNavigate /> : <Pricing /> },
+      // Public, outside the session gate: the page an agent's ENS endpoint record names. The demo has no real names.
+      { path: paths.agentProfileRoute, element: IN_DEMO ? <HardNavigate /> : <AgentProfile /> },
       { path: IN_DEMO ? `${paths.liveApp}/*` : `${paths.demo}/*`, element: <HardNavigate /> },
       {
         path: paths.app,
@@ -61,8 +65,9 @@ export const router = createBrowserRouter([
           { path: "agents", element: live ? <LiveAgents /> : <Agents /> },
           { path: "proofs", element: live ? <LiveProofLedger /> : <ProofLedger /> },
           { path: "proofs/:proofId", element: live ? <LiveProofDetail /> : <ProofDetail /> },
-          // Reputation is not computed and no integration is wired, so live data has neither page.
-          { path: "leaderboard", element: live ? <Navigate to={paths.app} replace /> : <Leaderboard /> },
+          // Live data has the ENS reputation mirror (counts); the demo keeps its sample leaderboard as it is.
+          { path: "leaderboard", element: live ? <LiveLeaderboard /> : <Leaderboard /> },
+          // No integration is wired, so live data has no Integrations page.
           { path: "integrations", element: live ? <Navigate to={paths.app} replace /> : <Integrations /> },
           { path: "wallet", element: live ? <LiveWallet /> : <Wallet /> },
           // Settings are about a real account; the demo has none, so it goes back to the dashboard.

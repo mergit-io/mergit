@@ -30,13 +30,18 @@ test("the shell shows the signed-in wallet and none of the demo identity", async
 test("pages with no real data behind them are not offered", async ({ page }) => {
   await page.goto("/app");
   const nav = page.getByRole("navigation", { name: "Primary" });
-  for (const label of ["Overview", "Runs", "Agents", "Proofs"]) {
+  for (const label of ["Overview", "Runs", "Agents", "Proofs", "Leaderboard"]) {
     await expect(nav.getByRole("link", { name: label })).toBeVisible();
   }
-  await expect(nav.getByRole("link", { name: "Leaderboard" })).toHaveCount(0);
   await expect(nav.getByRole("link", { name: "Integrations" })).toHaveCount(0);
-  await page.goto("/app/leaderboard");
+  await page.goto("/app/integrations");
   await expect(page).toHaveURL(/\/app$/);
+});
+
+test("the leaderboard on live data is the ENS mirror, labelled as counts and not a score", async ({ page }) => {
+  await page.goto("/app/leaderboard");
+  await expect(page).toHaveURL(/\/app\/leaderboard$/);
+  await expect(page.getByTestId("mirror-label")).toContainText("not a score");
 });
 
 test("the overview shows real credits, balances and runs", async ({ page }) => {
