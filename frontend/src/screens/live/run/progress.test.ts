@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Attempt, MoneyEvent, PlanTask } from "../../../api/types";
-import { attemptOutcome, creditsDenial, stuckTasks, taskProgress, verdictFor } from "./progress";
+import { attemptOutcome, closedBeforeStart, creditsDenial, stuckTasks, taskProgress, verdictFor } from "./progress";
 
 const task = (agents: string[] | null = ["1", "2"]): PlanTask => ({
   index: 0,
@@ -80,6 +80,22 @@ describe("stuckTasks", () => {
     expect(stuckTasks([task(["1"]), other], [failed(1), { ...failed(1), index: 1, task_id: "0xb" }])).toEqual([
       task(["1"]),
     ]);
+  });
+});
+
+describe("closedBeforeStart", () => {
+  const second = { ...task(["1"]), index: 1 };
+
+  it("is true while every task still waits and nothing was dispatched", () => {
+    expect(closedBeforeStart([task(), second], [])).toBe(true);
+  });
+
+  it("is false as soon as any task was dispatched, however it ended", () => {
+    expect(closedBeforeStart([task(), second], [attempt(1, { status: "queued" })])).toBe(false);
+    expect(closedBeforeStart([task(), second], [failed(1)])).toBe(false);
+    expect(
+      closedBeforeStart([task(), second], [{ ...attempt(1, { status: "done", phi_holds: true }), index: 1 }]),
+    ).toBe(false);
   });
 });
 

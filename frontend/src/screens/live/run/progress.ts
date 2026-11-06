@@ -45,6 +45,11 @@ export function stuckTasks(tasks: PlanTask[], attempts: Attempt[]): PlanTask[] {
   return tasks.filter((t) => taskProgress(t, attempts).kind === "stuck");
 }
 
+/** Nothing was ever dispatched: every task still waits. A closed plan like this never funded, or was closed first. */
+export function closedBeforeStart(tasks: PlanTask[], attempts: Attempt[]): boolean {
+  return tasks.every((t) => taskProgress(t, attempts).kind === "waiting");
+}
+
 export type Verdict = "pass" | "fail" | "invalid";
 
 /** The audit verdict recorded on chain for one attempt, if any. */

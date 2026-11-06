@@ -1,73 +1,34 @@
 import { useEffect, useState, type SyntheticEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { paths } from "../../../app/paths";
-import { createPlan } from "../../../api/client";
+import { createPlan, getPlan } from "../../../api/client";
 import { planKey } from "../../../api/idempotency";
-import { parseRepo, repoUrl } from "../../../api/github";
+import { parseRepo } from "../../../api/github";
 import { useAgents } from "../../../api/useAgents";
 import { fetchProviders, oauthStartUrl } from "../../../auth/accountApi";
 import { isTrialSession } from "../../../auth/account";
 import { useAuth } from "../../../auth/context";
-import { creditBudget, creditProblem, MAX_BUDGET } from "../../../chain/creditLimits";
+import { creditBudget, creditProblem } from "../../../chain/creditLimits";
 import { formatUsdc, parseUsdc, usdcText } from "../../../chain/funding";
 import { useCredits } from "../../../chain/useCredits";
 import { Icon, type IconName } from "../../../components/Icon";
 import { Combo, type ComboOption } from "./Combo";
+import { fieldProblems, GOAL_LIMIT, INITIAL, KINDS, STARTERS, toRepoUrl, type Fields } from "./newRunForm";
 import { Problems } from "./Problems";
+import {
+  applyPrefill,
+  canStartAgain,
+  filledMessage,
+  loadFailureMessage,
+  prefillFromPlan,
+  sourcePlanId,
+} from "./startAgain";
 import { useBranches, useRepoList } from "./useGitHub";
 import { useSubmit } from "./useSubmit";
 import "../../../styles/screens/live-run.css";
 import "../../../styles/screens/live-new-run.css";
 
-const GOAL_LIMIT = 8000;
 const LIST_LIMIT = 8;
-
-/** Kinds of work. The planner is told the kind (its prompt names the task category); the API takes any slug. */
-const KINDS: { value: string; label: string; icon: IconName; placeholder: string }[] = [
-  {
-    value: "test-repair",
-    label: "Fix failing tests",
-    icon: "flask",
-    placeholder: "The refund test in payments/ passes again",
-  },
-  { value: "bug-fix", label: "Fix a bug", icon: "bug", placeholder: "Expired sessions no longer log users out" },
-  {
-    value: "security",
-    label: "Security",
-    icon: "shield",
-    placeholder: "The upload endpoint rejects paths outside the uploads folder",
-  },
-  {
-    value: "performance",
-    label: "Performance",
-    icon: "bolt",
-    placeholder: "The search endpoint answers in under 200 ms on the test data",
-  },
-  { value: "refactor", label: "Refactor", icon: "wrench", placeholder: "The billing module has no circular imports" },
-  { value: "docs", label: "Docs", icon: "book", placeholder: "Every public function in api/ has a docstring" },
-];
-
-/** Starting points: each fills the goal with a sentence to finish, and picks its kind of work. */
-const STARTERS: { kind: string; title: string; goal: string }[] = [
-  {
-    kind: "test-repair",
-    title: "Make a failing test pass",
-    goal: "The failing test in <path to the test> passes again, without weakening the test.",
-  },
-  {
-    kind: "bug-fix",
-    title: "Fix a bug, with a regression test",
-    goal: "<What goes wrong> no longer happens, and a regression test covers it.",
-  },
-  {
-    kind: "security",
-    title: "Close a security hole",
-    goal: "<Code path> no longer allows <the problem>, and a test proves it.",
-  },
-];
-
-/** The <…> blanks in the starting points, which must be filled in before a plan is drafted. */
-const PLACEHOLDERS = STARTERS.flatMap((st) => st.goal.match(/<[^<>]+>/g) ?? []);
 
 /** How a run goes, as the run page will show it. */
 const STEPS: { icon: IconName; label: string }[] = [
@@ -78,30 +39,6 @@ const STEPS: { icon: IconName; label: string }[] = [
   { icon: "proofs", label: "Every finished task gets a receipt on chain" },
   { icon: "github", label: "You approve the pull request" },
 ];
-
-type Fields = { goal: string; repo: string; ref: string; budget: string; category: string };
-
-const INITIAL: Fields = { goal: "", repo: "", ref: "main", budget: "5", category: "test-repair" };
-
-/** Problems the form can catch itself; the API checks the repository, branch and category again. */
-function fieldProblems(f: Fields): string[] {
-  const problems: string[] = [];
-  if (!f.goal.trim()) problems.push("Describe the goal.");
-  else if (PLACEHOLDERS.some((ph) => f.goal.includes(ph)))
-    problems.push("Replace the <…> parts of the goal with your own words.");
-  if (!f.repo.trim()) problems.push("Choose a repository, or type its owner/name or https URL.");
-  if (!f.ref.trim()) problems.push("Give the branch, tag or commit to start from.");
-  const budget = parseUsdc(f.budget);
-  if (budget === null || budget <= 0n) problems.push("The budget must be a positive USDC amount.");
-  else if (budget > MAX_BUDGET) problems.push(`The budget can be at most ${formatUsdc(MAX_BUDGET)} USDC for one plan.`);
-  return problems;
-}
-
-/** What the API takes as the repository: a typed owner/name or GitHub URL becomes its https URL. */
-const toRepoUrl = (typed: string) => {
-  const parsed = parseRepo(typed);
-  return parsed ? repoUrl(parsed) : typed.trim();
-};
 
 /** New run on live data, laid out like a coding agent's composer: repository and branch, the goal, the kind of work. */
 export function LiveNewRun() {
@@ -142,6 +79,39 @@ export function LiveNewRun() {
   const { branches, defaultBranch, error: branchesError, loading: branchesLoading } = useBranches(chosen);
   // A repository typed rather than picked starts on its own default branch, until a branch is chosen by hand.
   const [refTouched, setRefTouched] = useState(false);
+  // "Start again": an earlier plan named in the URL only fills fields that are still empty. It is read, never
+  // changed, and the form is still submitted, drafted, reviewed, approved and funded like any other.
+  const [searchParams] = useSearchParams();
+  const from = sourcePlanId(searchParams);
+  const [prefillNote, setPrefillNote] = useState<{ from: string; text: string } | null>(null);
+  const prefillLoading = from !== null && prefillNote?.from !== from;
+
+  useEffect(() => {
+    if (from === null) return;
+    let live = true;
+    getPlan(from).then(
+      (earlier) => {
+        if (!live) return;
+        if (!canStartAgain(earlier.state)) {
+          setPrefillNote({ from, text: "That earlier plan is still active, so the form was not filled in from it." });
+          return;
+        }
+        const prefill = prefillFromPlan(earlier);
+        setFields((f) => applyPrefill(f, prefill));
+        // A branch and budget taken from the earlier plan are not replaced by the repository's default or the credit cap.
+        if (prefill.ref !== undefined) setRefTouched(true);
+        if (prefill.budget !== undefined) setBudgetTouched(true);
+        setPrefillNote({ from, text: filledMessage(prefill) });
+      },
+      (error: unknown) => {
+        if (live) setPrefillNote({ from, text: loadFailureMessage(error) });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [from]);
+
   const ref = refTouched ? fields.ref : (defaultBranch ?? fields.ref);
   const kind = KINDS.find((k) => k.value === fields.category) ?? KINDS[0];
 
@@ -345,6 +315,11 @@ export function LiveNewRun() {
         </p>
       )}
       <Problems items={problems} />
+      {from !== null && (
+        <p className="small c2 nr-center" role="status">
+          {prefillLoading ? "Loading your earlier plan…" : prefillNote?.text}
+        </p>
+      )}
 
       <fieldset className="nr-kinds">
         <legend className="sr-only">Kind of work</legend>
