@@ -87,11 +87,15 @@ export function Agents() {
         <ul className="ag-team-row">
           {team.map((m) => (
             <li key={m.identity} className={`ag-member${m.isNew ? " new" : ""}`}>
-              <AgentMark agent={m} size={34} />
+              <AgentMark agent={m} size={28} />
               <span className="col min0">
-                <span className="strong ellipsis">{m.name}</span>
+                <span className="strong ellipsis ag-member-name" title={m.name}>
+                  {m.name}
+                </span>
                 <span className="mono-s ag-member-id">
-                  ID {identityLabel(m.identity)} · {m.isNew ? "new" : `D ${m.density}`}
+                  {/* "ID" is read aloud but not drawn, so the ID and the density fit one line in a narrow card. */}
+                  <span className="sr-only">ID </span>
+                  {identityLabel(m.identity)} · {m.isNew ? "new" : `D ${m.density}`}
                 </span>
               </span>
             </li>
@@ -118,7 +122,7 @@ export function Agents() {
           </h2>
           <Segmented options={REGISTRY_CATEGORIES} value={category} onChange={setCategory} label="Registry category" />
           <span className="grow" />
-          <span className="row g10 small c2">
+          <span className="row g10 small c2 ag-verified">
             Verified only
             <Switch checked={verifiedOnly} label="Verified only" onChange={setVerifiedOnly} />
           </span>
