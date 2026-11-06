@@ -70,7 +70,9 @@ export function TaskFlow({
   const width = Math.max(measured, widest * (NODE_W + GAP_X) - GAP_X + 2 * SIDE);
   const height = TOP * 2 + Math.max(1, rows.length) * ROW_H - (ROW_H - NODE_H);
   const at = place(rows, width);
-  const progress = new Map(detail.tasks.map((t) => [t.index, taskProgress(t, detail.attempts)]));
+  const progress = new Map(
+    detail.tasks.map((t) => [t.index, taskProgress(t, detail.attempts, detail.pending_dispatches ?? [])]),
+  );
   const draft = detail.state === "draft";
 
   // The graph repeats the task list beside it, so assistive tech gets one summary instead of every node again.

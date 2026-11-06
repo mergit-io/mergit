@@ -5,7 +5,8 @@ state change it reports was committed. ``EventDeliverer`` sends pending events w
 ``Idempotency-Key``. 200 is delivered; another 4xx means the gateway rejected the event for good; 5xx and
 transport errors are retried with backoff until the event's retry window ends, then it is marked failed
 and logged as an error for an operator. Rows are claimed with SKIP LOCKED, so several API instances can
-deliver without sending one event twice, and an event waits while an earlier event of its plan is pending.
+deliver without sending one event twice, and an event waits while an earlier event of its plan is pending,
+unless that earlier event is a retry's dispatch.
 """
 
 import asyncio
@@ -58,6 +59,9 @@ WHERE delivered_at IS NULL AND failed_at IS NULL AND next_at <= now()
   AND NOT EXISTS (
       SELECT 1 FROM outbox e
       WHERE e.plan_id = o.plan_id AND e.id < o.id AND e.delivered_at IS NULL AND e.failed_at IS NULL
+        -- A retry's dispatch can wait half an hour for its previous attempt's payment
+        -- (dispatch.RETRY_WINDOW_S), and nothing sent after it depends on it, so it holds up nothing.
+        AND NOT (e.type = 'task.dispatch_requested' AND (e.body->'payload'->>'attempt')::int > 1)
   )
 ORDER BY id
 LIMIT %s

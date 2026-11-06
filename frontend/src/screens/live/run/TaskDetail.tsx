@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { paths } from "../../../app/paths";
 import { agentName } from "../../../api/useAgents";
 import { EnsIdentity } from "../../../components/EnsIdentity";
-import type { AgentInfo, Attempt, MoneyEvent, PlanTask, StepEvent } from "../../../api/types";
+import type { AgentInfo, Attempt, MoneyEvent, PendingDispatch, PlanTask, StepEvent } from "../../../api/types";
 import { formatUsdc } from "../../../chain/funding";
 import { OutcomeBadge, ProgressBadge, VerdictBadge } from "./badges";
 import { phiCommand } from "./format";
@@ -16,10 +16,20 @@ function progressNote(progress: TaskProgress, agents: AgentInfo[] | null): strin
       return `${agentName(agents, progress.attempt.agent_id)} is working on attempt ${String(progress.attempt.attempt)}.`;
     case "passed":
       return "Its check held. The task is done.";
-    case "retrying":
-      return `Attempt ${String(progress.failed.attempt)} did not pass its check. Retrying with ${agentName(agents, progress.nextAgent)}.`;
+    case "retrying": {
+      const failed = `Attempt ${String(progress.failed.attempt)} did not pass its check.`;
+      const next = agentName(agents, progress.nextAgent);
+      if (progress.pending?.state === "escrowing") return `${failed} Locking the payment for ${next}'s attempt.`;
+      if (progress.pending?.last_error)
+        // The gateway holds a retry until the failed attempt's payment is back in the plan. An attempt that
+        // ended without a receipt only gets it back at its deadline, 30 minutes after it was dispatched.
+        return `${failed} ${next} starts once attempt ${String(progress.failed.attempt)}'s payment is back in the plan, up to 30 minutes after that attempt began.`;
+      return `${failed} Retrying with ${next}.`;
+    }
     case "stuck":
-      return "Every agent you picked has tried this task and its check never held.";
+      return progress.givenUp
+        ? `Attempt ${String(progress.givenUp.attempt)} could not be started${progress.givenUp.last_error ? `: ${progress.givenUp.last_error}` : "."}`
+        : "Every agent you picked has tried this task and its check never held.";
   }
 }
 
@@ -46,17 +56,19 @@ function AttemptMeta({ steps, verdict, receipt }: { steps: number; verdict: Verd
 export function TaskDetail({
   task,
   attempts,
+  pending,
   money,
   steps,
   agents,
 }: {
   task: PlanTask;
   attempts: Attempt[];
+  pending: PendingDispatch[];
   money: MoneyEvent[];
   steps: StepEvent[];
   agents: AgentInfo[] | null;
 }) {
-  const progress = taskProgress(task, attempts);
+  const progress = taskProgress(task, attempts, pending);
   const mine = attemptsOf(task.index, attempts);
   const stepCount = (taskId: string) => steps.filter((s) => s.task_id === taskId).length;
 

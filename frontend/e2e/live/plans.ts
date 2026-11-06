@@ -52,6 +52,14 @@ export type FakePlan = {
   tasks: FakeTask[];
   attempts: FakeAttempt[];
   money_events: Array<{ type: string; at: string; payload: Record<string, unknown> }>;
+  pending_dispatches?: Array<{
+    index: number;
+    attempt: number;
+    agent_id: string;
+    state: "sending" | "escrowing" | "given_up";
+    last_error: string | null;
+    give_up_at: string | null;
+  }>;
 };
 
 /** One Server-Sent Event the fake stream sends, as the control plane names them. */
@@ -318,6 +326,28 @@ export async function mockPlanApi(
       if (prState === "none") return json(route, { detail: "no pull request has been requested" }, 404);
       if (prState === "queued" || prState === "running") prState = prPolls.shift() ?? "done";
       return json(route, prBody());
+    }
+    if (method === "POST" && action === "tasks" && path.endsWith("/retry")) {
+      // POST /v0/plans/{uuid}/tasks/{index}/retry: the next attempt goes to the gateway, which holds it until
+      // the failed attempt's payment is back.
+      const index = Number(path.split("/")[5]);
+      const { agent_id } = body as { agent_id: string };
+      const task = plan.tasks.find((t) => t.index === index);
+      if (!task) return json(route, { detail: `the plan has no task ${String(index)}` }, 404);
+      const attempt = Math.max(0, ...plan.attempts.filter((a) => a.index === index).map((a) => a.attempt)) + 1;
+      task.agents = [...(task.agents ?? []).slice(0, attempt - 1), agent_id];
+      plan.pending_dispatches = [
+        ...(plan.pending_dispatches ?? []),
+        {
+          index,
+          attempt,
+          agent_id,
+          state: "sending",
+          last_error: `503: attempt ${String(attempt - 1)} of this task still holds its payment`,
+          give_up_at: null,
+        },
+      ];
+      return json(route, { task_id: taskId(index, attempt), index, attempt, agent_id });
     }
     if (method === "POST" && action === "abandon") {
       plan.state = "closed";

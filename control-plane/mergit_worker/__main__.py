@@ -8,6 +8,8 @@ import socket
 import threading
 from dataclasses import dataclass
 
+import docker.errors
+
 from mergit_cp.pr_store import PgPrStore
 
 from .config import ConfigError, WorkerConfig, load_config
@@ -19,7 +21,7 @@ from .pr_worker import PrHandler
 from .preflight import check_models
 from .progress import HttpProgressReporter, NullProgressReporter, ProgressReporter
 from .publish import ReceiptPublisher
-from .sandbox import Sandbox, SandboxConfig, reap_stale
+from .sandbox import Sandbox, SandboxConfig, SandboxError, reap_stale, require_image
 from .startup import WorkerIdLock, agents_without_key, sweep_workspaces
 from .tools import ToolLimits
 from .worker import Worker, WorkerDeps
@@ -161,6 +163,11 @@ def main() -> int:
         log.warning(
             "no usable key for agent(s) %s: a job for them fails, and the requester loses an attempt", names
         )
+    try:
+        require_image(cfg.sandbox_image)
+    except (SandboxError, docker.errors.DockerException) as exc:
+        log.error("cannot start sandboxes, so no job is claimed: %s", exc)
+        return 2
     lock = WorkerIdLock.acquire(cfg.database_url.get_secret_value(), worker_id)
     if lock is None:
         log.error(

@@ -111,6 +111,14 @@ export const approvePlan = (planUuid: string, body: ApproveRequest) =>
 export const abandonPlan = (planUuid: string) =>
   request<{ plan_id: string; state: "closed" }>("POST", `${planPath(planUuid)}/abandon`);
 
+/** Sends a task that waits on the requester to one more agent; it is paid from that task's own escrow. */
+export const retryTask = (planUuid: string, index: number, agentId: string) =>
+  request<{ task_id: string; index: number; attempt: number; agent_id: string }>(
+    "POST",
+    `${planPath(planUuid)}/tasks/${String(index)}/retry`,
+    { agent_id: agentId },
+  );
+
 export const listPlans = () => request<PlanSummary[]>("GET", "/v0/plans");
 
 export const getPlan = (planUuid: string) => request<PlanDetail>("GET", planPath(planUuid));

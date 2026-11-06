@@ -189,6 +189,59 @@ def test_events_of_one_plan_go_out_in_order(database_url: str) -> None:
     assert all(r["delivered"] for r in rows(database_url))
 
 
+def dispatch(attempt: int, plan_id: str = PLAN_A) -> dict[str, Any]:
+    return {
+        "task_id": "0x" + f"{attempt:x}" * 64,
+        "plan_id": plan_id,
+        "index": 0,
+        "attempt": attempt,
+        "agent_id": "1",
+        "amount_usdc_units": "500000",
+        "category": "test-repair",
+        "phi_hash": "0x" + "c" * 64,
+        "deadline_unix": 2_000_000_000,
+    }
+
+
+def test_a_retry_waiting_on_its_escrow_holds_up_no_other_event_of_its_plan(database_url: str) -> None:
+    sent: list[str] = []
+
+    async def gateway(request: httpx.Request) -> httpx.Response:
+        envelope = json.loads(request.content)
+        sent.append(f"{envelope['type']}:{envelope['payload'].get('attempt', '')}")
+        # The gateway holds a retry while the previous attempt still holds its payment.
+        return httpx.Response(503 if envelope["payload"].get("attempt") == 2 else 200)
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn:
+            await enqueue(conn, "task.dispatch_requested", dispatch(2), plan_id=PLAN_A, retry_window_s=2400)
+            await enqueue(conn, "task.dispatch_requested", dispatch(1), plan_id=PLAN_A, retry_window_s=600)
+        await deliverer(pool, gateway).deliver_due()
+
+    run(database_url, body)
+    assert sent == ["task.dispatch_requested:2", "task.dispatch_requested:1"]
+    retry, other = rows(database_url)
+    assert (retry["delivered"], retry["failed"], retry["deferred"]) == (False, False, True)
+    assert other["delivered"]
+
+
+def test_a_first_attempt_still_holds_up_the_events_after_it(database_url: str) -> None:
+    sent: list[int] = []
+
+    async def down_once(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["payload"]["attempt"])
+        return httpx.Response(503)
+
+    async def body(pool: Pool) -> None:
+        async with pool.connection() as conn:
+            await enqueue(conn, "task.dispatch_requested", dispatch(1), plan_id=PLAN_A, retry_window_s=600)
+            await enqueue(conn, "task.dispatch_requested", dispatch(2), plan_id=PLAN_A, retry_window_s=2400)
+        await deliverer(pool, down_once).deliver_due()
+
+    run(database_url, body)
+    assert sent == [1]
+
+
 def test_two_deliverers_never_send_the_same_event_twice(database_url: str) -> None:
     sent: list[str] = []
 

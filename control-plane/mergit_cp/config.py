@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     """Ask GitHub whether the repository and branch exist (publicly) before a plan is drafted."""
     max_attempts: int = Field(default=3, ge=1)
     """Agents a requester may list per task: the pick plus the retries (plan O6: at most 3 attempts)."""
+    max_requester_attempts: int = Field(default=6, ge=1)
+    """Attempts one task may reach in all, counting those the requester starts by hand once it is stuck."""
 
     events_token: SecretStr
     """Shared secret sent to the gateway as ``Authorization: Bearer`` (spec/events-v0.md)."""

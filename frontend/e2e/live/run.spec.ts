@@ -227,13 +227,40 @@ test("an inconclusive task with no agent left asks the requester, who can close 
   await page.goto(`/app/runs/${stuck.plan_uuid}`);
 
   const banner = page.getByRole("alert");
-  await expect(banner).toContainText("Needs you: task 1 failed its check with every agent you picked.");
+  await expect(banner).toContainText("Needs you: task 1 cannot go on without you.");
   await expect(page.getByRole("complementary", { name: "Task 1 details" })).toContainText("Inconclusive");
 
   await banner.getByRole("button", { name: "Close plan" }).click();
   await banner.getByRole("button", { name: "Yes, close it" }).click();
   await expect(page.getByText("This plan is closed.")).toBeVisible();
   expect(only(calls, "POST", "/abandon")).toHaveLength(1);
+});
+
+test("a stuck task can be sent to another agent instead of closing the plan", async ({ page }) => {
+  await mockBackend(page);
+  const stuck = approvedPlan(
+    {
+      state: "running",
+      attempts: [attempt(0, 1, { status: "error", phi_holds: null, agent_id: "1", notes: "SandboxError" })],
+    },
+    ["1"],
+  );
+  const calls = await mockPlanApi(page, { plans: [stuck] });
+  await page.goto(`/app/runs/${stuck.plan_uuid}`);
+
+  const banner = page.getByRole("alert");
+  const picker = banner.getByRole("combobox", { name: "Agent to retry task 1 with" });
+  // An agent this task has not had yet is offered first.
+  await expect(picker).toHaveValue("2");
+  await banner.getByRole("button", { name: "Retry with this agent" }).click();
+
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(only(calls, "POST", "/retry").map((c) => [c.path, c.body])).toEqual([
+    [`/v0/plans/${stuck.plan_uuid}/tasks/0/retry`, { agent_id: "2" }],
+  ]);
+  const panel = page.getByRole("complementary", { name: "Task 1 details" });
+  await expect(panel).toContainText("Retrying");
+  await expect(panel).toContainText("starts once attempt 1's payment is back in the plan");
 });
 
 test("the runs tab lists the requester's plans and opens one", async ({ page }) => {

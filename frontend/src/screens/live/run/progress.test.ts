@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { Attempt, MoneyEvent, PlanTask } from "../../../api/types";
-import { attemptOutcome, closedBeforeStart, creditsDenial, stuckTasks, taskProgress, verdictFor } from "./progress";
+import type { Attempt, MoneyEvent, PendingDispatch, PlanDetail, PlanTask } from "../../../api/types";
+import {
+  attemptOutcome,
+  closedBeforeStart,
+  creditsDenial,
+  lastAttempt,
+  stuckTasks,
+  taskProgress,
+  verdictFor,
+  waitingOnRequester,
+} from "./progress";
 
 const task = (agents: string[] | null = ["1", "2"]): PlanTask => ({
   index: 0,
@@ -63,6 +72,43 @@ describe("taskProgress", () => {
   it("only counts attempts at its own index", () => {
     expect(taskProgress(task(), [{ ...failed(1), index: 1 }])).toEqual({ kind: "waiting" });
   });
+
+  const sending = (n: number, over: Partial<PendingDispatch> = {}): PendingDispatch => ({
+    index: 0,
+    attempt: n,
+    agent_id: "3",
+    state: "sending",
+    last_error: "503: attempt 1 of this task still holds its payment",
+    give_up_at: null,
+    ...over,
+  });
+
+  it("names the retry the server actually dispatched, and why it waits", () => {
+    expect(taskProgress(task(["1", "2"]), [failed(1)], [sending(2)])).toEqual({
+      kind: "retrying",
+      failed: failed(1),
+      nextAgent: "3",
+      pending: sending(2),
+    });
+  });
+
+  it("waits on the requester when the next attempt was given up before it started", () => {
+    const gaveUp = sending(2, { state: "given_up" });
+    expect(taskProgress(task(["1", "2"]), [failed(1)], [gaveUp])).toEqual({
+      kind: "stuck",
+      failed: failed(1),
+      givenUp: gaveUp,
+    });
+  });
+
+  it("is retrying, not stuck, once the requester sent a stuck task to another agent", () => {
+    expect(taskProgress(task(["1"]), [failed(1)], [sending(2)]).kind).toBe("retrying");
+  });
+
+  it("ignores a dispatch older than the newest attempt", () => {
+    expect(taskProgress(task(["1"]), [failed(1)], [sending(1, { state: "given_up" })]).kind).toBe("stuck");
+    expect(taskProgress(task(), [], [sending(1, { state: "escrowing" })])).toEqual({ kind: "waiting" });
+  });
 });
 
 describe("attemptOutcome", () => {
@@ -117,5 +163,50 @@ describe("verdictFor and creditsDenial", () => {
       "Free credits were refused for this plan.",
     );
     expect(creditsDenial([])).toBeNull();
+  });
+});
+
+describe("waitingOnRequester", () => {
+  const detail = (over: Partial<PlanDetail>): PlanDetail => ({
+    plan_uuid: "p",
+    plan_id: "0x1",
+    requester: "0x2",
+    state: "running",
+    goal: "",
+    repo_url: "",
+    ref: "main",
+    category: "test-repair",
+    budget_usdc_units: "500000",
+    funding: "credits",
+    total_budget_usdc_units: "500000",
+    created_at: "",
+    approved_at: null,
+    tasks: [task(["1"])],
+    attempts: [failed(1)],
+    money_events: [],
+    ...over,
+  });
+
+  it("trusts the control plane's list when it sent one", () => {
+    // The job finished but the orchestrator has not reacted yet: the screen alone would call it stuck.
+    expect(waitingOnRequester(detail({ stuck_indexes: [] }))).toEqual([]);
+    expect(waitingOnRequester(detail({ stuck_indexes: [0] }))).toEqual([task(["1"])]);
+  });
+
+  it("derives it the server's way when the list is missing", () => {
+    expect(waitingOnRequester(detail({}))).toEqual([task(["1"])]);
+  });
+
+  it("counts attempts on their way as well as the ones that ran", () => {
+    const pending: PendingDispatch = {
+      index: 0,
+      attempt: 3,
+      agent_id: "2",
+      state: "sending",
+      last_error: null,
+      give_up_at: null,
+    };
+    expect(lastAttempt(0, detail({ pending_dispatches: [pending] }))).toBe(3);
+    expect(lastAttempt(1, detail({}))).toBe(0);
   });
 });

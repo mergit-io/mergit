@@ -64,14 +64,21 @@ async def list_plans(principal: PrincipalDep, pool: PoolDep, settings: SettingsD
 
 
 @router.get("/{plan_uuid}")
-async def plan_detail(plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep) -> dict[str, Any]:
+async def plan_detail(
+    plan_uuid: UUID, principal: PrincipalDep, pool: PoolDep, settings: SettingsDep
+) -> dict[str, Any]:
     async with pool.connection() as conn:
         plan = await _owned_plan(conn, plan_uuid, principal)
         attempts = await runs.attempts(conn, plan_uuid)
         ledger = await money.list_for_plan(conn, plan_uuid)
+        pending = await runs.pending_dispatches(conn, plan_uuid)
+        stuck = await outcomes.stuck_indexes(conn, plan, settings) if plan.state == "running" else []
     view = plans.view(plan)
     view["attempts"] = [runs.attempt_view(a) for a in attempts]
     view["money_events"] = [money.view(m) for m in ledger]
+    view["pending_dispatches"] = [runs.pending_view(p) for p in pending]
+    view["stuck_indexes"] = stuck
+    view["max_requester_attempts"] = settings.max_requester_attempts
     return view
 
 
