@@ -14,6 +14,7 @@ import { useCredits } from "../../../chain/useCredits";
 import { Icon, type IconName } from "../../../components/Icon";
 import { Combo, type ComboOption } from "./Combo";
 import { fieldProblems, GOAL_LIMIT, INITIAL, KINDS, STARTERS, toRepoUrl, type Fields } from "./newRunForm";
+import { clearDraft, draftKey, loadDraft, saveDraft, type NewRunDraft } from "./newRunDraft";
 import { Problems } from "./Problems";
 import {
   applyPrefill,
@@ -44,7 +45,42 @@ const STEPS: { icon: IconName; label: string }[] = [
 export function LiveNewRun() {
   const navigate = useNavigate();
   const { account, session } = useAuth();
-  const [fields, setFields] = useState<Fields>(INITIAL);
+  // "Start again": an earlier plan named in the URL only fills fields that are still empty. It is read, never
+  // changed, and the form is still submitted, drafted, reviewed, approved and funded like any other.
+  const [searchParams] = useSearchParams();
+  const from = sourcePlanId(searchParams);
+  // What was typed here before going to another page comes back (newRunDraft.ts), except under "Start again", which
+  // fills the form from the earlier plan instead.
+  const key = draftKey(session?.address);
+  const [restored] = useState<NewRunDraft | null>(() => (from === null ? loadDraft(key) : null));
+  const [fields, setFields] = useState<Fields>(restored?.fields ?? INITIAL);
+  const [budgetTouched, setBudgetTouched] = useState(restored?.budgetTouched ?? false);
+  // A repository typed rather than picked starts on its own default branch, until a branch is chosen by hand.
+  const [refTouched, setRefTouched] = useState(restored?.refTouched ?? false);
+  const [showRestored, setShowRestored] = useState(restored !== null);
+  // Another account signing in on this tab gets its own draft (or an empty form), never the previous one's.
+  const [draftFor, setDraftFor] = useState(key);
+  if (draftFor !== key) {
+    setDraftFor(key);
+    const next = from === null ? loadDraft(key) : null;
+    setFields(next?.fields ?? INITIAL);
+    setBudgetTouched(next?.budgetTouched ?? false);
+    setRefTouched(next?.refTouched ?? false);
+    setShowRestored(next !== null);
+  }
+
+  useEffect(() => {
+    saveDraft(key, { fields, refTouched, budgetTouched });
+  }, [key, fields, refTouched, budgetTouched]);
+
+  const clearForm = () => {
+    clearDraft(key);
+    setFields(INITIAL);
+    setBudgetTouched(false);
+    setRefTouched(false);
+    setShowRestored(false);
+    document.getElementById("nr-goal")?.focus();
+  };
   const { busy, problems, setProblems, submit } = useSubmit();
   // One per page load: the same form sent twice (a retry, a second click) is the same plan.
   const [nonce] = useState(() => crypto.randomUUID());
@@ -55,7 +91,6 @@ export function LiveNewRun() {
   // A free-trial account can only pay from credits, which cover a plan up to a cap: start there, and say so if
   // the budget goes over, instead of letting the plan be drafted and then refused at approval.
   const trial = isTrialSession(account, session?.address);
-  const [budgetTouched, setBudgetTouched] = useState(false);
   const startBudget = trial ? creditBudget(credits) : null;
   // Until the budget is edited by hand, it is the credit-covered amount once the credits are known.
   const budget = !budgetTouched && startBudget !== null ? usdcText(startBudget) : fields.budget;
@@ -77,12 +112,6 @@ export function LiveNewRun() {
   const { repos, error: reposError, loading: reposLoading } = useRepoList(owner);
   const chosen = parseRepo(fields.repo);
   const { branches, defaultBranch, error: branchesError, loading: branchesLoading } = useBranches(chosen);
-  // A repository typed rather than picked starts on its own default branch, until a branch is chosen by hand.
-  const [refTouched, setRefTouched] = useState(false);
-  // "Start again": an earlier plan named in the URL only fills fields that are still empty. It is read, never
-  // changed, and the form is still submitted, drafted, reviewed, approved and funded like any other.
-  const [searchParams] = useSearchParams();
-  const from = sourcePlanId(searchParams);
   const [prefillNote, setPrefillNote] = useState<{ from: string; text: string } | null>(null);
   const prefillLoading = from !== null && prefillNote?.from !== from;
 
@@ -204,6 +233,7 @@ export function LiveNewRun() {
         category: fields.category,
       };
       const plan = await createPlan(request, planKey(nonce, request));
+      clearDraft(key);
       await navigate(paths.run(plan.plan_uuid));
     });
   };
@@ -315,6 +345,14 @@ export function LiveNewRun() {
         </p>
       )}
       <Problems items={problems} />
+      {showRestored && (
+        <p className="small c2 nr-center" role="status" data-testid="draft-restored">
+          Your unsent run from earlier in this tab is filled back in.{" "}
+          <button type="button" className="link small" onClick={clearForm}>
+            Clear the form
+          </button>
+        </p>
+      )}
       {from !== null && (
         <p className="small c2 nr-center" role="status">
           {prefillLoading ? "Loading your earlier plan…" : prefillNote?.text}

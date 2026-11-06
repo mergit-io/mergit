@@ -170,3 +170,46 @@ test("a free-trial account starts on a budget the free credits cover, and is tol
   await page.getByLabel("Budget (USDC)").fill("5");
   await expect(page.getByText("Free credits cover up to 2.00 USDC per plan; this plan is 5.00 USDC")).toBeVisible();
 });
+
+test("what was typed is still there after visiting another page, until the plan is drafted or the form is cleared", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  const calls = await mockPlanApi(page, { created: draftPlan() });
+  await fakeGitHub(page);
+  await page.goto("/app/runs/new");
+  await page.getByLabel("Goal").fill("The refund test passes again");
+  await page.getByRole("combobox", { name: "Repository" }).fill("someone/else");
+  await page.getByRole("radio", { name: "Docs" }).check();
+  await page.getByLabel("Budget (USDC)").fill("2");
+
+  // Away to another tab of the app and back, without a reload.
+  await page.getByRole("navigation").getByRole("link", { name: "Agents" }).click();
+  await expect(page).toHaveURL(/\/app\/agents$/);
+  // The Agents page loads lazily; until it shows, the form has not left the screen, so wait for it.
+  await expect(page.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByLabel("Goal")).toHaveValue("The refund test passes again");
+  await expect(page.getByRole("combobox", { name: "Repository" })).toHaveValue("someone/else");
+  await expect(page.getByRole("radio", { name: "Docs" })).toBeChecked();
+  await expect(page.getByLabel("Budget (USDC)")).toHaveValue("2");
+  await expect(page.getByTestId("draft-restored")).toBeVisible();
+
+  // "Clear the form" starts over, and a reload keeps it empty.
+  await page.getByRole("button", { name: "Clear the form" }).click();
+  await expect(page.getByLabel("Goal")).toHaveValue("");
+  await expect(page.getByRole("radio", { name: "Fix failing tests" })).toBeChecked();
+  await page.reload();
+  await expect(page.getByLabel("Goal")).toHaveValue("");
+  await expect(page.getByTestId("draft-restored")).toHaveCount(0);
+
+  // Once the plan is drafted, the form is empty the next time.
+  await page.getByLabel("Goal").fill("The build passes on develop");
+  await page.getByRole("combobox", { name: "Repository" }).fill("someone/else");
+  await expect(page.getByRole("combobox", { name: "Branch" })).toHaveValue("develop");
+  await page.getByRole("button", { name: "Draft the plan" }).click();
+  await expect(page).toHaveURL(new RegExp(`/app/runs/${draftPlan().plan_uuid}$`));
+  expect(calls.filter((c) => c.method === "POST" && c.path === "/v0/plans")).toHaveLength(1);
+  await page.goto("/app/runs/new");
+  await expect(page.getByLabel("Goal")).toHaveValue("");
+});
