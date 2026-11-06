@@ -198,3 +198,28 @@ def test_as_int_reads_both_plain_numbers_and_hex_quantities():
     confirmed live against Rabdi's own `select` output (`arkiv/friction.md`)."""
     assert _as_int(5) == 5
     assert _as_int("0x2a") == 42
+
+
+def test_writer_status_is_ok_when_the_sidecar_answers(mirror: ArkivMirror):
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(f"{SIDECAR}/healthz").respond(200, text="ok")
+        assert asyncio.run(mirror.writer_status()) == "ok"
+
+
+def test_writer_status_says_when_no_sidecar_is_configured():
+    arkiv = ArkivMirror(RPC, None, OWNER, None, None, 30)
+    assert asyncio.run(arkiv.writer_status()) == "not configured"
+
+
+def test_writer_status_says_when_the_sidecar_is_not_running(mirror: ArkivMirror):
+    """The live failure this exists for: the sidecar never started, so every background write failed
+    and only logged, and the read side could only say "nothing mirrored yet"."""
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(f"{SIDECAR}/healthz").mock(side_effect=httpx.ConnectError("refused"))
+        assert asyncio.run(mirror.writer_status()) == "unreachable (ConnectError)"
+
+
+def test_writer_status_says_when_the_sidecar_is_unhealthy(mirror: ArkivMirror):
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get(f"{SIDECAR}/healthz").respond(503)
+        assert asyncio.run(mirror.writer_status()) == "unhealthy (HTTP 503)"

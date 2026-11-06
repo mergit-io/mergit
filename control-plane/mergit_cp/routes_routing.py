@@ -242,6 +242,7 @@ async def arkiv_suggestions(
                 status_code=403, detail="only the requester may see suggestions for this plan"
             )
     query = arkiv.describe_query(plan.plan_id)
+    writer = await arkiv.writer_status()
     try:
         decisions = await arkiv.read_decisions(plan.plan_id)
     except Exception as exc:  # any SDK/RPC failure; see the docstring
@@ -252,12 +253,14 @@ async def arkiv_suggestions(
         return {
             "enabled": True,
             "query": query,
+            "writer": writer,
             "decisions": [],
             "error": f"could not read from Arkiv: {exc}"[:300],
         }
     return {
         "enabled": True,
         "query": query,
+        "writer": writer,
         "decisions": [
             {
                 "entity_key": d.entity_key,

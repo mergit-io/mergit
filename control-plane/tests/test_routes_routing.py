@@ -619,6 +619,8 @@ def arkiv_client(settings: Settings, llm: FakeLLM) -> Iterator[tuple[TestClient,
             base_url="https://testserver",
         ) as c,
     ):
+        mock.get(f"{ARKIV_SIDECAR}/healthz").respond(200, text="ok")
+        # Registered last on purpose: tests take `mock.routes[-1]` as the write route.
         mock.post(f"{ARKIV_SIDECAR}/internal/mirror").respond(json={"tx_hash": "0xdead", "entity_keys": []})
         yield c, mock
 
@@ -647,6 +649,7 @@ def test_an_exploring_suggestion_is_mirrored_to_arkiv_and_readable_back(settings
         mock.post(ARKIV_RPC).respond(json={"jsonrpc": "2.0", "id": 1, "result": {"data": entities}})
         mirrored = c.get(f"/v0/plans/{plan['plan_uuid']}/arkiv-suggestions").json()
         assert mirrored["enabled"] is True
+        assert mirrored["writer"] == "ok"
         assert {d["task_index"] for d in mirrored["decisions"]} == {0, 1}
 
 

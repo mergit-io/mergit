@@ -141,9 +141,11 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
               {arkiv?.enabled && !arkiv.error && (
                 <div className="col g4" data-testid="arkiv-suggestions">
                   <span className="small c3">
-                    {arkiv.decisions.length === 0
-                      ? "Not found on Arkiv yet; the mirror write may still be in flight or failed silently."
-                      : `${String(arkiv.decisions.length)} decision${arkiv.decisions.length === 1 ? "" : "s"} read back from Arkiv's Rabdi testnet, not this app's own database:`}
+                    {arkiv.decisions.length > 0
+                      ? `${String(arkiv.decisions.length)} decision${arkiv.decisions.length === 1 ? "" : "s"} read back from Arkiv's Rabdi testnet, not this app's own database:`
+                      : arkiv.writer && arkiv.writer !== "ok"
+                        ? `Nothing on Arkiv yet: the write side is not running (${arkiv.writer}), so no decision has been mirrored.`
+                        : "Not found on Arkiv yet; the write lands a few seconds after the suggestion, so try again shortly."}
                   </span>
                   {arkiv.decisions.map((d) => {
                     const matches = picksMatch(got.tasks[d.task_index], d);
