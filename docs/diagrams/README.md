@@ -19,6 +19,9 @@ Excalidraw when you want the real look.
 | 09 | `09-verification-and-challenge` | Audit draw, validator checks, bonded challenge, adjudication, deterrence rule |
 | 10 | `10-reputation-and-routing` | Posteriors, value density, Thompson sampling, exploration subsidy |
 | 11 | `11-delivery-units-and-repos` | Phases P0 to P5, the orchestration track OP1 to OP4, deployable units, repositories, environments |
+| 12 | `12-ens-naming-layer` | Where the ENS layer sits: Base Sepolia, Mergit services, Ethereum mainnet ENSv2 ([ENS HLD](../HLD-ens-integration.md)) |
+| 13 | `13-ens-agent-registration-and-verification` | Register an agent, the two-way ENS link, the reputation mirror write |
+| 14 | `14-ens-build-plan-and-environments` | Build stages, cost model, open blockers |
 
 ## Edit
 

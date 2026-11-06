@@ -10,7 +10,8 @@ One server (Hetzner CPX32, Nuremberg) runs everything that used to run on a lapt
 | `store.mergit.site` | evidence store (receipt bundles) | Caddy, then `store:8081` |
 | _(not public)_ | validator, Postgres | compose network only |
 | `app.mergit.site/v0/{auth,account,plans,agents}` | orchestration API (control plane), same origin as the app | Caddy, then `api:8000`; needs `deploy/compose.controlplane.yaml` |
-| `api.mergit.site` | the same API on its own name (optional) | Caddy, then `api:8000`; needs an A record |
+| `api.mergit.site` | the same API on its own name: browser routes, `/healthz`, and `/v0/internal/*` from the worker VM only (`WORKER_VM_IP`); everything else 404 | Caddy, then `api:8000`; needs an A record |
+| _(its own VM)_ | the agent worker | `deploy/worker-vm/README.md` |
 
 Everything is testnet money. The Hetzner firewall (`mergit-fw`) allows only 22, 80 and 443.
 
@@ -110,9 +111,9 @@ deploy/server/update.sh services   # runs the preflight again, then deploys
 ```
 
 `PLANNER_MODELS` (the extra planner models a user may pick in Settings) are all sent to the planner's provider,
-so with OpenRouter they must be OpenRouter ids priced in `prices.toml` (`anthropic/claude-sonnet-5`, ...). A
-native id such as `claude-sonnet-5` is priced too, so the preflight passes it, but OpenRouter does not know it
-and a plan using it would answer 502. Leave `PLANNER_MODELS` unset to offer only `PLANNER_MODEL`.
+so with OpenRouter they must be OpenRouter ids priced in `prices.toml` (`anthropic/claude-sonnet-5`, ...). The
+preflight refuses a native id such as `claude-sonnet-5` there (and an OpenRouter id on Anthropic), so the deploy
+fails instead of every plan using it. Leave `PLANNER_MODELS` unset to offer only `PLANNER_MODEL`.
 
 **Anthropic stays an option.** To call Anthropic's API directly instead, put `ANTHROPIC_API_KEY` (or
 `ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_BASE_URL`) in the env files and set `PLANNER_PROVIDER=anthropic`,
@@ -123,6 +124,25 @@ either can be switched to without touching secrets again.
 `GROQ_BASE_URL`, `GROQ_MODEL` and `LLM_PROVIDER` are no longer read; a provider's endpoint and model live in
 `control-plane/agents.toml`. Leaving them in the env files is harmless, but the API and the worker log a
 warning at start-up naming any that are still set, so delete them.
+
+### Once, on the first deploy after the compose network was pinned
+
+`deploy/compose.controlplane.yaml` pins the stack's network to `172.30.9.0/24`, so `deploy/postgres/pg_hba.conf` can
+name that exact range instead of `samenet`. A server that already ran the stack has that network with whatever
+subnet Docker picked, so the first `update.sh` after this change has to replace it. Recent Compose (checked with
+5.6.1) does that itself: it removes and recreates the network and restarts every container on it once, a short
+outage of the whole stack; the database's data is in its volume and is kept. An older Compose may refuse instead,
+saying the network needs to be recreated. Then, on the server, once:
+
+```bash
+C="docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml"
+$C down          # stops the stack and removes its network; volumes (the databases, certificates) are kept
+deploy/server/update.sh services
+```
+
+Check first that `172.30.9.0/24` is not already in use on the host (`docker network ls -q | xargs docker network
+inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'`, and the private network's own range). If it is,
+change it in `compose.controlplane.yaml` and `pg_hba.conf` together, in one commit.
 
 ### Automatic deploys: one-time setup
 

@@ -21,3 +21,21 @@ nixos-install
 ```
 
 Then restore the data and bring the stack up (the runbook in `../README.md`).
+
+## Changing the host
+
+Copy `configuration.nix` to `/etc/nixos/configuration.nix` (keeping the SSH key), then `sudo nixos-rebuild switch`.
+**Turning on `live-restore` restarts Docker once, and while it is still off that stops every container**, so do it at a
+quiet moment and bring the stack back straight after (`docker compose ... up -d`, the runbook in `../README.md`).
+
+`live-restore` is meant to keep containers running through a dockerd crash. That is not yet tested here. After the
+first switch, check `docker info --format '{{.LiveRestoreEnabled}}'` says `true`, then (also at a quiet moment) kill
+dockerd and watch the stack:
+
+```sh
+sudo kill -9 "$(systemctl show -p MainPID --value docker)"
+sleep 20; docker compose -f deploy/compose.testnet.yaml -f deploy/compose.controlplane.yaml -f deploy/compose.server.yaml ps
+```
+
+Every service should still be `Up`. If any is stopped, live-restore did not hold and the stack still needs a manual `up -d`
+after a daemon crash.

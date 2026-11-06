@@ -1,0 +1,22 @@
+{
+  "measuredAt": "2026-11-05T22:38:52.675Z",
+  "forkBlock": 26351673,
+  "recordBytes": 328,
+  "units": {
+    "deployProxy": 178238,
+    "grantSetterRolesFirst": 87656,
+    "grantSetterRolesSecond": 87680,
+    "setTextReputation": 365922,
+    "setTextReputationOverwrite": 85280,
+    "multicall3Agents": 712507,
+    "setResolver": 40468
+  },
+  "totalOneShotUnits": 1106549,
+  "ethUsdAssumed": 2416,
+  "estimateUsd": {
+    "low": 0.334177798,
+    "high": 13.367111920000001,
+    "lowGweiPrice": 0.125,
+    "highGweiPrice": 5
+  }
+}

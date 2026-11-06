@@ -1,0 +1,21 @@
+{
+  "_note": "Replace resolver with the address the one-shot printed, agents with the agents that have ENS names (label and Base agent id must match the agent-registration record on the name), and fromBlock with a block shortly before the first outcome of those agents. The values here are examples only.",
+  "chain": {
+    "chainId": 84532,
+    "identity": "0x72eAc041Ee897fF0385022639452fE08Dcd4B7D6",
+    "anchor": "0xf9DBfF75887361A67269765DA6F8732b233Fda76"
+  },
+  "resolver": "0x13C6c51B109972043DD487d97961D9f141e846c9",
+  "agents": [
+    {
+      "label": "coder-0",
+      "agentId": 2
+    }
+  ],
+  "knownCategories": [
+    "test-repair",
+    "bug-fix"
+  ],
+  "fromBlock": "54982000",
+  "confirmations": 5
+}

@@ -1,0 +1,16 @@
+{
+  "name": "mergit-ens",
+  "private": true,
+  "version": "0.0.0",
+  "description": "ENS gate checks for Mergit: read-only mainnet report and fork tests (see docs/HLD-ens-integration.md)",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "gate": "node src/gate-cli.ts"
+  },
+  "dependencies": {
+    "viem": "^2.57.12"
+  }
+}

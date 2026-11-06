@@ -17,6 +17,7 @@ from . import (
     accounts,
     auth,
     chain_events,
+    health,
     oauth,
     otp,
     redeem,
@@ -210,6 +211,7 @@ def create_app(
         allow_headers=["Content-Type", "Idempotency-Key", "X-World-Approval"],
         expose_headers=["Retry-After"],  # the app says how long to wait after a 429 (redeem codes)
     )
+    app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(auth.account_router)
     app.include_router(routes_account.router)
