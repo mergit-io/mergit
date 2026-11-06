@@ -2,6 +2,7 @@ import { useState } from "react";
 import { errorMessage, getArkivSuggestions, getSuggestions } from "../../../api/client";
 import { percent, usdc } from "../../../api/reputation";
 import type { ArkivDecision, ArkivSuggestions, Suggestions, TaskSuggestion } from "../../../api/types";
+import { latestDraw } from "./arkivDraw";
 
 /** Does what Arkiv has for this task match the picks Postgres just answered with — proof the mirror
  * carries what the product actually ranked, not just a write nobody checks against anything. */
@@ -61,6 +62,10 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
       },
     );
   };
+
+  const draw = latestDraw(arkiv?.decisions ?? []);
+  // Both seeds come through the same JSON.parse, so they round the same way and still compare as one draw.
+  const sameDraw = got !== undefined && draw.latest[0] !== undefined && draw.latest[0].seed === got.seed;
 
   return (
     <div className="col g8" aria-label="Suggested agents">
@@ -142,13 +147,15 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
                 <div className="col g4" data-testid="arkiv-suggestions">
                   <span className="small c3">
                     {arkiv.decisions.length > 0
-                      ? `${String(arkiv.decisions.length)} decision${arkiv.decisions.length === 1 ? "" : "s"} read back from Arkiv's Rabdi testnet, not this app's own database:`
+                      ? sameDraw
+                        ? `This draw, read back from Arkiv's Rabdi testnet, not this app's own database:`
+                        : "The draw above has not landed on Arkiv yet (it takes a few seconds); this is the previous one:"
                       : arkiv.writer && arkiv.writer !== "ok"
                         ? `Nothing on Arkiv yet: the write side is not running (${arkiv.writer}), so no decision has been mirrored.`
                         : "Not found on Arkiv yet; the write lands a few seconds after the suggestion, so try again shortly."}
                   </span>
-                  {arkiv.decisions.map((d) => {
-                    const matches = picksMatch(got.tasks[d.task_index], d);
+                  {draw.latest.map((d) => {
+                    const matches = sameDraw ? picksMatch(got.tasks[d.task_index], d) : undefined;
                     return (
                       <div key={d.entity_key} className="row g8">
                         <a
@@ -167,6 +174,12 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
                       </div>
                     );
                   })}
+                  {draw.earlier > 0 && (
+                    <span className="small c3">
+                      Plus {String(draw.earlier)} decision{draw.earlier === 1 ? "" : "s"} from earlier draws on this
+                      plan: each explore call is a new draw, and Arkiv keeps every one until it expires.
+                    </span>
+                  )}
                 </div>
               )}
             </div>

@@ -76,12 +76,24 @@ def test_write_decisions_sends_one_batched_call(mirror: ArkivMirror):
     sent = json.loads(route.calls[0].request.content)
     assert sent["ttl_days"] == 30
     assert [d["task_index"] for d in sent["decisions"]] == [0, 1]
-    assert [d["decision_id"] for d in sent["decisions"]] == [100, 101]
+    assert [d["decision_id"] for d in sent["decisions"]] == ["100", "101"]
     assert all(d["plan_id"] == "plan-1" for d in sent["decisions"])
-    assert all(d["seed"] == 123456789 for d in sent["decisions"])
-    assert all(d["budget_micros"] == 500_000 for d in sent["decisions"])
+    assert all(d["seed"] == "123456789" for d in sent["decisions"])
+    assert all(d["budget_micros"] == "500000" for d in sent["decisions"])
     assert all("requester" not in d for d in sent["decisions"])
     assert route.calls[0].request.headers["authorization"] == "Bearer sidecar-secret"
+
+
+def test_write_decisions_sends_a_62_bit_seed_exactly(mirror: ArkivMirror):
+    """The live failure: seed 1065256257932064655 landed on Rabdi as 1065256257932064640, because the
+    Node sidecar's JSON.parse rounds integers past 2^53. Sent as a string, nothing on the way can."""
+    seed = 1065256257932064655
+    assert int(float(seed)) != seed  # a JSON number really would lose it
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.post(f"{SIDECAR}/internal/mirror").respond(json={"tx_hash": "0x", "entity_keys": []})
+        asyncio.run(mirror.write_decisions("plan-1", [_decision(0, seed=seed)]))
+    raw = route.calls[0].request.content.decode()
+    assert '"seed": "1065256257932064655"' in raw or '"seed":"1065256257932064655"' in raw
 
 
 def test_write_decisions_raises_when_no_sidecar_is_configured():
