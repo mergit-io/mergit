@@ -22,6 +22,10 @@ sync_repo ../mergit-contracts   # deployments/base-sepolia.json lives there
 case "$what" in
   all|services)
     compose build
+    # The worker starts every sandbox from this image through the host's Docker daemon, and compose never builds
+    # it: without it each job fails as "not built on this host" and the requester loses that attempt. Cached
+    # layers make this a no-op when control-plane/sandbox has not changed.
+    docker build -q -t mergit-sandbox:dev control-plane/sandbox
     # Before anything running is replaced: run the API's and the worker's own start-up configuration checks
     # in the images just built, against the real env files (mergit_cp/preflight.py, mergit_worker/preflight.py).
     # A setting the new code needs and deploy/secrets/*.env lacks (PLANNER_PROVIDER, a deployed agent's model

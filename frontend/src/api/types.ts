@@ -65,7 +65,10 @@ export type PlanDetail = Plan & { attempts: Attempt[]; money_events: MoneyEvent[
 export type PlanSummary = Pick<
   Plan,
   "plan_uuid" | "plan_id" | "state" | "goal" | "category" | "budget_usdc_units" | "created_at"
->;
+> & {
+  /** Tasks of a running plan that every picked agent has failed: the plan waits on its requester. */
+  stuck_tasks?: number;
+};
 
 export type AgentInfo = { agent_id: string; name: string; model: string };
 

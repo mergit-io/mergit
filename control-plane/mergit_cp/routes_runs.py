@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from . import money, plans, runs
+from . import money, outcomes, plans, runs
 from .agents import Agent
 from .auth import PoolDep, Principal, PrincipalDep, SettingsDep
 from .db import Pool
@@ -48,10 +48,19 @@ async def _owned_plan(conn: Any, plan_uuid: UUID, principal: Principal) -> plans
 
 
 @router.get("")
-async def list_plans(principal: PrincipalDep, pool: PoolDep) -> list[dict[str, Any]]:
+async def list_plans(principal: PrincipalDep, pool: PoolDep, settings: SettingsDep) -> list[dict[str, Any]]:
+    # A running plan with a stuck index waits on its requester while its state still says running, so the
+    # list carries the count the run page shows, from the same rule the orchestrator uses.
+    stuck: dict[str, int] = {}
     async with pool.connection() as conn:
         summaries = await runs.list_for_requester(conn, principal.owned)
-    return [runs.plan_summary_view(s) for s in summaries]
+        for s in summaries:
+            if s.state != "running":
+                continue
+            plan = await plans.load(conn, UUID(s.plan_uuid))
+            if plan is not None:
+                stuck[s.plan_uuid] = len(await outcomes.stuck_indexes(conn, plan, settings))
+    return [{**runs.plan_summary_view(s), "stuck_tasks": stuck.get(s.plan_uuid, 0)} for s in summaries]
 
 
 @router.get("/{plan_uuid}")

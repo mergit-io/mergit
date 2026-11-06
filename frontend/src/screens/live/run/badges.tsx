@@ -13,8 +13,11 @@ const PLAN: Record<PlanState, [Status, string]> = {
   closed: ["Neutral", "Closed"],
 };
 
-export function PlanBadge({ state }: { state: PlanState }) {
-  const [status, label] = PLAN[state];
+const STUCK: [Status, string] = ["Failed", "Needs you"];
+
+/** `stuck`: how many of a running plan's tasks wait on the requester; any turns "Running" into "Needs you". */
+export function PlanBadge({ state, stuck = 0 }: { state: PlanState; stuck?: number }) {
+  const [status, label] = state === "running" && stuck > 0 ? STUCK : PLAN[state];
   return <Badge status={status} label={label} />;
 }
 
