@@ -1,0 +1,16 @@
+{
+  "_note": "resolver is the address the one-shot prints (deterministic: it is in the plan before you send anything). agents are the ones with ENS names; label and agentId must match the agent-registration record on the name. fromBlock is the Base Sepolia block in which these agents were registered (55035459), so no earlier outcomes are read. knownCategories only turns a category hash back into a label; any category not listed is shown as its hash.",
+  "chain": {
+    "chainId": 84532,
+    "identity": "0x72eAc041Ee897fF0385022639452fE08Dcd4B7D6",
+    "anchor": "0xf9DBfF75887361A67269765DA6F8732b233Fda76"
+  },
+  "resolver": "0x13C6c51B109972043DD487d97961D9f141e846c9",
+  "agents": [
+    { "label": "coder-1", "agentId": 2 },
+    { "label": "coder-2", "agentId": 3 }
+  ],
+  "knownCategories": ["test-repair", "bug-fix"],
+  "fromBlock": "55035459",
+  "confirmations": 5
+}
