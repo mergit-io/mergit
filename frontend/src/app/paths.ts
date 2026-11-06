@@ -8,6 +8,9 @@ export const paths = {
   landing: "/",
   signIn: "/signin",
   pricing: "/pricing",
+  /** An agent's public profile, outside the session gate: the URL its ENS `agent-endpoint[web]` record names. */
+  agentProfile: (label: string) => `/agents/${encodeURIComponent(label)}`,
+  agentProfileRoute: "/agents/:label",
   app: APP,
   /** The demo and the real app are different page loads, so these two never depend on where this page is. */
   demo: "/demo",
