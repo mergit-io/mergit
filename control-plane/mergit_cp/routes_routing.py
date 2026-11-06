@@ -17,7 +17,7 @@ import logging
 import random
 import secrets
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -37,6 +37,20 @@ from .routing import BELOW_MAX_ATTEMPTS, OVER_BUDGET_IN_THIS_DRAW, Pick, rank
 router = APIRouter(prefix="/v0/plans", tags=["routing"])
 
 log = logging.getLogger(__name__)
+
+
+class MirrorRow(NamedTuple):
+    """One just-inserted `routing_decisions` row, exactly as Postgres has it — `decision_id` and
+    `created_at` come from the `INSERT ... RETURNING`, not recomputed, so the Arkiv mirror
+    (`_mirror_decisions`) links back to the real row and carries its real timestamp, not a second,
+    slightly later one taken when the background task happens to run."""
+
+    decision_id: int
+    task_index: int
+    budget_micros: int
+    created_at: datetime
+    picks: list[Pick]
+
 
 NOTE = (
     "A suggestion, not an assignment: you still choose the agents when you approve. It ranks agents by "
@@ -173,10 +187,12 @@ async def suggestions(
                     status_code=429, detail="too many exploring suggestions this hour; try again later"
                 )
             await conn.execute("INSERT INTO suggestion_attempts (requester) VALUES (%s)", (address,))
+            mirror_rows: list[MirrorRow] = []
             for index, budget, picks in decisions:
-                await conn.execute(
+                cur = await conn.execute(
                     "INSERT INTO routing_decisions (plan_uuid, task_index, category, seed, budget_micros,"
-                    " candidates, picks) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    " candidates, picks) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                    " RETURNING decision_id, created_at",
                     (
                         plan.plan_uuid,
                         index,
@@ -187,9 +203,13 @@ async def suggestions(
                         Jsonb(json.loads(json.dumps([_pick_record(p) for p in picks]))),
                     ),
                 )
+                row = await cur.fetchone()
+                assert row is not None  # INSERT ... RETURNING always returns the row it just inserted
+                decision_id, created_at = row
+                mirror_rows.append(MirrorRow(decision_id, index, budget, created_at, picks))
         if arkiv is not None:
             background_tasks.add_task(
-                _mirror_decisions, arkiv, plan.plan_id, plan.category, address, decisions, candidates
+                _mirror_decisions, arkiv, plan.plan_id, plan.category, seed, mirror_rows, candidates
             )
     return {
         "plan_id": plan.plan_id,
@@ -233,8 +253,11 @@ async def arkiv_suggestions(
         "decisions": [
             {
                 "entity_key": d.entity_key,
+                "decision_id": d.decision_id,
                 "task_index": d.task_index,
                 "category": d.category,
+                "seed": d.seed,
+                "budget_micros": d.budget_micros,
                 "decided_at": d.decided_at,
                 "candidates": d.candidates,
                 "picks": d.picks,
@@ -303,28 +326,34 @@ async def _mirror_decisions(
     arkiv: ArkivMirror,
     plan_id: str,
     category: str,
-    requester: str,
-    decisions: list[tuple[int, int, list[Pick]]],
+    seed: int,
+    rows: list[MirrorRow],
     candidates: dict[str, Posterior],
 ) -> None:
     """Runs as a `BackgroundTasks` entry, after the response is already on its way: a down testnet or
     a slow write (the sidecar waits for the transaction to land) must not hold up a suggestions call
     that Postgres already recorded, so every failure is caught and logged, never raised. One call to
     `write_decisions` for every task in this plan's draw, so the sidecar sends one transaction, not
-    one per task (`chain/arkiv/src/server.js`'s `executeBatch`)."""
-    decided_at = datetime.now(UTC).isoformat()
+    one per task (`chain/arkiv/src/server.js`'s `executeBatch`).
+
+    Mirrors `routing_decisions` for real, not just a record of which agents got picked: `decision_id`
+    and `seed` are what migration 0016 means by "any draw can be replayed from its seed and the
+    posteriors it saw" — without them the Arkiv copy can't back that claim (`arkiv/why-arkiv.md`)."""
     snapshot = _snapshot(candidates)
     to_write = [
         Decision(
-            task_index=index,
+            decision_id=row.decision_id,
+            task_index=row.task_index,
             category=category,
-            decided_at=decided_at,
+            seed=seed,
+            budget_micros=row.budget_micros,
+            decided_at=row.created_at.isoformat(),
             candidates=snapshot,
-            picks=[_pick_record(p) for p in picks],
+            picks=[_pick_record(p) for p in row.picks],
         )
-        for index, _budget, picks in decisions
+        for row in rows
     ]
     try:
-        await arkiv.write_decisions(plan_id, requester, to_write)
+        await arkiv.write_decisions(plan_id, to_write)
     except Exception:  # any sidecar/RPC failure; Arkiv is a mirror, not the record of truth
         log.warning("arkiv mirror failed for plan %s", plan_id, exc_info=True)

@@ -39,10 +39,16 @@ matches the docs' own example entity on the real Rabdi network, so this is a rea
 @dataclass(frozen=True)
 class Decision:
     """One routing decision to mirror (`write_decisions`) or as read back (`read_decisions`'s
-    `MirroredDecision`, which adds `entity_key`)."""
+    `MirroredDecision`, which adds `entity_key`). `decision_id` and `seed` link this entity back to
+    the exact `routing_decisions` row and let anyone replay the draw — the thing migration 0016 says
+    that table exists for; a mirror without them is only a record of the outcome, not of how it was
+    reached."""
 
+    decision_id: int
     task_index: int
     category: str
+    seed: int
+    budget_micros: int
     decided_at: str
     candidates: list[dict[str, Any]]
     picks: list[dict[str, Any]]
@@ -75,10 +81,15 @@ class ArkivMirror:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def write_decisions(self, plan_id: str, requester: str, decisions: list[Decision]) -> None:
+    async def write_decisions(self, plan_id: str, decisions: list[Decision]) -> None:
         """One HTTP call to the sidecar, one on-chain transaction for every task in `decisions`. Raises
         on failure (no sidecar configured, unreachable, out of funds, a bad key); the caller decides
-        whether that may fail the request (it must not — see this module's docstring)."""
+        whether that may fail the request (it must not — see this module's docstring).
+
+        No requester address on the entity: a discarded draft plan can't be deleted off Arkiv (entities
+        are append-only; only expiry removes them), so attaching the requester's wallet to public,
+        permanent-until-expiry data would outlive the user's own "discard" action. Nothing here ever
+        filtered reads by it either — `describe_query` only needs `planId` and `$owner`."""
         if not self._sidecar_url:
             raise RuntimeError("ARKIV_SIDECAR_URL is not set; nothing to mirror to")
         body = {
@@ -86,9 +97,11 @@ class ArkivMirror:
             "decisions": [
                 {
                     "plan_id": plan_id,
-                    "requester": requester,
+                    "decision_id": d.decision_id,
                     "task_index": d.task_index,
                     "category": d.category,
+                    "seed": d.seed,
+                    "budget_micros": d.budget_micros,
                     "decided_at": d.decided_at,
                     "candidates": d.candidates,
                     "picks": d.picks,
@@ -105,10 +118,12 @@ class ArkivMirror:
     def describe_query(self, plan_id: str) -> str:
         """The exact query `read_decisions` runs, for display (README's/the panel's "one query anyone
         can run") — real and copy-pasteable, not illustrative: schema tag, plan id, and the owner filter
-        that keeps a spoofed entity with Mergit's own tag out of someone else's results."""
+        that keeps a spoofed entity with Mergit's own tag out of someone else's results. Ordered by
+        key so a second page (`read_decisions`' own `limit`) is stable across calls, per the docs'
+        own pagination note."""
         return (
             f"arkiv.schema = str('{SCHEMA}') AND planId = str('{plan_id}')"
-            f" AND $owner = addr({self._owner})"
+            f" AND $owner = addr({self._owner}) ORDER BY $key ASC"
         )
 
     async def read_decisions(self, plan_id: str, *, limit: int = 50) -> list[MirroredDecision]:
@@ -138,6 +153,15 @@ class ArkivMirror:
         return out
 
 
+def _as_int(value: Any) -> int:
+    """`i32` attributes (`taskIndex`) come back as a plain JSON number; `u64` ones (`decisionId`,
+    `seed`, `budgetMicros`) come back as a hex quantity (`"0x2a"`) — confirmed live against Rabdi's
+    own `select` output. Both go through `int()` once this normalizes the hex case."""
+    if isinstance(value, str) and value.startswith("0x"):
+        return int(value, 16)
+    return int(value)
+
+
 def _decode(entity: dict[str, Any]) -> MirroredDecision | None:
     """Arkiv is a public, permissionless database: anyone can write an entity matching our schema,
     plan id and owner filter (if they also control the service wallet — they don't, but a malformed
@@ -153,8 +177,11 @@ def _decode(entity: dict[str, Any]) -> MirroredDecision | None:
                 body = cast("dict[str, Any]", parsed)
         return MirroredDecision(
             entity_key=str(entity.get("key", "")),
-            task_index=int(attrs.get("taskIndex", -1)),
+            decision_id=_as_int(attrs.get("decisionId", -1)),
+            task_index=_as_int(attrs.get("taskIndex", -1)),
             category=str(attrs.get("category", "")),
+            seed=_as_int(attrs.get("seed", 0)),
+            budget_micros=_as_int(attrs.get("budgetMicros", 0)),
             decided_at=str(attrs.get("decidedAt", "")),
             candidates=body.get("candidates", []),
             picks=body.get("picks", []),

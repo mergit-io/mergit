@@ -30,11 +30,18 @@ a real query, not SDK sugar.
 | Attribute | Type | Indexed | What |
 | --- | --- | --- | --- |
 | `planId` | `str` | yes | The plan's `0x`-prefixed id (`mergit_receipt.plan_id`), so a query can ask for one plan's decisions |
+| `decisionId` | `u64` | yes | The exact `routing_decisions.decision_id` this entity mirrors — links the public copy back to the real row, not just a record of the outcome |
 | `taskIndex` | `i32` | yes | Which task in the plan this decision is for |
 | `category` | `str` | yes | The task's category, same value the router ranked within |
-| `requester` | `addr` | yes | The plan owner's wallet address — a queryable attribute, **not** the entity's Arkiv-level owner (see "Who owns it" below) |
-| `decidedAt` | `str` | yes | ISO-8601 UTC timestamp of the write |
+| `seed` | `u64` | yes | The Thompson draw's seed (`routing_decisions.seed`) — with it, and `body`'s posterior snapshot, anyone can replay the draw and check it wasn't rigged (migration 0016's own reason the Postgres table is append-only) |
+| `budgetMicros` | `u64` | yes | The task's budget in USDC micros, the same value the draw ranked candidates against |
+| `decidedAt` | `str` | yes | ISO-8601 UTC timestamp, taken from Postgres's own `created_at` on the same row (not a second, separately-computed one) |
 | `body` | `bytes` | no | The candidates/picks JSON, as raw bytes — see below |
+
+No `requester` attribute: an earlier version of this schema had one, dropped after review. Arkiv
+entities are append-only — only expiry removes them — so attaching a wallet address to data that
+outlives a requester's own "discard this draft" action was wrong, and nothing here ever filtered
+reads by it anyway (`$owner`, the one service wallet, is what every read already filters on).
 
 There is no separate "payload" field at the protocol level on Rabdi: checked live, `arkiv_getEntity`
 never returns one, on any entity, ours or anyone else's (`friction.md`). Everything is a named
@@ -63,8 +70,7 @@ One service wallet signs every write. Its *private key* lives only in `chain/ark
 the wallet's *public* address (`ARKIV_OWNER_ADDRESS`), which it needs to filter reads (below). It is
 not a per-requester wallet: Mergit requesters sign in with Ethereum but never hold funds on Arkiv's
 testnet, so making them the Arkiv-level owner would mean asking them to fund a second chain to see
-their own suggestion history. The requester's address is still fully queryable — as the `requester`
-attribute above — just not the chain-level owner field.
+their own suggestion history.
 
 Service wallet address: `<TODO: fill in once a funded ARKIV_PRIVATE_KEY is set on chain/arkiv/'s
 deploy — see chain/arkiv/README.md>`.
@@ -79,7 +85,7 @@ cheap.
 ## One query anyone can run
 
 ```
-arkiv.schema = str('mergit.routing_decision') AND planId = str('<a real plan_id from a live run>') AND $owner = addr(<the service wallet address above>)
+arkiv.schema = str('mergit.routing_decision') AND planId = str('<a real plan_id from a live run>') AND $owner = addr(<the service wallet address above>) ORDER BY $key ASC
 ```
 
 The `$owner` clause matters: without it, anyone could write an entity with our exact schema tag and

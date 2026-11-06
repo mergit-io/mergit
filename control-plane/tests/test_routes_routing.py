@@ -637,6 +637,12 @@ def test_an_exploring_suggestion_is_mirrored_to_arkiv_and_readable_back(settings
         sent = json.loads(write_route.calls[0].request.content)
         assert len(sent["decisions"]) == len(got["tasks"]) == 2
         assert all(d["plan_id"] == plan["plan_id"] for d in sent["decisions"])
+        # Replayable, not just a record of the outcome: links back to the real Postgres row and
+        # carries what a replay needs (migration 0016's own reason routing_decisions exists).
+        assert all(isinstance(d["decision_id"], int) for d in sent["decisions"])
+        assert all(d["seed"] == got["seed"] for d in sent["decisions"])
+        assert all(isinstance(d["budget_micros"], int) for d in sent["decisions"])
+        assert all("requester" not in d for d in sent["decisions"])
 
         # The read endpoint decodes what was (supposedly) written on Arkiv, not a copy kept in Postgres.
         entities = [_fake_entity(d) for d in sent["decisions"]]

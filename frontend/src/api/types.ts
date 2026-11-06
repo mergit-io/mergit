@@ -115,15 +115,20 @@ export type Suggestions = {
   tasks: TaskSuggestion[];
 };
 
+export type ArkivPick = { agent_id: string; score: number; success: number; cost: number };
+
 /** One exploring suggestion mirrored onto Arkiv's Rabdi testnet (ETHGlobal Mumbai's "Build on Arkiv" track),
  * as read back through `arkiv_query` rather than from this plan's own Postgres row. */
 export type ArkivDecision = {
   entity_key: string;
+  decision_id: number;
   task_index: number;
   category: string;
+  seed: number;
+  budget_micros: number;
   decided_at: string;
   candidates: unknown[];
-  picks: unknown[];
+  picks: ArkivPick[];
 };
 
 export type ArkivSuggestions = {

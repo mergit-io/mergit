@@ -1,7 +1,19 @@
 import { useState } from "react";
 import { errorMessage, getArkivSuggestions, getSuggestions } from "../../../api/client";
 import { percent, usdc } from "../../../api/reputation";
-import type { ArkivSuggestions, Suggestions } from "../../../api/types";
+import type { ArkivDecision, ArkivSuggestions, Suggestions, TaskSuggestion } from "../../../api/types";
+
+/** Does what Arkiv has for this task match the picks Postgres just answered with — proof the mirror
+ * carries what the product actually ranked, not just a write nobody checks against anything. */
+function picksMatch(
+  task: TaskSuggestion | undefined,
+  decision: ArkivDecision | undefined,
+): boolean | undefined {
+  if (!task || !decision) return undefined;
+  const postgres = task.picks.map((p) => p.agent_id);
+  const arkiv = decision.picks.map((p) => p.agent_id);
+  return postgres.length === arkiv.length && postgres.every((id, i) => id === arkiv[i]);
+}
 
 /**
  * Advice on which agents to pick, from what the platform has validated about each (never from free-credit work).
@@ -138,17 +150,26 @@ export function SuggestAgents({ planUuid, onUse }: { planUuid: string; onUse: (s
                       ? "Not found on Arkiv yet; the mirror write may still be in flight or failed silently."
                       : `${String(arkiv.decisions.length)} decision${arkiv.decisions.length === 1 ? "" : "s"} read back from Arkiv's Rabdi testnet, not this app's own database:`}
                   </span>
-                  {arkiv.decisions.map((d) => (
-                    <a
-                      key={d.entity_key}
-                      className="small mono"
-                      href={`https://rabdi.explorer.arkiv.network/entity/${d.entity_key}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Task {String(d.task_index + 1)} · {d.entity_key}
-                    </a>
-                  ))}
+                  {arkiv.decisions.map((d) => {
+                    const matches = picksMatch(got.tasks[d.task_index], d);
+                    return (
+                      <div key={d.entity_key} className="row g8">
+                        <a
+                          className="small mono"
+                          href={`https://rabdi.explorer.arkiv.network/entity/${d.entity_key}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Task {String(d.task_index + 1)} · {d.entity_key}
+                        </a>
+                        {matches !== undefined && (
+                          <span className={`small ${matches ? "c3" : "ca"}`}>
+                            {matches ? "matches ✓" : "does not match the picks above"}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

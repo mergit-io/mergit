@@ -8,7 +8,7 @@
 // The private key lives only here, never in the control plane's own process or env.
 import { createServer } from "node:http";
 import { createWalletClient, ExpirationTime } from "@arkiv-network/sdk";
-import { addr } from "@arkiv-network/sdk/schema";
+import { u64 } from "@arkiv-network/sdk/schema";
 import { rabdi } from "@arkiv-network/sdk/chains";
 import { http as viemHttp } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -87,9 +87,11 @@ const server = createServer(async (req, res) => {
           schema: RoutingDecision,
           values: {
             planId: d.plan_id,
+            decisionId: u64(BigInt(d.decision_id)),
             taskIndex: d.task_index,
             category: d.category,
-            requester: addr(d.requester),
+            seed: u64(BigInt(d.seed)),
+            budgetMicros: u64(BigInt(d.budget_micros)),
             decidedAt: d.decided_at,
             body: new TextEncoder().encode(
               JSON.stringify({ candidates: d.candidates, picks: d.picks }),
@@ -99,7 +101,9 @@ const server = createServer(async (req, res) => {
         })),
       }),
     );
-    send(res, 200, { tx_hash: txHash, entity_keys: createdEntities.map((e) => e.key) });
+    // `createdEntities` is already `Hex[]` (the SDK's own type), not objects with a `.key` — an
+    // earlier version mapped `.key` off each string here, which silently produced `[null, ...]`.
+    send(res, 200, { tx_hash: txHash, entity_keys: createdEntities });
   } catch (err) {
     send(res, 502, { error: String(err?.message ?? err) });
   }
